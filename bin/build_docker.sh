@@ -22,7 +22,7 @@ declare -a TAG_NAMES=("$@")
 BRANCH_NAME="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
-SELECTED_PLATFORMS="linux/amd64,linux/arm64"
+SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64}}"
 
 # if not already in TAG_NAMES, add GIT_SHA and BRANCH_NAME  
 if ! echo "${TAG_NAMES[@]}" | grep -q "$GIT_SHA"; then
