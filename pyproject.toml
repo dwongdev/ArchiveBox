@@ -1,6 +1,6 @@
 [project]
 name = "archivebox"
-version = "0.9.31rc5"
+version = "0.9.31rc6"
 requires-python = ">=3.13"
 description = "Self-hosted internet archiving solution."
 authors = [{name = "Nick Sweeting", email = "pyproject.toml@archivebox.io"}]
@@ -162,6 +162,17 @@ exclude-newer-package = { abx-plugins = "1 second", abx-dl = "1 second", abxpkg 
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 # https://github.com/astral-sh/uv/issues/3957
+
+[tool.pdm.build]
+includes = ["archivebox/"]
+source-includes = []
+excludes = [
+    "**/.DS_Store",
+    "archivebox/tests/",
+    "archivebox/tests/**",
+    "tests/",
+    "tests/**",
+]
 
 [tool.setuptools]
 packages = ["archivebox"]
