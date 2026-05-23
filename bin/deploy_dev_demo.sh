@@ -44,16 +44,26 @@ ssh -p "$DEPLOY_PORT" "$DEPLOY_HOST" DEPLOY_PATH="$DEPLOY_PATH" DEPLOY_SERVICE="
 set -Eeuo pipefail
 cd "$DEPLOY_PATH"
 
-if [[ -f compose.yml || -f compose.yaml || -f docker-compose.yml ]]; then
-    COMPOSE=(docker compose)
+if [[ -f compose.yml ]]; then
+    COMPOSE_FILE=compose.yml
+elif [[ -f compose.yaml ]]; then
+    COMPOSE_FILE=compose.yaml
+elif [[ -f docker-compose.yml ]]; then
+    COMPOSE_FILE=docker-compose.yml
 else
     echo "[X] No compose file found in $DEPLOY_PATH" >&2
     exit 1
 fi
 
-export ARCHIVEBOX_IMAGE="$DEPLOY_IMAGE"
+cat > .archivebox-deploy.override.yml <<EOF
+services:
+  $DEPLOY_SERVICE:
+    image: $DEPLOY_IMAGE
+EOF
 
-echo "[+] Pulling $ARCHIVEBOX_IMAGE..."
+COMPOSE=(docker compose -f "$COMPOSE_FILE" -f .archivebox-deploy.override.yml)
+
+echo "[+] Pulling $DEPLOY_IMAGE..."
 "${COMPOSE[@]}" pull "$DEPLOY_SERVICE"
 
 echo "[+] Restarting $DEPLOY_SERVICE..."
