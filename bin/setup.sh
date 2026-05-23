@@ -135,13 +135,13 @@ echo
 
 echo "[i] ArchiveBox Setup Script 📦"
 echo
-echo "    This is a helper script which installs the ArchiveBox dependencies on your system using brew/apt/pip3."
+echo "    This is a helper script which installs ArchiveBox and bootstraps its Python/Node runtimes."
 echo "    You may be prompted for a sudo password in order to install the following:"
 echo
 echo "        - archivebox"
-echo "        - python3, pip, nodejs, npm            (languages used by ArchiveBox, and its extractor modules)"
-echo "        - curl, wget, git, youtube-dl, yt-dlp  (used for extracting title, favicon, git, media, and more)"
-echo "        - chromium                             (installed/discovered by archivebox init --install)"
+echo "        - python3, pip, nodejs, npm            (languages used by ArchiveBox and plugin installers)"
+echo "        - curl, wget                           (used to bootstrap package installation)"
+echo "        - extractor/plugin dependencies        (installed/discovered by archivebox init --install)"
 echo
 echo "    If you'd rather install these manually as-needed, you can find detailed documentation here:"
 echo "        https://github.com/ArchiveBox/ArchiveBox/wiki/Install"
@@ -156,11 +156,10 @@ echo
 if which apt-get > /dev/null; then
     echo "[+] Installing ArchiveBox system dependencies using apt..."
     sudo apt-get update -qq
-    sudo apt-get install -y git python3 python3-pip python3-venv wget curl yt-dlp ffmpeg git nodejs npm ripgrep
-    sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libnss3 libxss1 libasound2 libxtst6 xauth xvfb libgbm-dev || true
+    sudo apt-get install -y python3 python3-pip python3-venv wget curl nodejs npm
     echo
     echo "[+] Installing ArchiveBox python dependencies using pip3..."
-    sudo python3 -m pip install --upgrade --ignore-installed archivebox yt-dlp
+    sudo python3 -m pip install --upgrade --ignore-installed archivebox
 # On Mac:
 elif which brew > /dev/null; then
     echo "[+] Installing ArchiveBox using Homebrew..."
@@ -169,12 +168,11 @@ elif which brew > /dev/null; then
     brew install archivebox
 elif which pkg > /dev/null; then
     echo "[+] Installing ArchiveBox system dependencies using pkg and pip (python3.9)..."
-    sudo pkg install -y python3 py39-pip py39-sqlite3 npm wget curl youtube_dl ffmpeg git ripgrep
-    sudo pkg install -y chromium
+    sudo pkg install -y python3 py39-pip py39-sqlite3 npm wget curl
     echo
     echo "[+] Installing ArchiveBox python dependencies using pip..."
     # don't use sudo here so that pip installs in $HOME/.local instead of into /usr/local
-    python3 -m pip install --upgrade --ignore-installed archivebox yt-dlp playwright
+    python3 -m pip install --upgrade --ignore-installed archivebox
 else
     echo "[!] Warning: Could not find aptitude/homebrew/pkg! May not be able to install all dependencies automatically."
     echo
@@ -225,7 +223,7 @@ if [ -f "./index.sqlite3" ]; then
     mv -i ~/archivebox/* ~/archivebox/data/
 fi
 cd ./data
-: | python3 -m archivebox init --install || true   # pipe in empty command to make sure stdin is closed
+: | python3 -m archivebox init --install   # pipe in empty command to make sure stdin is closed
 # init shows version output at the end too
 echo
 echo "[+] Starting ArchiveBox server using: nohup archivebox server &..."
