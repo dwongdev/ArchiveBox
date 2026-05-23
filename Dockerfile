@@ -80,6 +80,7 @@ ENV ARCHIVEBOX_USER="archivebox" \
 # ArchiveBox Source Code + Lib + Data paths
 ENV CODE_DIR=/app \
     DATA_DIR=/data \
+    LIB_DIR=/usr/local/share/archivebox/lib \
     PLAYWRIGHT_BROWSERS_PATH=/browsers
 
 # Bash SHELL config
@@ -292,7 +293,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
 # Install Node extractor dependencies
 ENV PATH="/home/$ARCHIVEBOX_USER/.npm/bin:$PATH" \
     PERSONAS_DIR=/data/personas \
-    NODE_PATH="/home/$ARCHIVEBOX_USER/.npm/lib/node_modules:/usr/lib/node_modules:/data/lib/npm/node_modules:/usr/share/archivebox/lib/npm/node_modules:/data/personas/Default/node_modules" \
+    NODE_PATH="/home/$ARCHIVEBOX_USER/.npm/lib/node_modules:/usr/lib/node_modules:$LIB_DIR/npm/node_modules:/data/personas/Default/node_modules" \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
     CHROME_BIN=/usr/bin/google-chrome-stable \
     CHROME_BINARY=/usr/bin/google-chrome-stable \
@@ -367,7 +368,6 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
 
 # Setup ArchiveBox runtime config
 ENV TMP_DIR=/tmp/archivebox \
-    LIB_DIR=/data/lib \
     PIP_VENV_PYTHON=/usr/bin/python3.12 \
     GOOGLE_API_KEY=no \
     GOOGLE_DEFAULT_CLIENT_ID=no \
@@ -380,6 +380,11 @@ RUN openssl rand -hex 16 > /etc/machine-id \
     && mkdir -p "$LIB_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
+
+# Pre-bake plugin-managed runtime dependencies into the image using the same
+# installer path users run later via archivebox install / abx-dl install.
+RUN echo "[+] Installing plugin runtime dependencies into $LIB_DIR..." \
+    && gosu "$DEFAULT_PUID" abx-dl install
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
