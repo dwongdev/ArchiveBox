@@ -80,7 +80,7 @@ ENV ARCHIVEBOX_USER="archivebox" \
 # ArchiveBox Source Code + Lib + Data paths
 ENV CODE_DIR=/app \
     DATA_DIR=/data \
-    LIB_DIR=/usr/local/share/archivebox/lib \
+    LIB_DIR=/opt/archivebox/lib \
     PLAYWRIGHT_BROWSERS_PATH=/browsers
 
 # Bash SHELL config
