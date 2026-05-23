@@ -22,8 +22,12 @@ clear
 
 ARCHIVEBOX_BRANCH="${ARCHIVEBOX_BRANCH:-dev}"
 ARCHIVEBOX_IMAGE="${ARCHIVEBOX_IMAGE:-archivebox/archivebox:dev}"
-ARCHIVEBOX_PLATFORM="${ARCHIVEBOX_PLATFORM:-linux/amd64}"
+ARCHIVEBOX_PLATFORM="${ARCHIVEBOX_PLATFORM:-}"
 ARCHIVEBOX_COMPOSE_URL="${ARCHIVEBOX_COMPOSE_URL:-https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/${ARCHIVEBOX_BRANCH}/docker-compose.yml}"
+DOCKER_PLATFORM_ARGS=()
+if [ -n "$ARCHIVEBOX_PLATFORM" ]; then
+    DOCKER_PLATFORM_ARGS=(--platform "$ARCHIVEBOX_PLATFORM")
+fi
 
 wait_for_archivebox() {
     local url="http://127.0.0.1:8000/health/"
@@ -61,7 +65,7 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 2
 fi
 
-if (command -v docker > /dev/null && docker compose version > /dev/null && docker pull --platform "$ARCHIVEBOX_PLATFORM" "$ARCHIVEBOX_IMAGE"); then
+if (command -v docker > /dev/null && docker compose version > /dev/null && docker pull "${DOCKER_PLATFORM_ARGS[@]}" "$ARCHIVEBOX_IMAGE"); then
     echo "[+] Initializing an ArchiveBox data folder at ~/archivebox/data using Docker Compose..."
     mkdir -p ~/archivebox/data || exit 1
     cd ~/archivebox
@@ -70,7 +74,7 @@ if (command -v docker > /dev/null && docker compose version > /dev/null && docke
     fi
     curl -fsSL "$ARCHIVEBOX_COMPOSE_URL" > docker-compose.yml
     export ARCHIVEBOX_IMAGE ARCHIVEBOX_PLATFORM
-    docker compose run --rm archivebox init
+    docker compose run --rm archivebox init --install
     echo
     echo "[+] Starting ArchiveBox server using: docker compose up -d..."
     docker compose up -d
@@ -88,7 +92,7 @@ if (command -v docker > /dev/null && docker compose version > /dev/null && docke
     echo "    docker compose run archivebox list"
     echo "    docker compose run archivebox help"
     exit 0
-elif (command -v docker > /dev/null && docker pull --platform "$ARCHIVEBOX_PLATFORM" "$ARCHIVEBOX_IMAGE"); then
+elif (command -v docker > /dev/null && docker pull "${DOCKER_PLATFORM_ARGS[@]}" "$ARCHIVEBOX_IMAGE"); then
     echo "[+] Initializing an ArchiveBox data folder at ~/archivebox/data using Docker..."
     mkdir -p ~/archivebox/data || exit 1
     cd ~/archivebox
@@ -96,10 +100,10 @@ elif (command -v docker > /dev/null && docker pull --platform "$ARCHIVEBOX_PLATF
         mv -i ~/archivebox/* ~/archivebox/data/
     fi
     cd ./data
-    docker run --platform "$ARCHIVEBOX_PLATFORM" -v "$PWD":/data -it --rm "$ARCHIVEBOX_IMAGE" init
+    docker run "${DOCKER_PLATFORM_ARGS[@]}" -v "$PWD":/data -it --rm "$ARCHIVEBOX_IMAGE" init --install
     echo
     echo "[+] Starting ArchiveBox server using: docker run -d archivebox/archivebox..."
-    docker run --platform "$ARCHIVEBOX_PLATFORM" -v "$PWD":/data -it -d -p 8000:8000 --name=archivebox "$ARCHIVEBOX_IMAGE"
+    docker run "${DOCKER_PLATFORM_ARGS[@]}" -v "$PWD":/data -it -d -p 8000:8000 --name=archivebox "$ARCHIVEBOX_IMAGE"
     wait_for_archivebox
     open_archivebox
     echo
@@ -108,11 +112,11 @@ elif (command -v docker > /dev/null && docker pull --platform "$ARCHIVEBOX_PLATF
     echo "    docker ps --filter name=archivebox"
     echo "    docker kill archivebox"
     echo "    docker pull $ARCHIVEBOX_IMAGE"
-    echo "    docker run --platform $ARCHIVEBOX_PLATFORM -v $PWD:/data -d -p 8000:8000 --name=archivebox $ARCHIVEBOX_IMAGE"
-    echo "    docker run --platform $ARCHIVEBOX_PLATFORM -v $PWD:/data -it $ARCHIVEBOX_IMAGE manage createsuperuser"
-    echo "    docker run --platform $ARCHIVEBOX_PLATFORM -v $PWD:/data -it $ARCHIVEBOX_IMAGE add 'https://example.com'"
-    echo "    docker run --platform $ARCHIVEBOX_PLATFORM -v $PWD:/data -it $ARCHIVEBOX_IMAGE list"
-    echo "    docker run --platform $ARCHIVEBOX_PLATFORM -v $PWD:/data -it $ARCHIVEBOX_IMAGE help"
+    echo "    docker run ${DOCKER_PLATFORM_ARGS[*]} -v $PWD:/data -d -p 8000:8000 --name=archivebox $ARCHIVEBOX_IMAGE"
+    echo "    docker run ${DOCKER_PLATFORM_ARGS[*]} -v $PWD:/data -it $ARCHIVEBOX_IMAGE manage createsuperuser"
+    echo "    docker run ${DOCKER_PLATFORM_ARGS[*]} -v $PWD:/data -it $ARCHIVEBOX_IMAGE add 'https://example.com'"
+    echo "    docker run ${DOCKER_PLATFORM_ARGS[*]} -v $PWD:/data -it $ARCHIVEBOX_IMAGE list"
+    echo "    docker run ${DOCKER_PLATFORM_ARGS[*]} -v $PWD:/data -it $ARCHIVEBOX_IMAGE help"
     exit 0
 fi
 
@@ -137,7 +141,7 @@ echo
 echo "        - archivebox"
 echo "        - python3, pip, nodejs, npm            (languages used by ArchiveBox, and its extractor modules)"
 echo "        - curl, wget, git, youtube-dl, yt-dlp  (used for extracting title, favicon, git, media, and more)"
-echo "        - chromium                             (skips this if any Chrome/Chromium version is already installed)"
+echo "        - chromium                             (installed/discovered by archivebox init --install)"
 echo
 echo "    If you'd rather install these manually as-needed, you can find detailed documentation here:"
 echo "        https://github.com/ArchiveBox/ArchiveBox/wiki/Install"
@@ -153,7 +157,7 @@ if which apt-get > /dev/null; then
     echo "[+] Installing ArchiveBox system dependencies using apt..."
     sudo apt-get update -qq
     sudo apt-get install -y git python3 python3-pip python3-venv wget curl yt-dlp ffmpeg git nodejs npm ripgrep
-    sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libnss3 libxss1 libasound2 libxtst6 xauth xvfb libgbm-dev || sudo apt-get install -y chromium || sudo apt-get install -y chromium-browser || true
+    sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libnss3 libxss1 libasound2 libxtst6 xauth xvfb libgbm-dev || true
     echo
     echo "[+] Installing ArchiveBox python dependencies using pip3..."
     sudo python3 -m pip install --upgrade --ignore-installed archivebox yt-dlp
@@ -212,11 +216,6 @@ fi
 # echo "[+] Upgrading npm and pip..."
 # sudo npm i -g npm || true
 # sudo python3 -m pip install --upgrade pip setuptools || true
-
-echo
-echo "[+] Installing Chromium binary using playwright..."
-python3 -m playwright install --with-deps chromium || true
-echo
 
 echo
 echo "[+] Initializing ArchiveBox data folder at ~/archivebox/data..."

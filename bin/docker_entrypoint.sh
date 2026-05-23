@@ -31,6 +31,7 @@ ulimit -c 0 >/dev/null 2>&1 || true
 export DATA_DIR="${DATA_DIR:-/data}"
 export TMP_DIR="${TMP_DIR:-/tmp/archivebox}"
 export LIB_DIR="${LIB_DIR:-/opt/archivebox/lib}"
+export ABXPKG_LIB_DIR="${ABXPKG_LIB_DIR:-$LIB_DIR}"
 export ARCHIVEBOX_USER="${ARCHIVEBOX_USER:-archivebox}"
 
 # Global default PUID and PGID if data dir is empty and no intended PUID+PGID is set manually by user
@@ -134,7 +135,7 @@ find "$DATA_DIR/personas" -type f \( \
 find /tmp "$TMP_DIR" -maxdepth 1 -type d -name "archivebox-chrome-profile.*" -mmin +30 -exec rm -rf {} + >/dev/null 2>&1 || true
     
 
-# also chown BROWSERS_DIR because otherwise 'archivebox setup' wont be able to 'playwright install chromium' at runtime
+# also chown BROWSERS_DIR because browser providers may manage files there at runtime
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/browsers}"
 mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/permissions_test_safe_to_delete"
 rm -Rf "$PLAYWRIGHT_BROWSERS_PATH/permissions_test_safe_to_delete"

@@ -1,8 +1,8 @@
 # This is the Dockerfile for ArchiveBox, it bundles the following main dependencies:
 #     python3.13, uv, python3-ldap
 #     curl, wget, git, dig, ping, tree, nano
-#     node, npm, single-file, readability-extractor, postlight-parser
-#     ArchiveBox, yt-dlp, Google Chrome, ffmpeg
+#     node, npm
+#     ArchiveBox and plugin runtime dependencies installed by archivebox init --install
 # Usage:
 #     git clone https://github.com/ArchiveBox/ArchiveBox && cd ArchiveBox
 #     docker build . -t archivebox
@@ -10,8 +10,7 @@
 #     docker run -v "$PWD/data":/data archivebox add 'https://example.com'
 #     docker run -v "$PWD/data":/data -it archivebox manage createsuperuser
 #     docker run -v "$PWD/data":/data -p 8000:8000 archivebox server
-# Chrome for Linux is only distributed for amd64, so the Docker image targets linux/amd64.
-#     docker buildx build . --platform=linux/amd64 --push -t archivebox/archivebox:dev -t archivebox/archivebox:sha-abc123
+#     docker buildx build . --platform=linux/amd64,linux/arm64 --push -t archivebox/archivebox:dev -t archivebox/archivebox:sha-abc123
 # Read more here: https://github.com/ArchiveBox/ArchiveBox#archivebox-development
 
 
@@ -27,7 +26,13 @@
 
 #########################################################################################
 
-FROM --platform=linux/amd64 ubuntu:24.04
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT=
+
+FROM archivebox/sonic:1.4.9 AS sonic
+FROM ubuntu:24.04
 
 LABEL name="archivebox" \
     maintainer="Nick Sweeting <dockerfile@archivebox.io>" \
@@ -81,6 +86,7 @@ ENV ARCHIVEBOX_USER="archivebox" \
 ENV CODE_DIR=/app \
     DATA_DIR=/data \
     LIB_DIR=/opt/archivebox/lib \
+    ABXPKG_LIB_DIR=/opt/archivebox/lib \
     PLAYWRIGHT_BROWSERS_PATH=/browsers
 
 # Bash SHELL config
@@ -133,35 +139,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         # 1. packaging dependencies
         apt-transport-https ca-certificates apt-utils gnupg2 curl wget \
         # 2. docker and init system dependencies
-        zlib1g-dev dumb-init gosu cron unzip grep dnsutils python3.12-venv \
+        zlib1g-dev dumb-init gosu cron unzip grep dnsutils git python3.12-venv \
         # 3. frivolous CLI helpers to make debugging failed archiving easier
         tree nano iputils-ping \
         # nano iputils-ping dnsutils htop procps jq yq
     && rm -rf /var/lib/apt/lists/*
 
-# Install apt binary dependencies for extractors
-# COPY --from=selenium/ffmpeg:latest /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT \
-    echo "[+] APT Installing extractor dependencies for $TARGETPLATFORM..." \
-    && apt-get update -qq \
-    && apt-get install -qq -y --no-install-recommends \
-        git ripgrep default-jre \
-        # Packages we have also needed in the past:
-        # youtube-dl wget2 aria2 python3-pyxattr rtmpdump libfribidi-bin mpv \
-        # curl wget (already installed above)
-    && rm -rf /var/lib/apt/lists/* \
-    # Save version info
-    && ( \
-        which curl && curl --version | sed -n '1p' \
-        && which wget && wget --version 2>&1 | sed -n '1p' \
-        && which git && git --version 2>&1 | sed -n '1p' \
-        # && which ffmpeg && (ffmpeg --version 2>&1 | sed -n '1p') || true \
-        && which rg && rg --version 2>&1 | sed -n '1p' \
-        && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt
-
 # Install sonic search backend
-COPY --from=archivebox/sonic:1.4.9 /usr/local/bin/sonic /usr/local/bin/sonic
+COPY --from=sonic /usr/local/bin/sonic /usr/local/bin/sonic
 COPY --chown=root:root --chmod=755 "etc/sonic.cfg" /etc/sonic.cfg
 RUN (which sonic && sonic --version) | tee -a /VERSION.txt
 
@@ -194,15 +179,22 @@ RUN (which sonic && sonic --version) | tee -a /VERSION.txt
     # ) | tee -a /VERSION.txt
 
 
-# Set up Node environment from the official linux-x64 tarball. This avoids
+# Set up Node environment from the official platform tarball. This avoids
 # NodeSource apt dependencies pulling Ubuntu's python3-minimal postinst into
-# emulated linux/amd64 Docker builds.
+# emulated Docker builds.
 RUN --mount=type=cache,target=/root/.npm,sharing=locked,id=npm-$TARGETARCH$TARGETVARIANT \
-    echo "[+] Installing NODE $NODE_VERSION for linux/amd64..." \
-    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
-    && echo "c7a10d6816da8eaaa7534dd73c71c6e2b2c391dbbf845e364902d156615dd1b8  node-v${NODE_VERSION}-linux-x64.tar.gz" | sha256sum -c - \
-    && tar -xzf "node-v${NODE_VERSION}-linux-x64.tar.gz" -C /usr/local --strip-components=1 --no-same-owner \
-    && rm "node-v${NODE_VERSION}-linux-x64.tar.gz" \
+    case "$TARGETARCH" in \
+        amd64) NODE_DIST_ARCH="x64" ;; \
+        arm64) NODE_DIST_ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH=$TARGETARCH for Node binary install" >&2; exit 1 ;; \
+    esac \
+    && NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_DIST_ARCH}.tar.gz" \
+    && echo "[+] Installing NODE $NODE_VERSION for linux/${NODE_DIST_ARCH}..." \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep "  ${NODE_TARBALL}$" SHASUMS256.txt | sha256sum -c - \
+    && tar -xzf "$NODE_TARBALL" -C /usr/local --strip-components=1 --no-same-owner \
+    && rm "$NODE_TARBALL" SHASUMS256.txt \
     # Save version info
     && ( \
         which node && node --version \
@@ -254,79 +246,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && rm -rf /var/lib/apt/lists/*
 
 
-# Install apt font & rendering dependencies for Google Chrome
-# RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT \
-
-# Install Google Chrome inside the container. Docker must use the package pulled
-# during the image build, never a browser from the host checkout.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT \
-    --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
-    echo "[+] APT Installing Google Chrome, fonts, and display libraries for $TARGETPLATFORM..." \
-    && curl -fsSL "https://dl.google.com/linux/linux_signing_key.pub" | gpg --dearmor -o /etc/apt/keyrings/google-linux.gpg \
-    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-linux.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update -qq \
-    && apt-get install -qq -y \
-        #fontconfig fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-khmeros fonts-kacst fonts-symbola fonts-noto fonts-freefont-ttf \
-        #at-spi2-common fonts-liberation fonts-noto-color-emoji fonts-tlwg-loma-otf fonts-unifont libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libavahi-client3 \
-        #libavahi-common-data libavahi-common3 libcups2 libfontenc1 libice6 libnspr4 libnss3 libsm6 libunwind8 \
-        #libxaw7 libxcomposite1 libxdamage1 libxfont2 \
-        google-chrome-stable ffmpeg \
-        libxkbfile1 libxmu6 libxpm4 libxt6 x11-xkb-utils x11-utils xfonts-encodings \
-        # xfonts-scalable xfonts-utils xserver-common xvfb \
-        # chrome can run without dbus/upower technically, it complains about missing dbus but should run ok anyway
-        # libxss1 dbus dbus-x11 upower \
-    # && service dbus start \
-    && ln -sf /usr/bin/google-chrome-stable /usr/bin/chrome \
-    && mkdir -p "/home/${ARCHIVEBOX_USER}/.config/google-chrome/Crash Reports/pending/" \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "/home/${ARCHIVEBOX_USER}/.config" \
-    && mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
-    && chown -R $ARCHIVEBOX_USER "$PLAYWRIGHT_BROWSERS_PATH" \
-    # Save version info
-    && rm -rf /var/lib/apt/lists/* \
-    && ( \
-        which google-chrome-stable && google-chrome-stable --version \
-        && which chrome && chrome --version \
-        && which ffmpeg && ffmpeg -version | sed -n '1p' \
-        && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt
-
-# Install Node extractor dependencies
-ENV PATH="/home/$ARCHIVEBOX_USER/.npm/bin:$PATH" \
+# Runtime config used by plugin hooks. Plugin binaries and npm packages are
+# installed into LIB_DIR below by archivebox init --install.
+ENV PATH="$LIB_DIR/npm/node_modules/.bin:$PATH" \
     PERSONAS_DIR=/data/personas \
-    NODE_PATH="/home/$ARCHIVEBOX_USER/.npm/lib/node_modules:/usr/lib/node_modules:$LIB_DIR/npm/node_modules:/data/personas/Default/node_modules" \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
-    CHROME_BIN=/usr/bin/google-chrome-stable \
-    CHROME_BINARY=/usr/bin/google-chrome-stable \
+    NODE_PATH="$LIB_DIR/npm/node_modules:/data/personas/Default/node_modules" \
     CHROME_USER_DATA_DIR=/data/personas/Default/chrome_profile \
     CHROME_HEADLESS=true \
     CHROME_SANDBOX=false \
     CHROME_ISOLATION=crawl \
     CHROME_ARGS_EXTRA='["--disable-gpu","--disable-features=Translate,OptimizationGuideModelDownloading,MediaRouter"]'
-USER $ARCHIVEBOX_USER
-WORKDIR "/home/$ARCHIVEBOX_USER/.npm"
-RUN --mount=type=cache,target=/home/archivebox/.npm_cache,sharing=locked,id=npm-$TARGETARCH$TARGETVARIANT,uid=$DEFAULT_PUID,gid=$DEFAULT_PGID \
-    echo "[+] NPM Installing node extractor dependencies into /home/$ARCHIVEBOX_USER/.npm..." \
-    && npm config set prefix "/home/$ARCHIVEBOX_USER/.npm" \
-    && npm install --global --prefer-offline --no-fund --no-audit --cache "/home/$ARCHIVEBOX_USER/.npm_cache" \
-        "@postlight/parser@^2.2.3" \
-        "readability-extractor@github:ArchiveBox/readability-extractor" \
-        "single-file-cli@^1.1.54" \
-        "abxbus@^2.5.4" \
-        "puppeteer-core@^23.5.0" \
-        "puppeteer@^23.5.0" \
-        "@puppeteer/browsers@^2.4.0" \
-    && rm -Rf "/home/$ARCHIVEBOX_USER/.cache/puppeteer"
-USER root
-WORKDIR "$CODE_DIR"
-RUN ( \
-        which node && node --version \
-        && which npm && npm version \
-        && which postlight-parser \
-        && which readability-extractor && readability-extractor --version \
-        && which single-file && single-file --version \
-        && which puppeteer && puppeteer --version \
-        && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt
 
 ######### Build Dependencies ####################################
 
@@ -386,7 +315,8 @@ RUN openssl rand -hex 16 > /etc/machine-id \
 # Pre-bake plugin-managed runtime dependencies using the same installer path
 # users run later via archivebox init --install / archivebox install.
 RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
-    && gosu "$DEFAULT_PUID" archivebox init --install
+    && gosu "$DEFAULT_PUID" archivebox init --install \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$LIB_DIR"
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
