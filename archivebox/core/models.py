@@ -395,25 +395,37 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
 
         config = get_config()
         host = parsed.hostname.lower().strip(".")
-        protected_hosts = {
-            split_host_port(host_value)[0].strip(".")
-            for host_value in (
-                get_listen_host(config=config),
-                get_admin_host(config=config),
-                get_web_host(config=config),
-                get_api_host(config=config),
-                get_public_host(config=config),
-            )
-            if host_value
-        }
+        protected_subdomains = {"admin", "web", "api", "public"}
+        protected_hosts = set()
+        protected_roots = set()
+        for host_value in (
+            get_listen_host(config=config),
+            get_admin_host(config=config),
+            get_web_host(config=config),
+            get_api_host(config=config),
+            get_public_host(config=config),
+        ):
+            if not host_value:
+                continue
+            protected_host = split_host_port(host_value)[0].strip(".")
+            if not protected_host:
+                continue
+            protected_hosts.add(protected_host)
+            parts = protected_host.split(".", 1)
+            if len(parts) == 2 and (parts[0] in protected_subdomains or parts[0].startswith("snap-")):
+                protected_roots.add(parts[1])
+            else:
+                protected_roots.add(protected_host)
         if host in protected_hosts:
             return True
 
-        listen_host, _ = split_host_port(get_listen_host(config=config))
-        listen_host = listen_host.strip(".")
-        if config.USES_SUBDOMAIN_ROUTING and listen_host and host.endswith(f".{listen_host}"):
-            subdomain = host[: -(len(listen_host) + 1)]
-            return subdomain in {"admin", "web", "api", "public"} or subdomain.startswith("snap-")
+        if config.USES_SUBDOMAIN_ROUTING:
+            for protected_root in protected_roots:
+                if not protected_root or not host.endswith(f".{protected_root}"):
+                    continue
+                subdomain = host[: -(len(protected_root) + 1)]
+                if subdomain in protected_subdomains or subdomain.startswith("snap-"):
+                    return True
 
         return False
 

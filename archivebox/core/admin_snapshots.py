@@ -148,6 +148,7 @@ class SnapshotAdminForm(forms.ModelForm):
 
 class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     form = SnapshotAdminForm
+    raw_id_fields = ("crawl", "parent_snapshot")
     list_select_related = ()
     list_display = ("created_at", "preview_icon", "title_str", "tags_inline", "status_with_progress", "files", "size_with_stats")
     sort_fields = ("title_str", "created_at", "status", "crawl")
