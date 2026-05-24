@@ -5,13 +5,18 @@
 {{ block.super }}
 <link rel="stylesheet" href="{% static "admin/css/dashboard.css" %}">
 <style>
-    body.dashboard #content {
-        max-width: none;
+    body.dashboard.abx-admin-dashboard-page #content {
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 24px !important;
     }
 
-    body.dashboard #content-main {
+    body.dashboard.abx-admin-dashboard-page #content-main {
         float: none;
-        width: auto;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
     }
 
     .abx-admin-dashboard {
@@ -439,7 +444,21 @@
                         <div class="abx-admin-card-grid">
                             {% for app in app_list %}
                                 {% for model in app.models %}
-                                    {% if model.object_name == "Tag" or model.object_name == "Persona" or model.object_name == "User" %}
+                                    {% if model.object_name == "Tag" %}
+                                        {% include "admin/index_model_card.html" with model=model tone="main" %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endfor %}
+                            {% for app in app_list %}
+                                {% for model in app.models %}
+                                    {% if model.object_name == "Persona" %}
+                                        {% include "admin/index_model_card.html" with model=model tone="main" %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endfor %}
+                            {% for app in app_list %}
+                                {% for model in app.models %}
+                                    {% if model.object_name == "User" %}
                                         {% include "admin/index_model_card.html" with model=model tone="main" %}
                                     {% endif %}
                                 {% endfor %}
@@ -459,7 +478,29 @@
                             {% for app in app_list %}
                                 {% if app.name == "Environment" %}
                                     {% for model in app.models %}
-                                        {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% if model.name == "Configuration" %}
+                                            {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {% for model in app.models %}
+                                        {% if model.name == "Dependencies" %}
+                                            {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {% for model in app.models %}
+                                        {% if model.name == "Plugins" %}
+                                            {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {% for model in app.models %}
+                                        {% if model.name == "Workers" %}
+                                            {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% endif %}
+                                    {% endfor %}
+                                    {% for model in app.models %}
+                                        {% if model.name == "Logs" %}
+                                            {% include "admin/index_model_card.html" with model=model tone="environment" %}
+                                        {% endif %}
                                     {% endfor %}
                                 {% endif %}
                             {% endfor %}
@@ -477,7 +518,28 @@
                         <div class="abx-admin-card-grid">
                             {% for app in app_list %}
                                 {% for model in app.models %}
-                                    {% if model.object_name == "Machine" or model.object_name == "NetworkInterface" or model.object_name == "Binary" or model.object_name == "Process" %}
+                                    {% if model.object_name == "Machine" %}
+                                        {% include "admin/index_model_card.html" with model=model tone="machine" %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endfor %}
+                            {% for app in app_list %}
+                                {% for model in app.models %}
+                                    {% if model.object_name == "NetworkInterface" %}
+                                        {% include "admin/index_model_card.html" with model=model tone="machine" %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endfor %}
+                            {% for app in app_list %}
+                                {% for model in app.models %}
+                                    {% if model.object_name == "Binary" %}
+                                        {% include "admin/index_model_card.html" with model=model tone="machine" %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endfor %}
+                            {% for app in app_list %}
+                                {% for model in app.models %}
+                                    {% if model.object_name == "Process" %}
                                         {% include "admin/index_model_card.html" with model=model tone="machine" %}
                                     {% endif %}
                                 {% endfor %}
