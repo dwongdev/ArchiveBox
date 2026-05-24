@@ -267,7 +267,6 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     && apt-get update -qq \
     && apt-get install -qq -y --no-install-recommends build-essential gcc python3-dev \
     && uv sync \
-        --no-cache \
         --no-dev \
         --inexact \
         --all-extras \
@@ -280,24 +279,6 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     && find /venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /var/lib/apt/lists/*
     # installs the pip packages that archivebox depends on, defined in pyproject.toml dependencies
-
-# Install ArchiveBox Python package from the checked-out source.
-COPY --chown=root:root --chmod=755 "." "$CODE_DIR/"
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
-    echo "[*] Installing ArchiveBox Python source code from $CODE_DIR..." \
-    && pip install \
-        --no-deps \
-        "$CODE_DIR" \
-    && ( \
-        pip show archivebox \
-        && which archivebox \
-        && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt \
-    && find /venv "$CODE_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find /venv "$CODE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-    # installs archivebox itself, and any other vendored packages in pkgs/*, defined in pyproject.toml workspaces
-
-####################################################
 
 # Setup ArchiveBox runtime config
 ENV TMP_DIR=/tmp/archivebox \
@@ -318,17 +299,46 @@ RUN openssl rand -hex 16 > /etc/machine-id \
     && chown "$DEFAULT_PUID:$DEFAULT_PGID" "$PLAYWRIGHT_BROWSERS_PATH" \
     && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nPLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
 
-# Pre-bake plugin-managed runtime dependencies using the same installer paths
-# users run later via archivebox init --install / archivebox install. Build-time
-# runs as root so providers can satisfy OS-level deps, then ownership is
-# returned to the runtime archivebox user.
-RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
-    && PUID=0 PGID=0 archivebox init --install \
-    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+# Pre-bake plugin-managed runtime dependencies using the same abx-dl installer
+# path users run later, before copying ArchiveBox source so source-only edits do
+# not invalidate the heavy browser/plugin dependency layer.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT \
+    --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
+    --mount=type=cache,target=/root/.npm,sharing=locked,id=npm-$TARGETARCH$TARGETVARIANT \
+    --mount=type=cache,target=/root/.cache/puppeteer,sharing=locked,id=puppeteer-$TARGETARCH$TARGETVARIANT \
+    --mount=type=cache,target=/root/.cache/ms-playwright,sharing=locked,id=browsers-$TARGETARCH$TARGETVARIANT \
+    echo "[+] Installing plugin runtime dependencies into $LIB_DIR..." \
+    && PUID=0 PGID=0 abx-dl plugins --install \
+    && find "$LIB_DIR" "$DATA_DIR"/personas -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find "$LIB_DIR" "$DATA_DIR"/personas -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/* \
-    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$DATA_DIR"/logs "$DATA_DIR"/sources "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas "$DATA_DIR"/index.sqlite3 "$DATA_DIR"/ArchiveBox.conf 2>/dev/null || true) \
+    && (chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR"/personas 2>/dev/null || true) \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR"
+
+# Install ArchiveBox Python package from the checked-out source.
+WORKDIR "$CODE_DIR"
+COPY --chown=root:root --chmod=755 "." "$CODE_DIR/"
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
+    echo "[*] Installing ArchiveBox Python source code from $CODE_DIR..." \
+    && pip install \
+        --no-deps \
+        "$CODE_DIR" \
+    && ( \
+        pip show archivebox \
+        && which archivebox \
+        && echo -e '\n\n' \
+    ) | tee -a /VERSION.txt \
+    && find /venv "$CODE_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /venv "$CODE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+    # installs archivebox itself, and any other vendored packages in pkgs/*, defined in pyproject.toml workspaces
+
+# Initialize an empty image collection without rerunning dependency installs.
+WORKDIR "$DATA_DIR"
+RUN echo "[+] Initializing image collection..." \
+    && PUID=0 PGID=0 archivebox init \
+    && find "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$DATA_DIR"/logs "$DATA_DIR"/sources "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas "$DATA_DIR"/index.sqlite3 "$DATA_DIR"/ArchiveBox.conf 2>/dev/null || true)
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \

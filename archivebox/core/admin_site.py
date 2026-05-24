@@ -60,13 +60,13 @@ class ArchiveBoxAdmin(admin.AdminSite):
                     except (IndexError, TypeError, ValueError):
                         continue
                     if count >= 1_000_000_000:
-                        count_label = f"~{count / 1_000_000_000:.1f}B"
+                        count_label = f"{count / 1_000_000_000:.1f}B"
                     elif count >= 1_000_000:
-                        count_label = f"~{count / 1_000_000:.1f}M"
+                        count_label = f"{count / 1_000_000:.1f}M"
                     elif count >= 1_000:
-                        count_label = f"~{count / 1_000:.1f}K"
+                        count_label = f"{count / 1_000:.1f}K"
                     else:
-                        count_label = f"~{count:,}"
+                        count_label = f"{count:,}"
                     count_label = count_label.replace(".0", "")
                     for model in models:
                         model["object_count"] = count

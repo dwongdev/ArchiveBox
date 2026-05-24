@@ -4,6 +4,7 @@ __package__ = "archivebox.cli"
 __command__ = "archivebox add"
 
 import sys
+import json
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -47,6 +48,7 @@ def _collect_input_urls(args: tuple[str, ...]) -> list[str]:
 @enforce_types
 def add(
     urls: str | list[str],
+    snapshot_ids: list[str] | None = None,
     depth: int | str = 0,
     max_urls: int = 0,
     max_size: int | str = 0,
@@ -102,10 +104,22 @@ def add(
     if update is None:
         update = not config.ONLY_NEW
 
+    if isinstance(urls, str):
+        url_list = [line.strip() for line in urls.splitlines() if line.strip()]
+    else:
+        url_list = [str(url).strip() for url in urls if str(url).strip()]
+    if snapshot_ids and len(snapshot_ids) != len(url_list):
+        raise ValueError("snapshot_ids length must match urls length")
+
     # 1. Save the provided URLs to sources/2024-11-05__23-59-59__cli_add.txt
     sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__cli_add.txt"
     sources_file.parent.mkdir(parents=True, exist_ok=True)
-    sources_file.write_text(urls if isinstance(urls, str) else "\n".join(urls))
+    if snapshot_ids:
+        sources_file.write_text(
+            "\n".join(json.dumps({"url": url, "id": snapshot_ids[index], "tags": tag, "depth": 0}) for index, url in enumerate(url_list)),
+        )
+    else:
+        sources_file.write_text("\n".join(url_list))
 
     # 2. Create a new Crawl with inline URLs
     cli_args = [*sys.argv]

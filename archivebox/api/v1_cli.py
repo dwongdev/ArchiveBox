@@ -58,6 +58,7 @@ class StatusChoices(str, Enum):
 
 class AddCommandSchema(Schema):
     urls: list[str]
+    snapshot_ids: list[str] | None = None
     tag: str = ""
     depth: int = 0
     parser: str = "auto"
@@ -119,6 +120,7 @@ def cli_add(request: HttpRequest, args: AddCommandSchema):
 
     crawl, snapshots = add(
         urls=args.urls,
+        snapshot_ids=args.snapshot_ids,
         tag=args.tag,
         depth=args.depth,
         update=args.update,

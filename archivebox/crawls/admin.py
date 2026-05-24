@@ -8,7 +8,8 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Count, Q
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 
 
 from django_object_actions import action
@@ -576,7 +577,15 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     def get_queryset(self, request):
         """Optimize queries with select_related and annotations."""
         qs = super().get_queryset(request)
-        return qs.select_related("schedule", "created_by").annotate(num_snapshots_cached=Count("snapshot_set"))
+        snapshot_count = (
+            Snapshot.objects.filter(crawl_id=OuterRef("pk")).order_by().values("crawl_id").annotate(count=Count("pk")).values("count")
+        )
+        return qs.select_related("schedule", "created_by").annotate(
+            num_snapshots_cached=Coalesce(
+                Subquery(snapshot_count, output_field=IntegerField()),
+                Value(0),
+            ),
+        )
 
     def get_fieldsets(self, request, obj=None):
         return self.fieldsets if obj else self.add_fieldsets

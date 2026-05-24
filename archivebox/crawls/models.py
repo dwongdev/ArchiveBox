@@ -635,12 +635,14 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             # Parse JSONL or plain URL
             try:
                 entry = json.loads(line)
+                snapshot_id = entry.get("id") or entry.get("snapshot_id")
                 url = sanitize_extracted_url(fix_url_from_markdown(str(entry.get("url", "") or "").strip()))
                 depth = entry.get("depth", 0)
                 title = entry.get("title")
                 timestamp = entry.get("timestamp")
                 tags = entry.get("tags", "")
             except json.JSONDecodeError:
+                snapshot_id = None
                 url = sanitize_extracted_url(fix_url_from_markdown(line.strip()))
                 depth = 0
                 title = None
@@ -660,25 +662,34 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             if not self.has_remaining_snapshot_capacity():
                 break
 
-            # Create snapshot if doesn't exist
-            snapshot, created = Snapshot.objects.get_or_create(
-                url=url,
-                crawl=self,
-                defaults={
-                    "depth": depth,
-                    "title": title,
-                    "timestamp": timestamp or str(timezone.now().timestamp()),
-                    "status": Snapshot.INITIAL_STATE,
-                    "retry_at": timezone.now(),
-                    # Note: created_by removed in 0.9.0 - Snapshot inherits from Crawl
-                },
-            )
+            defaults = {
+                "depth": depth,
+                "title": title,
+                "timestamp": timestamp or str(timezone.now().timestamp()),
+                "status": Snapshot.INITIAL_STATE,
+                "retry_at": timezone.now(),
+                # Note: created_by removed in 0.9.0 - Snapshot inherits from Crawl
+            }
+            if snapshot_id:
+                snapshot, created = Snapshot.objects.update_or_create(
+                    id=snapshot_id,
+                    defaults={
+                        **defaults,
+                        "url": url,
+                        "crawl": self,
+                    },
+                )
+            else:
+                snapshot, created = Snapshot.objects.get_or_create(
+                    url=url,
+                    crawl=self,
+                    defaults=defaults,
+                )
 
             if created:
                 created_snapshots.append(snapshot)
-                # Save tags if present
-                if tags:
-                    snapshot.save_tags(tags.split(","))
+            if tags:
+                snapshot.save_tags(tags.split(","))
 
             # Ensure crawl -> snapshot symlink exists for both new and existing snapshots
             try:
