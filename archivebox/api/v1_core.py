@@ -1,7 +1,11 @@
 __package__ = "archivebox.api"
 
 import math
+import json
+import mimetypes
+import re
 from collections import defaultdict
+from pathlib import PurePosixPath
 from uuid import UUID
 from typing import Union, Any, Annotated
 from datetime import datetime, time
@@ -17,7 +21,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.feedgenerator import Rss201rev2Feed
 
-from ninja import Router, Schema, FilterLookup, FilterSchema, Query
+from ninja import Router, Schema, FilterLookup, FilterSchema, Query, File, Form, UploadedFile
 from ninja.pagination import paginate, PaginationBase
 from ninja.errors import HttpError
 
@@ -44,6 +48,9 @@ from archivebox.api.v1_crawls import CrawlSchema
 
 
 router = Router(tags=["Core Models"])
+
+ARCHIVERESULT_UPLOAD_HOOK_NAME = "on_Snapshot__archivebox_browser_extension_upload"
+ARCHIVERESULT_UPLOAD_PLUGIN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 
 
 class CustomPagination(PaginationBase):
@@ -205,6 +212,124 @@ def get_archiveresults(request: HttpRequest, filters: Query[ArchiveResultFilterS
 def get_archiveresult(request: HttpRequest, archiveresult_id: str):
     """Get a specific ArchiveResult by id."""
     return ArchiveResult.objects.get(Q(id__icontains=archiveresult_id))
+
+
+def _normalize_uploaded_archiveresult_plugin(plugin: str) -> str:
+    normalized = str(plugin or "").strip().strip("/")
+    if not ARCHIVERESULT_UPLOAD_PLUGIN_RE.fullmatch(normalized):
+        raise HttpError(400, "Invalid ArchiveResult plugin name")
+    return normalized
+
+
+def _normalize_uploaded_archiveresult_output_path(output_path: str, *, filename: str) -> str:
+    raw_path = str(output_path or filename or "").strip().replace("\\", "/")
+    if not raw_path:
+        raise HttpError(400, "ArchiveResult output path is required")
+
+    path = PurePosixPath(raw_path)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        raise HttpError(400, "Invalid ArchiveResult output path")
+
+    return str(path)
+
+
+def _parse_archiveresult_output_json(output_json: str | None) -> dict[str, Any] | None:
+    if not output_json:
+        return None
+    try:
+        parsed = json.loads(output_json)
+    except json.JSONDecodeError as err:
+        raise HttpError(400, "ArchiveResult output_json must be valid JSON") from err
+    if parsed is None:
+        return None
+    if not isinstance(parsed, dict):
+        raise HttpError(400, "ArchiveResult output_json must be a JSON object")
+    return parsed
+
+
+def _get_snapshot_by_ref(snapshot_id: str):
+    queryset = Snapshot.objects.select_related("crawl__created_by")
+    try:
+        return queryset.get(Q(id__startswith=snapshot_id) | Q(timestamp__startswith=snapshot_id))
+    except Snapshot.DoesNotExist:
+        return queryset.get(Q(id__icontains=snapshot_id))
+
+
+@router.post(
+    "/archiveresults",
+    response=ArchiveResultSchema,
+    url_name="create_archiveresult",
+)
+def create_archiveresult(
+    request: HttpRequest,
+    file: UploadedFile = File(...),
+    snapshot_id: str = Form(...),
+    plugin: str = Form(...),
+    output_path: str = Form(""),
+    hook_name: str = Form(ARCHIVERESULT_UPLOAD_HOOK_NAME),
+    status: str = Form(str(ArchiveResult.StatusChoices.SUCCEEDED)),
+    mime_type: str = Form(""),
+    output_json: str = Form(""),
+):
+    """Create or update an ArchiveResult, optionally attaching its output file."""
+    snapshot = _get_snapshot_by_ref(snapshot_id)
+    plugin_name = _normalize_uploaded_archiveresult_plugin(plugin)
+    relative_output_path = _normalize_uploaded_archiveresult_output_path(output_path, filename=file.name)
+    normalized_status = ArchiveResult.normalize_status(status)
+    parsed_output_json = _parse_archiveresult_output_json(output_json)
+
+    snapshot_dir = snapshot.output_dir
+    plugin_dir = snapshot_dir / plugin_name
+    destination = plugin_dir / relative_output_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with destination.open("wb") as output_file:
+        for chunk in file.chunks():
+            output_file.write(chunk)
+
+    size = destination.stat().st_size
+    guessed_mime = mimetypes.guess_type(relative_output_path)[0]
+    output_mime_type = mime_type or getattr(file, "content_type", None) or guessed_mime or "application/octet-stream"
+    now = timezone.now()
+    result, _created = ArchiveResult.objects.update_or_create(
+        snapshot=snapshot,
+        plugin=plugin_name,
+        hook_name=hook_name or ARCHIVERESULT_UPLOAD_HOOK_NAME,
+        defaults={
+            "status": normalized_status,
+            "output_str": relative_output_path,
+            "output_json": parsed_output_json,
+            "output_files": {
+                relative_output_path: {
+                    "extension": PurePosixPath(relative_output_path).suffix.lower().lstrip("."),
+                    "mimetype": output_mime_type,
+                    "size": size,
+                },
+            },
+            "output_size": size,
+            "output_mimetypes": output_mime_type,
+            "start_ts": now,
+            "end_ts": now,
+        },
+    )
+
+    snapshot_updates = ["modified_at"]
+    if snapshot.downloaded_at is None:
+        snapshot.downloaded_at = now
+        snapshot_updates.append("downloaded_at")
+    if snapshot.status != Snapshot.StatusChoices.SEALED:
+        snapshot.status = Snapshot.StatusChoices.SEALED
+        snapshot.retry_at = None
+        snapshot_updates.extend(["status", "retry_at"])
+    snapshot.save(update_fields=snapshot_updates)
+
+    try:
+        snapshot.ensure_crawl_symlink(snapshot_dir=snapshot_dir)
+        snapshot.write_index_jsonl(output_dir=snapshot_dir)
+    except Exception:
+        pass
+
+    return result
 
 
 ### Snapshot #########################################################################

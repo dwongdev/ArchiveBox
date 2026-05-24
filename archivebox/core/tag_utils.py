@@ -61,10 +61,15 @@ def get_matching_tags(
     created_by: str = "",
     year: str = "",
     has_snapshots: str = "all",
+    with_snapshot_counts: bool = True,
 ) -> QuerySet[Tag]:
-    queryset = Tag.objects.select_related("created_by").annotate(
-        num_snapshots=Count("snapshot_set", distinct=True),
-    )
+    sort = normalize_tag_sort(sort)
+    has_snapshots = normalize_has_snapshots_filter(has_snapshots)
+    needs_snapshot_counts = with_snapshot_counts or sort.startswith("snapshots_") or has_snapshots != "all"
+
+    queryset = Tag.objects.select_related("created_by")
+    if needs_snapshot_counts:
+        queryset = queryset.annotate(num_snapshots=Count("snapshot_set", distinct=True))
 
     query = normalize_tag_name(query)
     if query:
@@ -78,13 +83,11 @@ def get_matching_tags(
     if year:
         queryset = queryset.filter(created_at__year=int(year))
 
-    has_snapshots = normalize_has_snapshots_filter(has_snapshots)
     if has_snapshots == "yes":
         queryset = queryset.filter(num_snapshots__gt=0)
     elif has_snapshots == "no":
         queryset = queryset.filter(num_snapshots=0)
 
-    sort = normalize_tag_sort(sort)
     if sort == "name_asc":
         queryset = queryset.order_by(Lower("name"), "id")
     elif sort == "name_desc":
@@ -99,6 +102,19 @@ def get_matching_tags(
         queryset = queryset.order_by(F("created_at").desc(nulls_last=True), "-id", Lower("name"))
 
     return queryset
+
+
+def add_snapshot_counts(tags: list[Tag]) -> None:
+    tag_ids = [tag.pk for tag in tags]
+    if not tag_ids:
+        return
+
+    counts = {
+        row["tag_id"]: row["num_snapshots"]
+        for row in SnapshotTag.objects.filter(tag_id__in=tag_ids).values("tag_id").annotate(num_snapshots=Count("snapshot_id"))
+    }
+    for tag in tags:
+        tag.num_snapshots = counts.get(tag.pk, 0)
 
 
 def get_tag_creator_choices() -> list[tuple[str, str]]:
@@ -256,16 +272,22 @@ def build_tag_cards(
     year: str = "",
     has_snapshots: str = "all",
 ) -> list[dict[str, Any]]:
+    sort = normalize_tag_sort(sort)
+    has_snapshots = normalize_has_snapshots_filter(has_snapshots)
+    needs_snapshot_count_annotation = sort.startswith("snapshots_") or has_snapshots != "all"
     queryset = get_matching_tags(
         query=query,
         sort=sort,
         created_by=created_by,
         year=year,
         has_snapshots=has_snapshots,
+        with_snapshot_counts=needs_snapshot_count_annotation,
     )
     if limit is not None:
         queryset = queryset[:limit]
 
     tags = list(queryset)
+    if not needs_snapshot_count_annotation:
+        add_snapshot_counts(tags)
     preview_map = _build_snapshot_preview_map(tags, request=request, preview_limit=preview_limit)
     return [build_tag_card(tag, snapshot_previews=preview_map.get(tag.pk, [])) for tag in tags]

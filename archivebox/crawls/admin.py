@@ -652,7 +652,10 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
     def num_snapshots(self, obj):
         # Use cached annotation from get_queryset to avoid N+1
-        return getattr(obj, "num_snapshots_cached", obj.snapshot_set.count())
+        count = getattr(obj, "num_snapshots_cached", None)
+        if count is None:
+            count = obj.snapshot_set.count()
+        return count
 
     def snapshots(self, obj):
         return render_snapshots_list(obj.snapshot_set.all(), crawl=obj)
@@ -818,11 +821,17 @@ class CrawlScheduleAdmin(BaseModelAdmin):
 
     @admin.display(description="# Crawls", ordering="crawl_count")
     def num_crawls(self, obj):
-        return getattr(obj, "crawl_count", obj.crawl_set.count())
+        count = getattr(obj, "crawl_count", None)
+        if count is None:
+            count = obj.crawl_set.count()
+        return count
 
     @admin.display(description="# Snapshots", ordering="snapshot_count")
     def num_snapshots(self, obj):
-        return getattr(obj, "snapshot_count", Snapshot.objects.filter(crawl__schedule=obj).count())
+        count = getattr(obj, "snapshot_count", None)
+        if count is None:
+            count = Snapshot.objects.filter(crawl__schedule=obj).count()
+        return count
 
     def crawls(self, obj):
         return format_html_join(
