@@ -1,7 +1,11 @@
 {% load i18n %}
 
-<article class="abx-admin-card abx-admin-card--{{ model.object_name|default:model.name|slugify }} abx-admin-card--{{ tone|default:'default' }}">
+<article class="abx-admin-card abx-admin-card--{{ model.object_name|default:model.name|slugify }} abx-admin-card--{{ tone|default:'default' }}{% if model.object_name == 'Crawl' %} abx-admin-card--has-action{% endif %}">
+    {% if model.admin_url %}
+    <a class="abx-admin-card__main abx-admin-card__main--link" href="{{ model.admin_url }}">
+    {% else %}
     <div class="abx-admin-card__main">
+    {% endif %}
         <span class="abx-admin-card__icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" role="presentation" focusable="false">
                 {% if model.object_name == "Crawl" %}
@@ -46,11 +50,7 @@
             </svg>
         </span>
         <span class="abx-admin-card__copy">
-            {% if model.admin_url %}
-                <a class="abx-admin-card__title" href="{{ model.admin_url }}">{{ model.name }}</a>
-            {% else %}
-                <strong class="abx-admin-card__title">{{ model.name }}</strong>
-            {% endif %}
+            <strong class="abx-admin-card__title">{{ model.name }}</strong>
             <span class="abx-admin-card__text">
                 {% if model.object_name == "Crawl" %}
                     Create and monitor URL collection jobs.
@@ -93,15 +93,14 @@
                 {% endif %}
             </span>
         </span>
+    {% if model.admin_url %}
+    </a>
+    {% else %}
     </div>
-    <div class="abx-admin-card__actions">
-        {% if model.add_url %}
-            <a class="abx-admin-action abx-admin-action--add" href="{{ model.add_url }}">{% translate "Add" %}</a>
-        {% endif %}
-        {% if model.admin_url %}
-            <a class="abx-admin-action" href="{{ model.admin_url }}">
-                {% if model.view_only %}{% translate "View" %}{% else %}{% translate "Manage" %}{% endif %}
-            </a>
-        {% endif %}
-    </div>
+    {% endif %}
+    {% if model.object_name == "Crawl" %}
+        <div class="abx-admin-card__actions">
+            <a class="abx-admin-action abx-admin-action--add" href="{% url 'add' %}">{% translate "Add" %}</a>
+        </div>
+    {% endif %}
 </article>
