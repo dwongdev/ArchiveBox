@@ -128,6 +128,15 @@
                                     {% endif %}
                                     <div class="help-text">0 means unlimited per snapshot. Accepts bytes or units like <code>45mb</code> and <code>1gb</code>.</div>
                                 </div>
+
+                                <div class="crawl-limit-field">
+                                    {{ form.crawl_max_concurrent_snapshots.label_tag }}
+                                    {{ form.crawl_max_concurrent_snapshots }}
+                                    {% if form.crawl_max_concurrent_snapshots.errors %}
+                                        <div class="error">{{ form.crawl_max_concurrent_snapshots.errors }}</div>
+                                    {% endif %}
+                                    <div class="help-text">Caps how many snapshots from this crawl archive at the same time.</div>
+                                </div>
                             </div>
                         </div>
 
@@ -171,8 +180,6 @@
 
                     <div class="plugin-presets">
                         <span class="preset-label">Quick Select:</span>
-                        <button type="button" class="preset-btn" data-preset="quick-archive">📦 Quick Archive</button>
-                        <button type="button" class="preset-btn" data-preset="full-chrome">🌐 Full Chrome</button>
                         <button type="button" class="preset-btn" data-preset="text-only">📄 Text Only</button>
                         <button type="button" class="preset-btn" data-preset="select-all">✓ Select All</button>
                         <button type="button" class="preset-btn" data-preset="clear-all">✗ Clear All</button>
@@ -292,12 +299,12 @@
 
                 function getRequiredSearchCheckbox() {
                     if (!requiredSearchPlugin) return null;
-                    return document.querySelector(`input[name="search_plugins"][value="${requiredSearchPlugin}"]`);
+                    return document.querySelector(`.plugin-section-toggle[value="${requiredSearchPlugin}"]`);
                 }
 
                 function getPluginCheckbox(pluginName) {
                     if (!pluginName) return null;
-                    return document.querySelector(`.plugin-checkboxes input[type="checkbox"][value="${pluginName}"]`);
+                    return document.querySelector(`.plugin-section-toggle[value="${pluginName}"]`);
                 }
 
                 function getRequiredPlugins(pluginName) {
@@ -367,7 +374,7 @@
                 }
 
                 function syncEnabledPluginsConfig() {
-                    const selectedPlugins = Array.from(document.querySelectorAll('.plugin-checkboxes input[type="checkbox"]:checked'))
+                    const selectedPlugins = Array.from(document.querySelectorAll('.plugin-section-toggle:checked'))
                         .map(cb => cb.value)
                         .filter(Boolean)
                         .sort((left, right) => left.localeCompare(right));
@@ -387,6 +394,11 @@
                 function applyPersonaConfig(personaName) {
                     const personaData = personaConfigMap[personaName];
                     if (!personaData) return;
+                    const concurrencyInput = document.querySelector('input[name="crawl_max_concurrent_snapshots"]');
+                    const concurrencyValue = personaData.effective_config?.CRAWL_MAX_CONCURRENT_SNAPSHOTS;
+                    if (concurrencyInput && concurrencyValue) {
+                        concurrencyInput.value = concurrencyValue;
+                    }
                     if (typeof window.archiveboxSetPluginConfigValues === 'function') {
                         window.archiveboxSetPluginConfigValues(personaData.effective_config || {}, personaData.binary_urls || {});
                     }
@@ -429,7 +441,7 @@
                 }
 
                 function normalizePluginSelections() {
-                    const checkedPlugins = Array.from(document.querySelectorAll('.plugin-checkboxes input[type="checkbox"]:checked'))
+                    const checkedPlugins = Array.from(document.querySelectorAll('.plugin-section-toggle:checked'))
                         .map(cb => cb.value)
                         .filter(Boolean);
                     checkedPlugins.forEach(pluginName => ensureRequiredPluginsChecked(pluginName));
@@ -1041,15 +1053,13 @@
 
                 // Plugin Presets
                 const presetConfigs = {
-                    'quick-archive': ['screenshot', 'dom', 'favicon', 'wget', 'title'],
-                    'full-chrome': ['chrome', 'screenshot', 'pdf', 'dom', 'singlefile', 'consolelog', 'redirects', 'responses', 'ssl', 'headers', 'title', 'accessibility', 'seo'],
                     'text-only': ['wget', 'readability', 'mercury', 'htmltotext', 'title', 'favicon']
                 };
 
                 document.querySelectorAll('.preset-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const preset = this.dataset.preset;
-                        const allCheckboxes = document.querySelectorAll('.plugin-checkboxes input[type="checkbox"]');
+                        const allCheckboxes = document.querySelectorAll('.plugin-section-toggle');
                         const requiredSearchPreference = getStoredPluginPreference(requiredSearchPlugin);
 
                         if (preset === 'select-all') {
@@ -1083,7 +1093,7 @@
                         const group = btn.dataset.group;
                         const container = document.getElementById(group + '-plugins');
                         if (!container) return;
-                        const checkboxes = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+                        const checkboxes = Array.from(container.querySelectorAll('.plugin-section-toggle'));
                         const allChecked = checkboxes.length > 0 && checkboxes.every(cb => cb.checked);
                         btn.textContent = allChecked ? 'Deselect All Chrome' : 'Select All Chrome';
                     });
@@ -1095,7 +1105,7 @@
                         const container = document.getElementById(group + '-plugins');
                         if (!container) return;
 
-                        const checkboxes = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+                        const checkboxes = Array.from(container.querySelectorAll('.plugin-section-toggle'));
                         const allChecked = checkboxes.length > 0 && checkboxes.every(cb => cb.checked);
                         const requiredSearchPreference = getStoredPluginPreference(requiredSearchPlugin);
 
@@ -1112,7 +1122,7 @@
                     });
                 });
 
-                document.querySelectorAll('.plugin-checkboxes input[type="checkbox"]').forEach(checkbox => {
+                document.querySelectorAll('.plugin-section-toggle').forEach(checkbox => {
                     checkbox.addEventListener('change', function() {
                         if (this.checked) {
                             ensureRequiredPluginsChecked(this.value);

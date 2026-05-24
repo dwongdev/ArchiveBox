@@ -231,6 +231,8 @@ class SnapshotView(View):
             archiveresults.values(),
             key=lambda r: all_types.index(r["name"]) if r["name"] in all_types else -r["size"],
         )
+        if best_result["path"] == "about:blank" and ordered_outputs:
+            best_result = ordered_outputs[0]
         non_compact_outputs = [out for out in ordered_outputs if not out.get("is_compact") and not out.get("is_metadata")]
         compact_outputs = [out for out in ordered_outputs if out.get("is_compact") or out.get("is_metadata")]
         tag_widget = TagEditorWidget()
@@ -1058,6 +1060,7 @@ class AddView(UserPassesTestMixin, FormView):
         max_urls = int(form.cleaned_data.get("max_urls") or 0)
         crawl_max_size = int(form.cleaned_data.get("crawl_max_size") or 0)
         snapshot_max_size = int(form.cleaned_data.get("snapshot_max_size") or 0)
+        crawl_max_concurrent_snapshots = int(form.cleaned_data["crawl_max_concurrent_snapshots"])
         plugins = ",".join(form.cleaned_data.get("plugins", []))
         schedule = form.cleaned_data.get("schedule", "").strip()
         persona = form.cleaned_data.get("persona")
@@ -1098,6 +1101,7 @@ class AddView(UserPassesTestMixin, FormView):
             "DEPTH": depth,
             "PLUGINS": plugins or "",
             "DEFAULT_PERSONA": persona_name,
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": crawl_max_concurrent_snapshots,
         }
 
         # Merge custom config overrides
@@ -1232,6 +1236,7 @@ class WebAddView(AddView):
                 "max_urls": defaults_form.fields["max_urls"].initial or 0,
                 "crawl_max_size": defaults_form.fields["crawl_max_size"].initial or "0",
                 "snapshot_max_size": defaults_form.fields["snapshot_max_size"].initial or "0",
+                "crawl_max_concurrent_snapshots": defaults_form.fields["crawl_max_concurrent_snapshots"].initial,
                 "persona": defaults_form.fields["persona"].initial or "Default",
                 "config": "{}",
             },

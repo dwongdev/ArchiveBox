@@ -48,6 +48,23 @@ class BinaryService(BaseService):
         )
         cached = None
         if installed is not None:
+            from abxpkg import BinProvider, PROVIDER_CLASS_BY_NAME
+
+            binary_env: dict[str, str] = {}
+            provider_name = (installed.binprovider or installed.binproviders.split(",", 1)[0]).strip()
+            provider_class = PROVIDER_CLASS_BY_NAME.get(provider_name)
+            if provider_class is not None:
+                provider = provider_class()
+                overrides = installed.overrides if isinstance(installed.overrides, dict) else {}
+                provider_overrides = overrides.get(provider_name)
+                if isinstance(provider_overrides, dict):
+                    provider = provider.get_provider_with_overrides(
+                        overrides={installed.name: provider_overrides},
+                    )
+                binary_env = BinProvider.build_exec_env(
+                    providers=[provider],
+                    base_env={},
+                )
             cached = {
                 "abspath": installed.abspath,
                 "version": installed.version or "",
@@ -56,6 +73,7 @@ class BinaryService(BaseService):
                 "binprovider": installed.binprovider or "",
                 "machine_id": str(installed.machine_id),
                 "overrides": installed.overrides or {},
+                "env": binary_env,
             }
         if cached is not None:
             binary_event = BinaryEvent(
@@ -68,6 +86,7 @@ class BinaryService(BaseService):
                 binproviders=event.binproviders or cached["binproviders"],
                 binprovider=cached["binprovider"],
                 overrides=event.overrides or cached["overrides"],
+                env=cached["env"],
                 binary_id=event.binary_id,
                 machine_id=cached["machine_id"],
             )

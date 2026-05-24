@@ -53,6 +53,7 @@ def add(
     max_urls: int = 0,
     crawl_max_size: int | str = 0,
     snapshot_max_size: int | str = 0,
+    crawl_max_concurrent_snapshots: int | None = None,
     tag: str = "",
     url_allowlist: str = "",
     url_denylist: str = "",
@@ -83,6 +84,10 @@ def add(
     max_urls = int(max_urls or 0)
     crawl_max_size = parse_filesize_to_bytes(crawl_max_size)
     snapshot_max_size = parse_filesize_to_bytes(snapshot_max_size)
+    config = get_config()
+    if crawl_max_concurrent_snapshots is None:
+        crawl_max_concurrent_snapshots = config.CRAWL_MAX_CONCURRENT_SNAPSHOTS
+    crawl_max_concurrent_snapshots = int(crawl_max_concurrent_snapshots)
 
     if depth not in (0, 1, 2, 3, 4):
         raise ValueError("Depth must be 0-4")
@@ -92,6 +97,8 @@ def add(
         raise ValueError("crawl_max_size must be >= 0")
     if snapshot_max_size < 0:
         raise ValueError("snapshot_max_size must be >= 0")
+    if crawl_max_concurrent_snapshots < 1:
+        raise ValueError("crawl_max_concurrent_snapshots must be >= 1")
 
     # import models once django is set up
     from archivebox.crawls.models import Crawl
@@ -101,7 +108,6 @@ def add(
     from archivebox.misc.system import get_dir_size
     from archivebox.services.runner import run_crawl
 
-    config = get_config()
     created_by_id = created_by_id or get_or_create_system_user_pk()
     started_at = timezone.now()
     if update is None:
@@ -157,6 +163,7 @@ def add(
             "OVERWRITE": overwrite,
             "PLUGINS": plugins,
             "DEFAULT_PERSONA": persona_name,
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": crawl_max_concurrent_snapshots,
             "PARSER": parser,
             **({"URL_ALLOWLIST": url_allowlist} if url_allowlist else {}),
             **({"URL_DENYLIST": url_denylist} if url_denylist else {}),
@@ -260,6 +267,7 @@ def add(
 @click.option("--max-urls", type=int, default=0, help="Maximum number of URLs to snapshot for this crawl (0 = unlimited)")
 @click.option("--crawl-max-size", default="0", help="Maximum total crawl size in bytes or units like 45mb / 1gb (0 = unlimited)")
 @click.option("--snapshot-max-size", default="0", help="Maximum per-snapshot size in bytes or units like 45mb / 1gb (0 = unlimited)")
+@click.option("--crawl-max-concurrent-snapshots", type=int, default=None, help="Maximum snapshots to archive concurrently within one crawl")
 @click.option("--tag", "-t", default="", help="Comma-separated list of tags to add to each snapshot e.g. tag1,tag2,tag3")
 @click.option("--url-allowlist", "--domain-allowlist", default="", help="Comma-separated URL/domain allowlist for this crawl")
 @click.option("--url-denylist", "--domain-denylist", default="", help="Comma-separated URL/domain denylist for this crawl")
@@ -289,6 +297,8 @@ def main(**kwargs):
         kwargs["snapshot_max_size"] = parse_filesize_to_bytes(kwargs.get("snapshot_max_size"))
     except ValueError as err:
         raise click.BadParameter(str(err), param_hint="--snapshot-max-size") from err
+    if kwargs.get("crawl_max_concurrent_snapshots") is not None and int(kwargs["crawl_max_concurrent_snapshots"]) < 1:
+        raise click.BadParameter("crawl_max_concurrent_snapshots must be at least 1.", param_hint="--crawl-max-concurrent-snapshots")
 
     add(urls=urls, **kwargs)
 

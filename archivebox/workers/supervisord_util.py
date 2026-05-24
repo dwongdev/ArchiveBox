@@ -41,6 +41,9 @@ RUNNER_WORKER = {
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", "--daemon"]),
     "autostart": "false",
     "autorestart": "true",
+    "stopasgroup": "true",
+    "killasgroup": "true",
+    "stopwaitsecs": "30",
     "stdout_logfile": "logs/worker_runner.log",
     "redirect_stderr": "true",
 }

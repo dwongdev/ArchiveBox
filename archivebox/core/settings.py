@@ -439,6 +439,7 @@ LOGGING = SETTINGS_LOGGING
 # Add default webhook configuration to the User model
 SIGNAL_WEBHOOKS_CUSTOM_MODEL = "archivebox.api.models.OutboundWebhook"
 SIGNAL_WEBHOOKS: dict[str, object] = {
+    "TIMEOUT": 30,
     "TASK_HANDLER": "archivebox.api.webhooks.transaction_on_commit_task_handler",
     "ERROR_HANDLER": "archivebox.api.webhooks.warning_error_handler",
     "HOOKS": {

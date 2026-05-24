@@ -194,6 +194,13 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
         else:
             config.pop("SNAPSHOT_MAX_SIZE", None)
 
+        if "CRAWL_MAX_CONCURRENT_SNAPSHOTS" in config:
+            raw_concurrency = config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]
+            if raw_concurrency in (None, ""):
+                config.pop("CRAWL_MAX_CONCURRENT_SNAPSHOTS", None)
+            else:
+                config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = max(1, int(raw_concurrency))
+
         if config != (self.config or {}):
             self.config = config
             update_fields = kwargs.get("update_fields")

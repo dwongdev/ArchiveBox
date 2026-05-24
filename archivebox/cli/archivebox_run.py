@@ -259,6 +259,7 @@ def run_runner(daemon: bool = False) -> int:
 
     Process.cleanup_stale_running()
     Process.cleanup_orphaned_workers()
+    Process.cleanup_orphaned_chrome()
     recover_orphaned_snapshots()
     recover_orphaned_crawls()
     Machine.current()

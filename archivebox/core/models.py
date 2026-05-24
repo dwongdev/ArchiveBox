@@ -2614,6 +2614,8 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
         embeddable_exts = {
             "html",
             "htm",
+            "mhtml",
+            "mht",
             "pdf",
             "txt",
             "md",
@@ -3459,6 +3461,8 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
             "output.html",
             "content.html",
             "article.html",
+            "snapshot.mhtml",
+            "snapshot.mht",
             "output.pdf",
             "index.pdf",
             "content.txt",
@@ -3474,7 +3478,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
                     return candidate
 
         ext_groups = (
-            (".html", ".htm", ".pdf"),
+            (".html", ".htm", ".mhtml", ".mht", ".pdf"),
             (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"),
             (".json", ".jsonl", ".txt", ".md", ".csv", ".tsv"),
             (".mp4", ".webm", ".mp3", ".opus", ".ogg", ".wav"),

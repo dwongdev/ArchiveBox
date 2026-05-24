@@ -2348,10 +2348,10 @@ class Process(models.Model):
             Number of zombie Chrome processes killed
         """
         import subprocess
-        from pathlib import Path
+        from importlib.resources import files
         from archivebox.config.common import get_config
 
-        chrome_utils = Path(__file__).parent.parent / "plugins" / "chrome" / "chrome_utils.js"
+        chrome_utils = files("abx_plugins.plugins.chrome").joinpath("chrome_utils.js")
         if not chrome_utils.exists():
             return 0
 

@@ -173,8 +173,6 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
 
 
 class CrawlRunner:
-    MAX_CONCURRENT_SNAPSHOTS = 8
-
     def __init__(
         self,
         crawl,
@@ -207,7 +205,7 @@ class CrawlRunner:
         self.selected_plugins = selected_plugins
         self.initial_snapshot_ids = snapshot_ids
         self.snapshot_tasks: dict[str, asyncio.Task[None]] = {}
-        self.snapshot_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_SNAPSHOTS)
+        self.snapshot_semaphore = asyncio.Semaphore(1)
         self.persona = None
         self.base_config: dict[str, Any] = {}
         self.derived_config: dict[str, Any] = {}
@@ -244,6 +242,8 @@ class CrawlRunner:
         root_snapshot_id: str | None = None
         try:
             snapshot_ids = await sync_to_async(self.load_run_state, thread_sensitive=True)()
+            max_concurrent_snapshots = max(1, int(self.base_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS))
+            self.snapshot_semaphore = asyncio.Semaphore(max_concurrent_snapshots)
             live_ui = self._create_live_ui()
             with live_ui if live_ui is not None else nullcontext():
                 await heartbeat.start()

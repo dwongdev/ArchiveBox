@@ -1,7 +1,7 @@
 __package__ = "archivebox.core"
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -28,80 +28,123 @@ DEPTH_CHOICES = (
 PLUGIN_CONFIG_FIELD_PREFIX = "plugin_config__"
 PLUGIN_GROUP_DEFINITIONS = (
     (
-        "chrome_plugins",
-        "Chrome-dependent plugins",
+        "main_plugins",
+        "Main",
         "",
-        "chrome-plugins",
-        "chrome",
-        {
-            "accessibility",
-            "chrome",
-            "consolelog",
+        "",
+        "",
+        (
             "dom",
-            "headers",
-            "parse_dom_outlinks",
-            "pdf",
-            "redirects",
-            "responses",
             "screenshot",
-            "seo",
+            "pdf",
             "singlefile",
-            "ssl",
-            "staticfile",
-            "title",
-        },
+            "wget",
+            "archivedotorg",
+        ),
     ),
     (
-        "archiving_plugins",
-        "Archiving",
+        "page_setup_plugins",
+        "Page Setup",
         "",
         "",
         "",
-        {
-            "archivedotorg",
-            "defuddle",
-            "favicon",
-            "forumdl",
+        (
+            "chrome",
+            "infiniscroll",
+            "modalcloser",
+            "ublock",
+            "istilldontcareaboutcookies",
+            "twocaptcha",
+            "claudechrome",
+        ),
+    ),
+    (
+        "media_plugins",
+        "Media",
+        "",
+        "",
+        "",
+        (
+            "staticfile",
+            "responses",
+            "ytdlp",
             "gallerydl",
             "git",
-            "htmltotext",
-            "mercury",
-            "papersdl",
-            "readability",
-            "trafilatura",
-            "wget",
-            "ytdlp",
-        },
+        ),
     ),
     (
-        "parsing_plugins",
-        "Parsing",
+        "text_plugins",
+        "Text",
         "",
         "",
         "",
-        {
+        (
+            "readability",
+            "htmltotext",
+            "defuddle",
+            "forumdl",
+            "mercury",
+            "trafilatura",
+            "liteparse",
+            "opendataloader",
+            "papersdl",
+        ),
+    ),
+    (
+        "metadata_plugins",
+        "Metadata",
+        "",
+        "",
+        "",
+        (
+            "title",
+            "favicon",
+            "headers",
+            "redirects",
+            "accessibility",
+            "consolelog",
+            "sslcerts",
+            "dns",
+            "seo",
+            "hashes",
+        ),
+    ),
+    (
+        "postprocessing_plugins",
+        "Postprocessing",
+        "",
+        "",
+        "",
+        (
+            "parse_dom_outlinks",
             "parse_html_urls",
             "parse_jsonl_urls",
             "parse_netscape_urls",
             "parse_rss_urls",
             "parse_txt_urls",
-        },
+            "claudecode",
+            "claudecodecleanup",
+            "claudecodeextract",
+        ),
     ),
-    (
-        "search_plugins",
-        "Search",
-        "(defaults to SEARCH_BACKEND_ENGINE)",
-        "",
-        "",
-        {
-            "search_backend_ripgrep",
-            "search_backend_sonic",
-            "search_backend_sqlite",
-        },
-    ),
-    ("binary_plugins", "Binary Providers", "", "", "", {"apt", "brew", "custom", "env", "npm", "pip"}),
-    ("extension_plugins", "Browser Extensions", "", "", "", {"twocaptcha", "istilldontcareaboutcookies", "ublock"}),
 )
+HIDDEN_PLUGIN_CONFIG_UI_PLUGINS = {
+    "apt",
+    "base",
+    "bash",
+    "brew",
+    "cargo",
+    "chromewebstore",
+    "env",
+    "media",
+    "npm",
+    "pip",
+    "puppeteer",
+    "search_backend_ripgrep",
+    "search_backend_sonic",
+    "search_backend_sqlite",
+    "ssl",
+}
 
 
 def get_plugin_choices():
@@ -224,25 +267,21 @@ class PluginConfigFormMixin:
         runtime_config = runtime_config or get_config()
         self.plugin_config_binary_urls = get_plugin_config_binary_urls(runtime_config)
         grouped_plugins = set().union(*(group[-1] for group in PLUGIN_GROUP_DEFINITIONS))
+        other_plugins = tuple(sorted(set(all_plugins) - grouped_plugins - HIDDEN_PLUGIN_CONFIG_UI_PLUGINS))
 
         for field_name, *_rest, plugin_names in PLUGIN_GROUP_DEFINITIONS:
             if field_name in self.fields:
                 get_choice_field(self, field_name).choices = [
-                    (p, get_plugin_choice_label(p, plugin_configs)) for p in sorted(all_plugins) if p in plugin_names
+                    (p, get_plugin_choice_label(p, plugin_configs)) for p in plugin_names if p in all_plugins
                 ]
 
         if "other_plugins" in self.fields:
-            get_choice_field(self, "other_plugins").choices = [
-                (p, get_plugin_choice_label(p, plugin_configs)) for p in sorted(all_plugins) if p not in grouped_plugins
-            ]
+            get_choice_field(self, "other_plugins").choices = [(p, get_plugin_choice_label(p, plugin_configs)) for p in other_plugins]
 
-        if "search_plugins" in self.fields:
-            required_search_plugin = f"search_backend_{get_config().SEARCH_BACKEND_ENGINE}".strip()
-            search_choices = [choice[0] for choice in get_choice_field(self, "search_plugins").choices]
-            if required_search_plugin in search_choices:
-                get_choice_field(self, "search_plugins").initial = [required_search_plugin]
-
-        group_specs = (*PLUGIN_GROUP_DEFINITIONS, ("other_plugins", "Other", "", "", "", set(all_plugins) - grouped_plugins))
+        group_specs = (
+            *PLUGIN_GROUP_DEFINITIONS,
+            ("other_plugins", "Other", "", "", "", other_plugins),
+        )
         self.plugin_groups = [
             {
                 "field_name": field_name,
@@ -260,7 +299,7 @@ class PluginConfigFormMixin:
     def _build_plugin_cards(
         self,
         field_name: str,
-        plugin_names: set[str],
+        plugin_names: Iterable[str],
         plugin_configs: dict[str, dict[str, Any]],
         runtime_config: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
@@ -268,7 +307,8 @@ class PluginConfigFormMixin:
             choices = list(get_choice_field(self, field_name).choices)
             selected_values = set(self.data.getlist(field_name)) if self.is_bound else set(get_choice_field(self, field_name).initial or [])
         else:
-            choices = [(p, get_plugin_choice_label(p, plugin_configs)) for p in sorted(get_plugins()) if p in plugin_names]
+            all_plugins = get_plugins()
+            choices = [(p, get_plugin_choice_label(p, plugin_configs)) for p in plugin_names if p in all_plugins]
             selected_values = set()
 
         cards = []
@@ -517,6 +557,17 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             },
         ),
     )
+    crawl_max_concurrent_snapshots = forms.IntegerField(
+        label="Max concurrent snapshots",
+        required=False,
+        min_value=1,
+        widget=forms.NumberInput(
+            attrs={
+                "min": 1,
+                "step": 1,
+            },
+        ),
+    )
     notes = forms.CharField(
         label="Notes",
         strip=True,
@@ -534,44 +585,44 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
     )
 
     # Plugin groups
-    chrome_plugins = forms.MultipleChoiceField(
-        label="Chrome-dependent plugins",
+    main_plugins = forms.MultipleChoiceField(
+        label="Main",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],  # populated in __init__
     )
-    archiving_plugins = forms.MultipleChoiceField(
-        label="Archiving",
+    page_setup_plugins = forms.MultipleChoiceField(
+        label="Page Setup",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
     )
-    parsing_plugins = forms.MultipleChoiceField(
-        label="Parsing",
+    media_plugins = forms.MultipleChoiceField(
+        label="Media",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
     )
-    search_plugins = forms.MultipleChoiceField(
-        label="Search",
+    text_plugins = forms.MultipleChoiceField(
+        label="Text",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
     )
-    binary_plugins = forms.MultipleChoiceField(
-        label="Binary providers",
+    metadata_plugins = forms.MultipleChoiceField(
+        label="Metadata",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
     )
-    extension_plugins = forms.MultipleChoiceField(
-        label="Browser extensions",
+    postprocessing_plugins = forms.MultipleChoiceField(
+        label="Postprocessing",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
     )
     other_plugins = forms.MultipleChoiceField(
-        label="Other plugins",
+        label="Other",
         required=False,
         widget=forms.CheckboxSelectMultiple,
         choices=[],
@@ -613,6 +664,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         default_persona = Persona.get_or_create_default()
         self.fields["persona"].queryset = Persona.objects.order_by("name")
         self.fields["persona"].initial = default_persona.name
+        self.fields["crawl_max_concurrent_snapshots"].initial = get_config(persona=default_persona).CRAWL_MAX_CONCURRENT_SNAPSHOTS
 
         selected_persona = default_persona
         if self.is_bound:
@@ -625,12 +677,12 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         # Combine all plugin groups into single list
         all_selected_plugins = []
         for field in [
-            "chrome_plugins",
-            "archiving_plugins",
-            "parsing_plugins",
-            "search_plugins",
-            "binary_plugins",
-            "extension_plugins",
+            "main_plugins",
+            "page_setup_plugins",
+            "media_plugins",
+            "text_plugins",
+            "metadata_plugins",
+            "postprocessing_plugins",
             "other_plugins",
         ]:
             selected = cleaned_data.get(field)
@@ -694,6 +746,15 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             raise forms.ValidationError(str(err))
         if value < 0:
             raise forms.ValidationError("Max snapshot size must be 0 or a positive number of bytes.")
+        return value
+
+    def clean_crawl_max_concurrent_snapshots(self):
+        value = self.cleaned_data.get("crawl_max_concurrent_snapshots")
+        if value in (None, ""):
+            value = get_config().CRAWL_MAX_CONCURRENT_SNAPSHOTS
+        value = int(value)
+        if value < 1:
+            raise forms.ValidationError("Max concurrent snapshots must be at least 1.")
         return value
 
     def clean_schedule(self):

@@ -1,9 +1,12 @@
 __package__ = "archivebox.api"
 
+from django import forms
 from django.contrib import admin
 from django.http import HttpRequest
-from signal_webhooks.admin import WebhookAdmin
-from signal_webhooks.utils import get_webhook_model
+from django.utils.text import capfirst
+from signal_webhooks.admin import WebhookAdmin, WebhookModelForm
+from signal_webhooks.settings import webhook_settings
+from signal_webhooks.utils import get_webhook_model, model_from_reference
 
 from archivebox.base_models.admin import BaseModelAdmin
 
@@ -50,7 +53,21 @@ class APITokenAdmin(BaseModelAdmin):
     list_per_page = 100
 
 
+class OutboundWebhookAdminForm(WebhookModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["ref"] = forms.ChoiceField(
+            label=self.fields["ref"].label,
+            help_text=self.fields["ref"].help_text,
+            choices=[
+                (ref, f"{capfirst(model_from_reference(ref, check_hooks=False)._meta.verbose_name_plural)} ({ref})")
+                for ref in sorted(webhook_settings.HOOKS)
+            ],
+        )
+
+
 class CustomWebhookAdmin(WebhookAdmin, BaseModelAdmin):
+    form = OutboundWebhookAdminForm
     list_display = ("created_at", "created_by", "id", *WebhookAdmin.list_display)
     sort_fields = _webhook_fields("created_at", "created_by", "id", "ref", "endpoint", "last_success", "last_failure")
     readonly_fields = _webhook_fields("created_at", "modified_at", *WebhookAdmin.readonly_fields)

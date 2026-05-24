@@ -264,6 +264,8 @@ mimetypes.add_type("text/csv", ".csv")
 mimetypes.add_type("text/tab-separated-values", ".tsv")
 mimetypes.add_type("application/xml", ".xml")
 mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("multipart/related", ".mhtml")
+mimetypes.add_type("multipart/related", ".mht")
 
 try:
     _markdown = getattr(importlib.import_module("markdown"), "markdown")

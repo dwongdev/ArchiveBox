@@ -251,6 +251,10 @@ class ArchivingConfig(BaseConfigSet):
     MAX_DEPTH: int = Field(default=0)
     CRAWL_MAX_URLS: int = Field(default=0)
     CRAWL_MAX_SIZE: int = Field(default=0)
+    CRAWL_MAX_CONCURRENT_SNAPSHOTS: int = Field(
+        default=4,
+        description="Maximum number of snapshots to archive concurrently within one crawl.",
+    )
     SNAPSHOT_MAX_SIZE: int = Field(default=0)
 
     RESOLUTION: str = Field(default="1440,2000")

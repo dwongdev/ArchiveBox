@@ -46,6 +46,7 @@ def test_add_view_renders_tag_editor_and_url_filter_fields(client, admin_user, m
     assert 'name="max_urls"' in body
     assert 'name="crawl_max_size"' in body
     assert 'name="snapshot_max_size"' in body
+    assert 'name="crawl_max_concurrent_snapshots"' in body
     assert '<input type="text" name="notes"' in body
     assert body.index('name="persona"') < body.index("<h3>Crawl Plugins</h3>")
     assert "data-url-regex=" in body
@@ -91,7 +92,7 @@ def test_add_view_embeds_selected_persona_config_for_ui_hydration(client, admin_
     assert persona_config_map["Private"]["effective_config"]["YTDLP_COOKIES_FILE"] == "/tmp/archivebox-private-cookies.txt"
 
 
-def test_add_view_checks_configured_search_backend_by_default(client, monkeypatch):
+def test_add_view_hides_search_backend_plugins(client, monkeypatch):
     monkeypatch.setenv("PUBLIC_ADD_VIEW", "true")
     monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "sqlite")
 
@@ -99,10 +100,10 @@ def test_add_view_checks_configured_search_backend_by_default(client, monkeypatc
     body = response.content.decode()
 
     assert response.status_code == 200
-    assert re.search(
-        r'<input type="checkbox" name="search_plugins" value="search_backend_sqlite"[^>]* checked\b',
-        body,
-    )
+    assert not re.search(r'<input type="checkbox"[^>]*value="search_backend_sqlite"', body)
+    assert 'data-plugin-name="search_backend_ripgrep"' not in body
+    assert 'data-plugin-name="search_backend_sonic"' not in body
+    assert 'data-plugin-name="search_backend_sqlite"' not in body
     assert "const requiredSearchPlugin = 'search_backend_sqlite';" in body
 
 
@@ -119,6 +120,7 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
             "max_urls": "3",
             "crawl_max_size": "45mb",
             "snapshot_max_size": "5mb",
+            "crawl_max_concurrent_snapshots": "4",
             "url_filters_allowlist": "example.com\n*.example.com",
             "url_filters_denylist": "cdn.example.com",
             "notes": "Created from /add/",
@@ -143,6 +145,7 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
     assert crawl.config["CRAWL_MAX_URLS"] == 3
     assert crawl.config["CRAWL_MAX_SIZE"] == 45 * 1024 * 1024
     assert crawl.config["SNAPSHOT_MAX_SIZE"] == 5 * 1024 * 1024
+    assert crawl.config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] == 4
     assert crawl.config["URL_ALLOWLIST"] == "example.com\n*.example.com"
     assert crawl.config["URL_DENYLIST"] == "cdn.example.com"
     assert "OVERWRITE" not in crawl.config
@@ -208,7 +211,7 @@ def test_add_view_applies_plugin_config_overrides(client, admin_user, monkeypatc
             "schedule": "",
             "persona": "Default",
             "index_only": "",
-            "archiving_plugins": ["wget"],
+            "main_plugins": ["wget"],
             "plugin_config__wget__WGET_TIMEOUT": "77",
             "plugin_config__wget__WGET_WARC_ENABLED": "false",
             "config": "{}",

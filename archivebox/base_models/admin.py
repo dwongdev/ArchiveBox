@@ -44,10 +44,27 @@ class KeyValueWidget(forms.Widget):
     def _get_config_options(self) -> dict[str, ConfigOption]:
         """Get available config options from plugins."""
         try:
+            from archivebox.config.common import ArchiveBoxConfig
             from archivebox.hooks import discover_plugin_configs
 
-            plugin_configs = discover_plugin_configs()
             options: dict[str, ConfigOption] = {}
+            skipped_core_keys = {"ABX_RUNTIME", "DATA_DIR", "CRAWL_DIR", "CRAWL_OUTPUT_DIR", "SNAP_DIR"}
+            for key, field in ArchiveBoxConfig.model_fields.items():
+                if key in skipped_core_keys or key in ArchiveBoxConfig.computed_config_keys:
+                    continue
+                default = field.default
+                try:
+                    json.dumps(default)
+                except TypeError:
+                    default = str(default)
+                options[key] = {
+                    "plugin": "archivebox",
+                    "type": str(field.annotation),
+                    "default": default,
+                    "description": field.description or "",
+                }
+
+            plugin_configs = discover_plugin_configs()
             for plugin_name, schema in plugin_configs.items():
                 for key, prop in schema.get("properties", {}).items():
                     option: ConfigOption = {
