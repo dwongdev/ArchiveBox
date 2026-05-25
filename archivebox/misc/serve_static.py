@@ -61,8 +61,38 @@ def _hash_for_path(document_root: Path, rel_path: str) -> str | None:
     return file_map.get(rel_path)
 
 
+def _resolve_archive_path(document_root: str | Path, rel_path: str) -> tuple[Path, str]:
+    rel_path = posixpath.normpath(rel_path).lstrip("/") if rel_path else ""
+    fullpath = Path(safe_join(document_root, rel_path))
+    if os.access(fullpath, os.R_OK):
+        return fullpath, rel_path
+
+    root = Path(document_root)
+    current = root
+    resolved_parts: list[str] = []
+    for part in Path(rel_path).parts:
+        exact = current / part
+        if os.access(exact, os.R_OK):
+            current = exact
+            resolved_parts.append(part)
+            continue
+
+        folded_part = part.casefold()
+        try:
+            match = next((child for child in current.iterdir() if child.name.casefold() == folded_part), None)
+        except OSError:
+            match = None
+        if match is None:
+            return fullpath, rel_path
+
+        current = match
+        resolved_parts.append(match.name)
+
+    return current, posixpath.join(*resolved_parts) if resolved_parts else ""
+
+
 def _cache_policy(config=None, **config_kwargs) -> str:
-    config = config or get_config(**config_kwargs)
+    config = config or get_config(resolve_plugins=False, **config_kwargs)
     return "public" if config.PUBLIC_SNAPSHOTS else "private"
 
 
@@ -139,6 +169,7 @@ def _build_directory_zip_response(
     *,
     is_archive_replay: bool,
     use_async_stream: bool,
+    config=None,
 ) -> StreamingHttpResponse:
     root_name = _safe_zip_stem(fullpath.name or Path(path).name or "archivebox")
     sentinel = object()
@@ -210,7 +241,7 @@ def _build_directory_zip_response(
         content_type="application/zip",
     )
     response.headers["Content-Disposition"] = f'attachment; filename="{root_name}.zip"'
-    response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+    response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
     response.headers["Last-Modified"] = http_date(fullpath.stat().st_mtime)
     response.headers["X-Accel-Buffering"] = "no"
     return _apply_archive_replay_headers(
@@ -218,6 +249,7 @@ def _build_directory_zip_response(
         fullpath=fullpath,
         content_type="application/zip",
         is_archive_replay=is_archive_replay,
+        config=config,
     )
 
 
@@ -640,7 +672,7 @@ def _apply_archive_replay_headers(
         return response
 
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    config = config or get_config(**config_kwargs)
+    config = config or get_config(resolve_plugins=False, **config_kwargs)
     response.headers.setdefault("X-ArchiveBox-Security-Mode", config.SERVER_SECURITY_MODE)
 
     if config.SHOULD_NEUTER_RISKY_REPLAY and _is_risky_replay_document(fullpath, content_type):
@@ -671,8 +703,11 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     https://github.com/satchamo/django/commit/2ce75c5c4bee2a858c0214d136bfcd351fcde11d
     """
     assert document_root
-    path = posixpath.normpath(path).lstrip("/")
-    fullpath = Path(safe_join(document_root, path))
+    config = getattr(request, "archivebox_config", None)
+    if config is None:
+        config = get_config(resolve_plugins=False)
+        request.archivebox_config = config
+    fullpath, path = _resolve_archive_path(document_root, path)
     if os.access(fullpath, os.R_OK) and fullpath.is_dir():
         if request.GET.get("download") == "zip" and show_indexes:
             return _build_directory_zip_response(
@@ -680,10 +715,19 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 path,
                 is_archive_replay=is_archive_replay,
                 use_async_stream=hasattr(request, "scope"),
+                config=config,
             )
         if show_indexes:
             response = _render_directory_index(request, path, fullpath)
-            return _apply_archive_replay_headers(response, fullpath=fullpath, content_type="text/html", is_archive_replay=is_archive_replay)
+            response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
+            response.headers["Last-Modified"] = http_date(fullpath.stat().st_mtime)
+            return _apply_archive_replay_headers(
+                response,
+                fullpath=fullpath,
+                content_type="text/html",
+                is_archive_replay=is_archive_replay,
+                config=config,
+            )
         raise Http404(_("Directory indexes are not allowed here."))
     if not os.access(fullpath, os.R_OK):
         raise Http404(_("“%(path)s” does not exist") % {"path": fullpath})
@@ -704,9 +748,15 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
             if etag in inm_list or etag.strip('"') in [i.strip('"') for i in inm_list]:
                 not_modified = HttpResponseNotModified()
                 not_modified.headers["ETag"] = etag
-                not_modified.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                not_modified.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
                 not_modified.headers["Last-Modified"] = http_date(statobj.st_mtime)
-                return _apply_archive_replay_headers(not_modified, fullpath=fullpath, content_type="", is_archive_replay=is_archive_replay)
+                return _apply_archive_replay_headers(
+                    not_modified,
+                    fullpath=fullpath,
+                    content_type="",
+                    is_archive_replay=is_archive_replay,
+                    config=config,
+                )
 
     content_type, encoding = mimetypes.guess_type(str(fullpath))
     content_type = content_type or "application/octet-stream"
@@ -739,6 +789,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 fullpath=fullpath,
                 content_type=content_type,
                 is_archive_replay=is_archive_replay,
+                config=config,
             )
 
     # Wrap text-like outputs in HTML when explicitly requested for iframe previewing.
@@ -752,9 +803,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 response.headers["Last-Modified"] = http_date(statobj.st_mtime)
                 if etag:
                     response.headers["ETag"] = etag
-                    response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                    response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
                 else:
-                    response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+                    response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
                 response.headers["Content-Disposition"] = f'inline; filename="{fullpath.name}"'
                 if encoding:
                     response.headers["Content-Encoding"] = encoding
@@ -763,6 +814,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                     fullpath=fullpath,
                     content_type="text/html; charset=utf-8",
                     is_archive_replay=is_archive_replay,
+                    config=config,
                 )
         except Exception:
             pass
@@ -779,9 +831,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
             response.headers["Last-Modified"] = http_date(statobj.st_mtime)
             if etag:
                 response.headers["ETag"] = etag
-                response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
             else:
-                response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+                response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
             response.headers["Content-Disposition"] = f'inline; filename="{fullpath.name}"'
             if encoding:
                 response.headers["Content-Encoding"] = encoding
@@ -790,6 +842,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 fullpath=fullpath,
                 content_type="text/html; charset=utf-8",
                 is_archive_replay=is_archive_replay,
+                config=config,
             )
         except Exception:
             pass
@@ -806,9 +859,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
             response.headers["Last-Modified"] = http_date(statobj.st_mtime)
             if etag:
                 response.headers["ETag"] = etag
-                response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
             else:
-                response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+                response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
             response.headers["Content-Disposition"] = f'inline; filename="{fullpath.stem}.html"'
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Content-Security-Policy"] = (
@@ -846,9 +899,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                     response.headers["Last-Modified"] = http_date(statobj.st_mtime)
                     if etag:
                         response.headers["ETag"] = etag
-                        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
                     else:
-                        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+                        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
                     response.headers["Content-Disposition"] = f'inline; filename="{fullpath.name}"'
                     if encoding:
                         response.headers["Content-Encoding"] = encoding
@@ -857,15 +910,16 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                         fullpath=fullpath,
                         content_type="text/html; charset=utf-8",
                         is_archive_replay=is_archive_replay,
+                        config=config,
                     )
                 if escaped_count and escaped_count > tag_count * 2:
                     response = HttpResponse(decoded, content_type=content_type)
                     response.headers["Last-Modified"] = http_date(statobj.st_mtime)
                     if etag:
                         response.headers["ETag"] = etag
-                        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+                        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
                     else:
-                        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+                        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
                     response.headers["Content-Disposition"] = f'inline; filename="{fullpath.name}"'
                     if encoding:
                         response.headers["Content-Encoding"] = encoding
@@ -874,6 +928,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                         fullpath=fullpath,
                         content_type=content_type,
                         is_archive_replay=is_archive_replay,
+                        config=config,
                     )
         except Exception:
             pass
@@ -884,9 +939,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     response.headers["Last-Modified"] = http_date(statobj.st_mtime)
     if etag:
         response.headers["ETag"] = etag
-        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=31536000, immutable"
+        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=31536000, immutable"
     else:
-        response.headers["Cache-Control"] = f"{_cache_policy()}, max-age=60, stale-while-revalidate=300"
+        response.headers["Cache-Control"] = f"{_cache_policy(config=config)}, max-age=60, stale-while-revalidate=300"
     if is_text_like:
         response.headers["Content-Disposition"] = f'inline; filename="{fullpath.name}"'
     if content_type.startswith("image/"):
@@ -918,7 +973,13 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 response.status_code = 206
     if encoding:
         response.headers["Content-Encoding"] = encoding
-    return _apply_archive_replay_headers(response, fullpath=fullpath, content_type=content_type, is_archive_replay=is_archive_replay)
+    return _apply_archive_replay_headers(
+        response,
+        fullpath=fullpath,
+        content_type=content_type,
+        is_archive_replay=is_archive_replay,
+        config=config,
+    )
 
 
 def serve_static(request, path, **kwargs):

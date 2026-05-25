@@ -764,9 +764,14 @@ def _serve_responses_path(request, responses_root: Path, rel_path: str, show_ind
 
 
 def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str = ""):
+    request_config = getattr(request, "archivebox_config", None)
+    if request_config is None:
+        request_config = get_config(resolve_plugins=False)
+        request.archivebox_config = request_config
+    snapshot._runtime_config = request_config
     rel_path = path or ""
     is_directory_request = bool(path) and path.endswith("/")
-    show_indexes = bool(request.GET.get("files")) or (get_config().USES_SUBDOMAIN_ROUTING and is_directory_request)
+    show_indexes = bool(request.GET.get("files")) or (request_config.USES_SUBDOMAIN_ROUTING and is_directory_request)
     if not show_indexes and (not rel_path or rel_path == "index.html"):
         return SnapshotView.render_live_index(request, snapshot)
 
@@ -847,16 +852,20 @@ class SnapshotHostView(View):
     """Serve snapshot directory contents on <snapshot-subdomain>.<listen_host>/<path>."""
 
     def get(self, request, snapshot_id: str, path: str = ""):
-        if not request.user.is_authenticated and not get_config().PUBLIC_SNAPSHOTS:
+        request_config = getattr(request, "archivebox_config", None)
+        if request_config is None:
+            request_config = get_config(resolve_plugins=False)
+            request.archivebox_config = request_config
+        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
             return _admin_login_redirect_or_forbidden(request)
         snapshot = _find_snapshot_by_ref(snapshot_id)
 
         if not snapshot:
             raise Http404
 
-        canonical_host = get_snapshot_host(str(snapshot.id))
+        canonical_host = get_snapshot_host(str(snapshot.id), config=request_config)
         if not host_matches(request.get_host(), canonical_host):
-            target = build_snapshot_url(str(snapshot.id), path, request=request)
+            target = build_snapshot_url(str(snapshot.id), path, request=request, config=request_config)
             if request.META.get("QUERY_STRING"):
                 target = f"{target}?{request.META['QUERY_STRING']}"
             return redirect(target)
@@ -868,7 +877,11 @@ class SnapshotReplayView(View):
     """Serve snapshot directory contents on a one-domain replay path."""
 
     def get(self, request, snapshot_id: str, path: str = ""):
-        if not request.user.is_authenticated and not get_config().PUBLIC_SNAPSHOTS:
+        request_config = getattr(request, "archivebox_config", None)
+        if request_config is None:
+            request_config = get_config(resolve_plugins=False)
+            request.archivebox_config = request_config
+        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
             return _admin_login_redirect_or_forbidden(request)
 
         snapshot = _find_snapshot_by_ref(snapshot_id)
@@ -882,7 +895,11 @@ class OriginalDomainHostView(View):
     """Serve responses from the most recent snapshot when using <domain>.<listen_host>/<path>."""
 
     def get(self, request, domain: str, path: str = ""):
-        if not request.user.is_authenticated and not get_config().PUBLIC_SNAPSHOTS:
+        request_config = getattr(request, "archivebox_config", None)
+        if request_config is None:
+            request_config = get_config(resolve_plugins=False)
+            request.archivebox_config = request_config
+        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
             return _admin_login_redirect_or_forbidden(request)
         return _serve_original_domain_replay(request, domain, path)
 
@@ -891,7 +908,11 @@ class OriginalDomainReplayView(View):
     """Serve original-domain replay content on a one-domain replay path."""
 
     def get(self, request, domain: str, path: str = ""):
-        if not request.user.is_authenticated and not get_config().PUBLIC_SNAPSHOTS:
+        request_config = getattr(request, "archivebox_config", None)
+        if request_config is None:
+            request_config = get_config(resolve_plugins=False)
+            request.archivebox_config = request_config
+        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
             return _admin_login_redirect_or_forbidden(request)
         return _serve_original_domain_replay(request, domain, path)
 
