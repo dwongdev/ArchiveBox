@@ -27,7 +27,7 @@ class CustomUserAdmin(UserAdmin):
         return super().get_queryset(request).annotate(snapshot_count=Count("crawl__snapshot_set", distinct=True))
 
     def snapshot_rss_badge(self, obj, api_token: str = ""):
-        params = {"created_by": obj.username, "limit": 100}
+        params = {"created_by": obj.username, "limit": 50}
         if api_token:
             params["api_key"] = api_token
         rss_url = f"/api/v1/core/snapshots.rss?{urlencode(params)}"

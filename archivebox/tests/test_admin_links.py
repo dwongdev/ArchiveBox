@@ -103,10 +103,11 @@ def test_snapshot_admin_zip_links():
     snapshot = _create_snapshot()
     admin = SnapshotAdmin(Snapshot, AdminSite())
 
+    files_url = admin.get_snapshot_files_url(snapshot)
     zip_url = admin.get_snapshot_zip_url(snapshot)
 
     assert html.escape(zip_url, quote=True) not in str(admin.files(snapshot))
-    assert html.escape(zip_url, quote=True) in str(admin.size_with_stats(snapshot))
+    assert html.escape(files_url, quote=True) in str(admin.size_with_stats(snapshot))
     assert html.escape(zip_url, quote=True) in str(admin.admin_actions(snapshot))
 
 

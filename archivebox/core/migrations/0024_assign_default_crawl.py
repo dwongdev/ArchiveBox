@@ -37,20 +37,34 @@ def create_default_crawl_and_assign_snapshots(apps, schema_editor):
             [datetime.now().isoformat()],
         )
 
-    # Create a default crawl for migrated snapshots
-    # At this point crawls_crawl is guaranteed to have v0.9.0 schema (crawls/0002 ran first)
+    # Create a default crawl for migrated snapshots.
+    # Depending on migration graph order, later crawls migrations may already
+    # have removed output_dir by the time this data migration runs.
     crawl_id = uuid_lib.uuid4().hex
     now = datetime.now().isoformat()
+    cursor.execute("PRAGMA table_info(crawls_crawl)")
+    crawl_columns = {row[1] for row in cursor.fetchall()}
+    default_columns: list[str] = []
+    default_values: list[str] = []
+    if "output_dir" in crawl_columns:
+        default_columns.append("output_dir")
+        default_values.append("''")
+    for column in ("max_size", "max_urls", "crawl_max_size", "snapshot_max_size"):
+        if column in crawl_columns:
+            default_columns.append(column)
+            default_values.append("0")
+    default_columns_sql = f"{', '.join(default_columns)}, " if default_columns else ""
+    default_values_sql = f"{', '.join(default_values)}, " if default_values else ""
 
     cursor.execute(
-        """
+        f"""
         INSERT INTO crawls_crawl (
             id, created_at, modified_at, num_uses_succeeded, num_uses_failed,
-            urls, max_depth, tags_str, label, notes, output_dir,
+            urls, max_depth, tags_str, label, notes, {default_columns_sql}
             status, retry_at, created_by_id, schedule_id, config, persona_id
         ) VALUES (?, ?, ?, 0, 0, ?, 0, '', 'Migrated from v0.7.2/v0.8.6',
-                  'Auto-created crawl for migrated snapshots', '',
-                  'sealed', ?, 1, NULL, '{}', NULL)
+                  'Auto-created crawl for migrated snapshots', {default_values_sql}
+                  'sealed', ?, 1, NULL, '{{}}', NULL)
     """,
         [crawl_id, now, now, crawl_urls, now],
     )

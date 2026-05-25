@@ -626,11 +626,14 @@
                 break-inside: avoid;
                 margin-bottom: 6px;
                 vertical-align: top;
+                content-visibility: auto;
+                contain-intrinsic-size: 138px;
             }
             .thumb-card:has([data-compact]) {
                 height: 46px;
                 min-height: 46px;
                 max-height: 46px;
+                contain-intrinsic-size: 46px;
             }
             .thumb-card .thumb-body {
                 font-size: 14px;
@@ -777,6 +780,7 @@
             .thumb-card.selected-card {
                 border: 2px solid orange;
                 box-shadow: 0px -6px 13px 1px rgba(0,0,0,0.05);
+                content-visibility: visible;
             }
             .loose-items {
                 display: flex;
@@ -1078,7 +1082,7 @@
                         {% with display_path=result.path display_url='' preview_url='' %}
                         {% if display_path %}{% snapshot_url snapshot display_path as display_url %}{% endif %}
                         {% if display_path %}{% snapshot_preview_url snapshot display_path as preview_url %}{% endif %}
-                        <div class="thumb-card{% if forloop.first %} selected-card{% endif %}"{% if preview_url %} data-preview-url="{{preview_url}}"{% endif %}>
+                        <div class="thumb-card{% if forloop.first %} selected-card{% endif %}"{% if preview_url %} data-preview-url="{{preview_url}}"{% endif %}{% if display_path %} data-output-path="{{display_path}}"{% endif %}>
                                 <div class="thumb-body">
                                     <div class="thumb-actions">
                                         <a href="{% snapshot_url snapshot result.name %}/?files=1" data-no-preview="1" title="Open output folder" target="_blank" rel="noopener">📁</a>
@@ -1122,7 +1126,7 @@
                                     {# Fall back to generic iframe for filesystem-discovered files #}
                                     <div class="card-img-top thumbnail-wrapper">
                                         <a class="thumbnail-click-overlay" href="{{preview_url}}" target="preview" title="./{{display_path}}" aria-label="Preview {{result.name|plugin_name}}"></a>
-                                        <iframe class="card-img-top" src="{{display_url}}?autoplay=0" allow="autoplay 'none'; fullscreen 'none'; navigation-override 'none'; " sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms" scrolling="no" loading="lazy"></iframe>
+                                        <iframe class="card-img-top" src="{{display_url}}?autoplay=0" allow="autoplay 'none'; fullscreen 'none'; navigation-override 'none'; " sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms" scrolling="no" loading="lazy" fetchpriority="low"></iframe>
                                     </div>
                                 {% endif %}
                         </div>
@@ -1170,23 +1174,16 @@
             </div>
         </header>
 
-        {% if best_result.result %}
-            {% plugin_full best_result.result as best_result_full_html %}
-            {# Use plugin-specific fullscreen template when ArchiveResult is available #}
-            <div id="main-frame-wrapper" class="full-page-wrapper">
-                {% if best_result_full_html %}
-                <div id="plugin-full-wrapper">
-                    {{ best_result_full_html }}
-                </div>
-                <iframe id="main-frame" sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms" class="full-page-iframe preview-hidden" src="{% if best_result.path %}{% snapshot_preview_url snapshot best_result.path %}{% else %}{% snapshot_base_url snapshot %}/?files=1{% endif %}" name="preview"></iframe>
-                {% else %}
-                <iframe id="main-frame" sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms" class="full-page-iframe" src="{% if best_result.path %}{% snapshot_preview_url snapshot best_result.path %}{% else %}{% snapshot_base_url snapshot %}/?files=1{% endif %}" name="preview"></iframe>
-                {% endif %}
-            </div>
-        {% else %}
-            {# Fall back to generic iframe #}
-            <iframe id="main-frame" sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms" class="full-page-iframe" src="{% if best_result.path %}{% snapshot_preview_url snapshot best_result.path %}{% else %}{% snapshot_base_url snapshot %}/?files=1{% endif %}" name="preview"></iframe>
-        {% endif %}
+        <div id="main-frame-wrapper" class="full-page-wrapper">
+            <iframe id="main-frame"
+                    sandbox="allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms"
+                    class="full-page-iframe"
+                    src="about:blank"
+                    data-default-src="{% if best_result.path %}{% snapshot_preview_url snapshot best_result.path %}{% else %}{% snapshot_base_url snapshot %}/?files=1{% endif %}"
+                    name="preview"
+                    loading="eager"
+                    fetchpriority="high"></iframe>
+        </div>
     
 
 
@@ -1242,12 +1239,41 @@
                 }
             }
 
+            function setPreviewResourcePriority(root, highPriority=false) {
+                for (const iframe of root.querySelectorAll('iframe')) {
+                    iframe.loading = highPriority ? 'eager' : 'lazy'
+                    iframe.setAttribute('fetchpriority', highPriority ? 'high' : 'low')
+                    attachPreviewFrameHandlers(iframe)
+                }
+                for (const img of root.querySelectorAll('img')) {
+                    img.loading = highPriority ? 'eager' : 'lazy'
+                    img.decoding = highPriority ? 'sync' : 'async'
+                    img.setAttribute('fetchpriority', highPriority ? 'high' : 'low')
+                }
+                for (const video of root.querySelectorAll('video')) {
+                    video.loading = highPriority ? 'eager' : 'lazy'
+                    video.setAttribute('preload', highPriority ? 'metadata' : 'none')
+                }
+            }
+
+            function prioritizeCardThumbnail(card, highPriority=false) {
+                if (!card) {
+                    return
+                }
+                setPreviewResourcePriority(card, highPriority)
+            }
+
+            function prepareThumbnailPriorities() {
+                const cards = [...document.querySelectorAll('.thumb-card')]
+                cards.forEach((card) => prioritizeCardThumbnail(card, card.classList.contains('selected-card')))
+            }
+
             // un-sandbox iframes showing pdfs (required to display pdf viewer)
             jQuery('iframe').map(function() {
                 attachPreviewFrameHandlers(this)
             })
 
-            function getPreviewHashValueFromHref(href) {
+            function getPreviewHashValueFromHref(href, normalize=false) {
                 if (href == './') {
                     return 'all'
                 }
@@ -1272,14 +1298,16 @@
                     searchParams.delete('preview')
                     const search = searchParams.toString()
                     const suffix = `${search ? `?${search}` : ''}${url.hash || ''}`
-                    return `${path}${suffix}`.replace(/^\/+/, '').toLowerCase()
+                    const value = `${path}${suffix}`.replace(/^\/+/, '')
+                    return normalize ? value.toLowerCase() : value
                 } catch (err) {
-                    return href.replace(/^https?:\/\/[^/]+\/?/, '').replace(/^\/+/, '').toLowerCase()
+                    const value = href.replace(/^https?:\/\/[^/]+\/?/, '').replace(/^\/+/, '')
+                    return normalize ? value.toLowerCase() : value
                 }
             }
 
             function getPreviewHashValue(link) {
-                return getPreviewHashValueFromHref((link && link.getAttribute('href')) || '')
+                return getPreviewHashValueFromHref((link && link.getAttribute('href')) || '', true)
             }
 
             function resolvePreviewUrl(raw) {
@@ -1321,6 +1349,8 @@
                 frame.name = 'preview'
                 frame.className = 'full-page-iframe'
                 frame.sandbox = "allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms"
+                frame.loading = 'eager'
+                frame.setAttribute('fetchpriority', 'high')
                 if (previousFrame && previousFrame.classList.contains('iframe-large')) {
                     frame.classList.add('iframe-large')
                 }
@@ -1353,10 +1383,11 @@
                 return frame
             }
 
-            function activateCardPreview(card, link) {
+            function activateCardPreview(card, link, updateHash=true) {
                 if (!card) {
                     return false
                 }
+                prioritizeCardThumbnail(card, true)
                 const previewUrl = card.dataset.previewUrl
                 const rawTarget = previewUrl || (link ? link.getAttribute('href') : '') || ''
                 const target = resolvePreviewUrl(rawTarget)
@@ -1373,7 +1404,7 @@
                 } else {
                     iframe_elem.sandbox = "allow-same-origin allow-top-navigation-by-user-activation allow-scripts allow-forms"
                 }
-                if (rawTarget) {
+                if (rawTarget && updateHash) {
                     window.location.hash = getPreviewHashValueFromHref(rawTarget)
                 }
 
@@ -1398,6 +1429,34 @@
                     event.stopImmediatePropagation()
                 }
                 return activateCardPreview(card, link)
+            }
+
+            function findPreviewLinkForHash(hashValue) {
+                if (!hashValue) {
+                    return null
+                }
+                return [...document.querySelectorAll('a[target=preview]')].find((link) => getPreviewHashValue(link) == hashValue)
+            }
+
+            function selectInitialPreview() {
+                const selectedPreviewHash = window.location.hash ? decodeURIComponent(window.location.hash.slice(1)).toLowerCase() : ''
+                const matchingLink = findPreviewLinkForHash(selectedPreviewHash)
+                if (matchingLink) {
+                    return activateCardPreview(matchingLink.closest('.thumb-card'), matchingLink, false)
+                }
+
+                const selectedCard = document.querySelector('.thumb-card.selected-card') || document.querySelector('.thumb-card')
+                const selectedLink = selectedCard && (selectedCard.querySelector('a[target=preview]') || selectedCard.querySelector('a'))
+                if (selectedCard && selectedLink) {
+                    return activateCardPreview(selectedCard, selectedLink, false)
+                }
+
+                const frame = ensureMainFrame(false)
+                const defaultSrc = frame && frame.dataset.defaultSrc
+                if (frame && defaultSrc && (!frame.src || frame.src === 'about:blank')) {
+                    frame.src = defaultSrc
+                }
+                return false
             }
 
             for (const card of [...document.querySelectorAll('.thumb-card')]) {
@@ -1536,17 +1595,10 @@
             jQuery('.header-toggle-trigger').on('click', handleSnapshotHeaderToggle)
 
             // check URL for hash e.g. #git and load relevant preview
-            jQuery(document).ready(function() {
-                if (window.location.hash) {
-                    const selectedPreviewHash = decodeURIComponent(window.location.hash.slice(1)).toLowerCase()
-                    const matchingLink = [...document.querySelectorAll('a[target=preview]')].find((link) => getPreviewHashValue(link) == selectedPreviewHash)
-                    if (matchingLink) {
-                        activateCardPreview(matchingLink.closest('.thumb-card'), matchingLink)
-                    }
-                }
-                scheduleThumbGridAdjustment()
-                loadSnapshotHeaderState()
-            })
+            selectInitialPreview()
+            prepareThumbnailPriorities()
+            scheduleThumbGridAdjustment()
+            loadSnapshotHeaderState()
 
             
 

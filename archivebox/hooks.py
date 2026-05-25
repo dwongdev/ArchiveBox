@@ -1039,7 +1039,8 @@ DEFAULT_TEMPLATES = {
                 class="card-img-top"
                 style="width: 100%; height: 100%; border: none;"
                 sandbox="allow-same-origin allow-scripts allow-forms"
-                loading="lazy">
+                loading="lazy"
+                fetchpriority="low">
         </iframe>
     """,
     "full": """

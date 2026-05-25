@@ -844,8 +844,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     )
     def size_with_stats(self, obj):
         """Show archive size with output size from archive results."""
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
         stats = self._get_progress_stats(obj)
         output_size = stats["output_size"]
         size_bytes = output_size or 0
@@ -864,7 +862,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 "{}</a>"
                 '<div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">'
                 "{}/{} hooks</div>",
-                build_web_url(f"/{obj.archive_path_from_db}", request=request, config=config),
+                self.get_snapshot_files_url(obj),
                 size_txt,
                 stats["succeeded"],
                 stats["total"],
@@ -872,7 +870,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
         return format_html(
             '<a href="{}" title="View all files">{}</a>',
-            build_web_url(f"/{obj.archive_path_from_db}", request=request, config=config),
+            self.get_snapshot_files_url(obj),
             size_txt,
         )
 
