@@ -22,7 +22,13 @@ declare -a TAG_NAMES=("$@")
 BRANCH_NAME="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
-SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64}}"
+NATIVE_ARCH="$(docker info --format '{{.Architecture}}' 2>/dev/null || uname -m)"
+case "$NATIVE_ARCH" in
+    x86_64|amd64) NATIVE_PLATFORM="linux/amd64" ;;
+    aarch64|arm64) NATIVE_PLATFORM="linux/arm64" ;;
+    *) NATIVE_PLATFORM="linux/$NATIVE_ARCH" ;;
+esac
+SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-$NATIVE_PLATFORM}}"
 
 # if not already in TAG_NAMES, add GIT_SHA and BRANCH_NAME  
 if ! echo "${TAG_NAMES[@]}" | grep -q "$GIT_SHA"; then
@@ -94,4 +100,8 @@ echo "[+] Building archivebox:$VERSION docker image..."
 # docker build . --no-cache -t archivebox-dev \
 # replace --load with --push to deploy
 # shellcheck disable=SC2068
+if [[ "$SELECTED_PLATFORMS" == *,* ]]; then
+    echo "[X] --load only supports a single platform. Use bin/release_docker.sh or set DOCKER_PLATFORMS to one platform." >&2
+    exit 1
+fi
 docker buildx build --platform "$SELECTED_PLATFORMS" --load . ${FULL_TAG_NAMES[@]}

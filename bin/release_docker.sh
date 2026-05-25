@@ -17,7 +17,7 @@ declare -a TAG_NAMES=("$@")
 BRANCH_NAME="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
-SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64}}"
+SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64,linux/arm64}}"
 
 # if not already in TAG_NAMES, add GIT_SHA and BRANCH_NAME  
 if ! echo "${TAG_NAMES[@]}" | grep -q "$GIT_SHA"; then
@@ -50,8 +50,22 @@ mkdir -p "$HOME/.cache/docker/archivebox"
 
 # https://docs.docker.com/build/cache/backends/
 # shellcheck disable=SC2068
-exec docker buildx build \
+docker buildx build \
    --platform "$SELECTED_PLATFORMS" \
    --cache-from type=local,src="$HOME/.cache/docker/archivebox" \
    --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$HOME/.cache/docker/archivebox" \
    --push . ${FULL_TAG_NAMES[@]}   
+
+echo "[^] Verifying pushed Docker manifests include: $SELECTED_PLATFORMS"
+for TAG_NAME in "${TAG_NAMES[@]}"; do
+    [[ "$TAG_NAME" == "" ]] && continue
+    MANIFEST="$(docker buildx imagetools inspect "archivebox/archivebox:$TAG_NAME")"
+    for REQUIRED_PLATFORM in ${SELECTED_PLATFORMS//,/$IFS}; do
+        if ! echo "$MANIFEST" | grep -q "Platform:    $REQUIRED_PLATFORM"; then
+            echo "[X] archivebox/archivebox:$TAG_NAME is missing platform: $REQUIRED_PLATFORM" >&2
+            echo "$MANIFEST" >&2
+            exit 1
+        fi
+    done
+done
+echo "[√] Docker manifests include all requested platforms."
