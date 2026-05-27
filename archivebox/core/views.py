@@ -1431,21 +1431,21 @@ def live_progress_view(request):
             return None
 
         def snapshot_output_url(snapshot, output_path: str) -> str:
-            return build_snapshot_url(str(snapshot.id), output_path, request=request, config=request_config)
+            return build_snapshot_url(str(snapshot["id"]), output_path, request=request, config=request_config)
 
         def snapshot_archive_path(snapshot) -> str:
-            if snapshot.fs_version in ("0.7.0", "0.8.0"):
-                return snapshot.legacy_archive_path
-            crawl = crawls_by_id.get(str(snapshot.crawl_id))
+            if snapshot["fs_version"] in ("0.7.0", "0.8.0"):
+                return f"{CONSTANTS.ARCHIVE_DIR_NAME}/{snapshot['timestamp']}"
+            crawl = crawls_by_id.get(str(snapshot["crawl_id"]))
             username = "web"
             if crawl is not None and getattr(crawl, "created_by_id", None):
                 username = crawl.created_by.username
             if username == "system":
                 username = "web"
-            date_base = snapshot.bookmarked_at or snapshot.created_at
+            date_base = snapshot["bookmarked_at"] or snapshot["created_at"]
             date_str = date_base.strftime("%Y%m%d") if date_base else "unknown"
-            domain = snapshot.extract_domain_from_url(snapshot.url)
-            return f"{username}/{date_str}/{domain}/{snapshot.id}"
+            domain = Snapshot.extract_domain_from_url(snapshot["url"])
+            return f"{username}/{date_str}/{domain}/{snapshot['id']}"
 
         def snapshot_view_url(snapshot, output_path: str = "") -> str:
             anchor = f"#{output_path}" if output_path else ""
@@ -1598,7 +1598,7 @@ def live_progress_view(request):
         crawls_by_id = {str(crawl.id): crawl for crawl in active_crawls_list}
         snapshots = list(
             snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl_id__in=active_crawl_ids)
-            .only(
+            .values(
                 "id",
                 "created_at",
                 "modified_at",
@@ -1613,13 +1613,15 @@ def live_progress_view(request):
             )
             .order_by("crawl_id", "status", "modified_at")[:100],
         )
-        snapshots_by_id = {str(snapshot.id): snapshot for snapshot in snapshots}
+        snapshots_by_id = {str(snapshot["id"]): snapshot for snapshot in snapshots}
         displayed_snapshots_by_crawl: dict[str, list[Snapshot]] = {str(crawl_id): [] for crawl_id in active_crawl_ids}
         for snapshot in snapshots:
-            crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot.crawl_id), [])
+            crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot["crawl_id"]), [])
             if len(crawl_snapshots) < 5:
                 crawl_snapshots.append(snapshot)
-        displayed_snapshot_ids = [snapshot.id for crawl_snapshots in displayed_snapshots_by_crawl.values() for snapshot in crawl_snapshots]
+        displayed_snapshot_ids = [
+            snapshot["id"] for crawl_snapshots in displayed_snapshots_by_crawl.values() for snapshot in crawl_snapshots
+        ]
         archiveresults_by_snapshot: dict[str, list[ArchiveResult]] = {str(snapshot_id): [] for snapshot_id in displayed_snapshot_ids}
         if displayed_snapshot_ids:
             displayed_archiveresults = (
@@ -1674,7 +1676,7 @@ def live_progress_view(request):
             proc_pwd = Path(proc["pwd"])
             matched_snapshot = find_snapshot_for_process(proc_pwd)
             matched_crawl = (
-                crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+                crawls_by_id.get(str(matched_snapshot["crawl_id"])) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
             )
             if matched_snapshot is None:
                 if matched_crawl is None:
@@ -1682,8 +1684,8 @@ def live_progress_view(request):
                 crawl_id = str(matched_crawl.id)
                 snapshot_id = ""
             else:
-                crawl_id = str(matched_snapshot.crawl_id)
-                snapshot_id = str(matched_snapshot.id)
+                crawl_id = str(matched_snapshot["crawl_id"])
+                snapshot_id = str(matched_snapshot["id"])
             running_worker_ids.add(str(proc["id"]))
             _plugin, _label, phase, _hook_name = process_label(proc["cmd"])
             if crawl_id and proc["pid"]:
@@ -1697,12 +1699,12 @@ def live_progress_view(request):
             proc_pwd = Path(proc["pwd"])
             matched_snapshot = find_snapshot_for_process(proc_pwd)
             matched_crawl = (
-                crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+                crawls_by_id.get(str(matched_snapshot["crawl_id"])) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
             )
             if matched_snapshot is None and matched_crawl is None:
                 continue
-            crawl_id = str(matched_snapshot.crawl_id if matched_snapshot is not None else matched_crawl.id)
-            snapshot_id = str(matched_snapshot.id) if matched_snapshot is not None else ""
+            crawl_id = str(matched_snapshot["crawl_id"] if matched_snapshot is not None else matched_crawl.id)
+            snapshot_id = str(matched_snapshot["id"]) if matched_snapshot is not None else ""
 
             plugin, label, phase, hook_name = process_label(proc["cmd"])
 
@@ -1766,20 +1768,20 @@ def live_progress_view(request):
             # Get active snapshots for this crawl (already prefetched)
             active_snapshots_for_crawl = []
             for snapshot in displayed_snapshots_by_crawl.get(str(crawl.id), []):
-                snapshot_run_started_at = snapshot.downloaded_at or snapshot.created_at
+                snapshot_run_started_at = snapshot["downloaded_at"] or snapshot["created_at"]
                 # Get archive results only for displayed active snapshots. Large crawls can
                 # contain thousands of sealed snapshots, and prefetching all their results
                 # makes the progress endpoint compete with the runner.
                 snapshot_results = [
                     ar
-                    for ar in archiveresults_by_snapshot.get(str(snapshot.id), [])
+                    for ar in archiveresults_by_snapshot.get(str(snapshot["id"]), [])
                     if archiveresult_matches_current_run(ar, snapshot_run_started_at)
                 ]
 
                 plugin_progress_values: list[int] = []
                 all_plugins: list[dict[str, object]] = []
                 seen_plugin_keys: set[str] = set()
-                snapshot_title = snapshot._normalize_title_candidate(snapshot.title, snapshot_url=snapshot.url)
+                snapshot_title = Snapshot._normalize_title_candidate(snapshot["title"], snapshot_url=snapshot["url"])
                 snapshot_favicon_url = ""
                 snapshot_preview_url = ""
                 snapshot_preview_link = snapshot_view_url(snapshot)
@@ -1787,7 +1789,7 @@ def live_progress_view(request):
                 result_by_plugin = {result.plugin: result for result in snapshot_results}
                 title_result = result_by_plugin.get("title")
                 if not snapshot_title and title_result is not None:
-                    snapshot_title = snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot.url)
+                    snapshot_title = Snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot["url"])
                 favicon_result = result_by_plugin.get("favicon")
                 if favicon_result is not None and favicon_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
                     favicon_path = archiveresult_output_path(favicon_result) or "favicon/favicon.ico"
@@ -1859,7 +1861,7 @@ def live_progress_view(request):
                     all_plugins.append(plugin_payload)
                     seen_plugin_keys.add(str(ar.process_id) if ar.process_id else f"{ar.plugin}:{hook_name}")
 
-                for proc_payload, proc_started_at in process_records_by_snapshot.get(str(snapshot.id), []):
+                for proc_payload, proc_started_at in process_records_by_snapshot.get(str(snapshot["id"]), []):
                     if not is_current_run_timestamp(proc_started_at, snapshot_run_started_at):
                         continue
                     proc_key = str(proc_payload.get("process_id") or f"{proc_payload.get('plugin')}:{proc_payload.get('hook_name')}")
@@ -1882,33 +1884,33 @@ def live_progress_view(request):
                 pending_plugins = sum(1 for item in all_plugins if item.get("status") == "queued")
 
                 snapshot_progress = int(sum(plugin_progress_values) / len(plugin_progress_values)) if plugin_progress_values else 0
-                worker_state = "running" if snapshot_process_pids.get(str(snapshot.id)) else "waiting"
-                if snapshot.status == Snapshot.StatusChoices.SEALED and not snapshot.downloaded_at:
+                worker_state = "running" if snapshot_process_pids.get(str(snapshot["id"])) else "waiting"
+                if snapshot["status"] == Snapshot.StatusChoices.SEALED and not snapshot["downloaded_at"]:
                     worker_state = "cancelled"
                 if (
-                    snapshot.status == Snapshot.StatusChoices.STARTED
+                    snapshot["status"] == Snapshot.StatusChoices.STARTED
                     and worker_state == "waiting"
                     and not all_plugins
-                    and snapshot.modified_at
-                    and (now - snapshot.modified_at).total_seconds() > 30
+                    and snapshot["modified_at"]
+                    and (now - snapshot["modified_at"]).total_seconds() > 30
                 ):
                     worker_state = "stalled" if orchestrator_running else "crashed"
 
                 active_snapshots_for_crawl.append(
                     {
-                        "id": str(snapshot.id),
-                        "url": snapshot.url[:80],
-                        "full_url": snapshot.url,
+                        "id": str(snapshot["id"]),
+                        "url": snapshot["url"][:80],
+                        "full_url": snapshot["url"],
                         "title": snapshot_title,
-                        "admin_url": f"/admin/core/snapshot/{snapshot.id}/change/",
+                        "admin_url": f"/admin/core/snapshot/{snapshot['id']}/change/",
                         "view_url": snapshot_view_url(snapshot),
                         "favicon_url": snapshot_favicon_url,
                         "preview_url": snapshot_preview_url,
                         "preview_link": snapshot_preview_link,
                         "preview_fallbacks": snapshot_fallback_urls,
-                        "status": snapshot.status,
-                        "started": (snapshot.downloaded_at or snapshot.created_at).isoformat()
-                        if (snapshot.downloaded_at or snapshot.created_at)
+                        "status": snapshot["status"],
+                        "started": (snapshot["downloaded_at"] or snapshot["created_at"]).isoformat()
+                        if (snapshot["downloaded_at"] or snapshot["created_at"])
                         else None,
                         "progress": snapshot_progress,
                         "total_plugins": total_plugins,
@@ -1916,7 +1918,7 @@ def live_progress_view(request):
                         "failed_plugins": failed_plugins,
                         "pending_plugins": pending_plugins,
                         "all_plugins": all_plugins,
-                        "worker_pid": snapshot_process_pids.get(str(snapshot.id)),
+                        "worker_pid": snapshot_process_pids.get(str(snapshot["id"])),
                         "worker_state": worker_state,
                     },
                 )

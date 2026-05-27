@@ -675,7 +675,7 @@
     let pollInterval = null;
     let pollDelayMs = 1000;
     let idleTicks = 0;
-    let isCollapsed = localStorage.getItem('progress-monitor-collapsed') === 'true';
+    let isCollapsed = monitor.classList.contains('collapsed');
     let knownThumbnailIds = new Set();
 
     function getApiKey() {
@@ -997,9 +997,6 @@
                            data.crawls_pending > 0 || data.crawls_started > 0 ||
                            data.snapshots_pending > 0 || data.snapshots_started > 0 ||
                            data.archiveresults_pending > 0 || data.archiveresults_started > 0;
-        if (!hasActivity && !isCollapsed) {
-            setCollapsedState(true);
-        }
         if (hasActivity) {
             idleTicks = 0;
             if (pollDelayMs !== 1000) {
@@ -1031,7 +1028,7 @@
         } else if (hasActivity) {
             dot.classList.remove('stopped', 'running');
             dot.classList.add('idle');
-            text.textContent = 'Waiting';
+            text.textContent = data.orchestrator_running ? 'Runner online' : 'Waiting';
         } else {
             // No activity - show as idle (whether orchestrator process exists or not)
             dot.classList.remove('stopped', 'running');
@@ -1121,11 +1118,8 @@
         }
     }
 
-    function setCollapsedState(collapsed, persist = true) {
+    function setCollapsedState(collapsed) {
         isCollapsed = collapsed;
-        if (persist) {
-            localStorage.setItem('progress-monitor-collapsed', isCollapsed);
-        }
         if (isCollapsed) {
             monitor.classList.add('collapsed');
             collapseBtn.textContent = 'Expand';
@@ -1217,9 +1211,7 @@
     });
 
     // Apply initial state
-    if (isCollapsed) {
-        setCollapsedState(true, false);
-    }
+    setCollapsedState(isCollapsed);
 
     // Start polling when page loads
     startPolling();

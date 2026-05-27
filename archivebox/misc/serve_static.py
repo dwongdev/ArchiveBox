@@ -1070,12 +1070,18 @@ class RangedFileReader:
         self.stop = stop
 
     def __iter__(self):
-        self.f.seek(self.start)
-        position = self.start
-        while position < self.stop:
-            data = self.f.read(min(self.block_size, self.stop - position))
-            if not data:
-                break
+        try:
+            self.f.seek(self.start)
+            position = self.start
+            while position < self.stop:
+                data = self.f.read(min(self.block_size, self.stop - position))
+                if not data:
+                    break
 
-            yield data
-            position += self.block_size
+                yield data
+                position += len(data)
+        finally:
+            self.close()
+
+    def close(self):
+        self.f.close()

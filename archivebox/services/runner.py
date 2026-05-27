@@ -317,7 +317,7 @@ class CrawlRunner:
             self._restore_signal_handlers(installed_signal_handlers)
             await heartbeat.stop()
             if not self._skip_wait_until_idle:
-                await self.bus.wait_until_idle()
+                await self.bus.wait_until_idle(timeout=30.0)
             if self._live_stream is not None:
                 try:
                     self._live_stream.close()
@@ -358,6 +358,8 @@ class CrawlRunner:
                         await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
                         await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                     except Exception as err:
+                        await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
+                        await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                         task_errors.append(err)
                         stop_scheduling = True
                     continue
