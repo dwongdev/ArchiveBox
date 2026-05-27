@@ -11,7 +11,7 @@ from archivebox.uuid_compat import uuid7
 from pathlib import Path
 from urllib.parse import urlparse
 
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.conf import settings
@@ -710,20 +710,32 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             }
             try:
                 if snapshot_id:
-                    snapshot, created = Snapshot.objects.update_or_create(
-                        id=snapshot_id,
-                        defaults={
+                    snapshot = Snapshot.objects.filter(id=snapshot_id).first()
+                    if snapshot:
+                        created = False
+                        for field, value in {
                             **defaults,
                             "url": url,
                             "crawl": self,
-                        },
-                    )
+                        }.items():
+                            setattr(snapshot, field, value)
+                        snapshot.save(update_fields=["depth", "title", "timestamp", "status", "retry_at", "url", "crawl", "modified_at"])
+                    else:
+                        snapshot = Snapshot(id=snapshot_id, url=url, crawl=self, **defaults)
+                        snapshot.save(force_insert=True)
+                        created = True
                 else:
-                    snapshot, created = Snapshot.objects.get_or_create(
-                        url=url,
-                        crawl=self,
-                        defaults=defaults,
-                    )
+                    snapshot = Snapshot.objects.filter(url=url, crawl=self).first()
+                    if snapshot:
+                        created = False
+                    else:
+                        try:
+                            snapshot = Snapshot(url=url, crawl=self, **defaults)
+                            snapshot.save(force_insert=True)
+                            created = True
+                        except IntegrityError:
+                            snapshot = Snapshot.objects.get(url=url, crawl=self)
+                            created = False
             except ValidationError as err:
                 print(f"[yellow][!] Skipping blocked snapshot URL: {url} ({err})[/yellow]")
                 continue
@@ -734,10 +746,7 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
                 snapshot.save_tags(tags.split(","))
 
             # Ensure crawl -> snapshot symlink exists for both new and existing snapshots
-            try:
-                snapshot.ensure_crawl_symlink()
-            except Exception:
-                pass
+            transaction.on_commit(lambda snapshot=snapshot: snapshot.ensure_crawl_symlink())
 
         return created_snapshots
 
@@ -881,10 +890,7 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             tags = str(deduped_records[snapshot.url].get("tags") or "").strip()
             if tags:
                 tag_names_by_url[snapshot.url] = {tag.strip() for tag in re.split(config.TAG_SEPARATOR_PATTERN, tags) if tag.strip()}
-            try:
-                snapshot.ensure_crawl_symlink()
-            except Exception:
-                pass
+            transaction.on_commit(lambda snapshot=snapshot: snapshot.ensure_crawl_symlink())
 
         tag_names = {tag for tags in tag_names_by_url.values() for tag in tags}
         if tag_names:

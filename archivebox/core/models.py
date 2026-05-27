@@ -1248,10 +1248,11 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
                 existing_result.save(update_fields=[*update_fields, "modified_at"])
             return
 
+        machine = Machine.current() if cmd or pwd else None
         with transaction.atomic():
-            if cmd or pwd:
+            if machine is not None:
                 process = Process.objects.create(
-                    machine=Machine.current(),
+                    machine=machine,
                     process_type=Process.TypeChoices.HOOK,
                     worker_type="archiveresult",
                     cmd=cmd,
