@@ -1391,10 +1391,24 @@ def live_progress_view(request):
         def snapshot_output_url(snapshot, output_path: str) -> str:
             return build_snapshot_url(str(snapshot.id), output_path, request=request, config=getattr(request, "archivebox_config", None))
 
+        def snapshot_archive_path(snapshot) -> str:
+            if snapshot.fs_version in ("0.7.0", "0.8.0"):
+                return snapshot.legacy_archive_path
+            crawl = crawls_by_id.get(str(snapshot.crawl_id))
+            username = "web"
+            if crawl is not None and getattr(crawl, "created_by_id", None):
+                username = crawl.created_by.username
+            if username == "system":
+                username = "web"
+            date_base = snapshot.bookmarked_at or snapshot.created_at
+            date_str = date_base.strftime("%Y%m%d") if date_base else "unknown"
+            domain = snapshot.extract_domain_from_url(snapshot.url)
+            return f"{username}/{date_str}/{domain}/{snapshot.id}"
+
         def snapshot_view_url(snapshot, output_path: str = "") -> str:
             anchor = f"#{output_path}" if output_path else ""
             return build_web_url(
-                f"/{snapshot.archive_path_from_db}/index.html{anchor}",
+                f"/{snapshot_archive_path(snapshot)}/index.html{anchor}",
                 request=request,
                 config=getattr(request, "archivebox_config", None),
             )
@@ -1466,6 +1480,19 @@ def live_progress_view(request):
                 | Q(status=Crawl.StatusChoices.SEALED, modified_at__gte=recently_cancelled_after),
             )
             .select_related("created_by")
+            .only(
+                "id",
+                "created_at",
+                "created_by_id",
+                "modified_at",
+                "urls",
+                "max_depth",
+                "status",
+                "retry_at",
+                "label",
+                "created_by__id",
+                "created_by__username",
+            )
             .distinct()
             .order_by("-modified_at")[:10]
         )
@@ -1476,17 +1503,18 @@ def live_progress_view(request):
         if active_crawl_ids:
             for row in snapshot_scope.filter(crawl_id__in=active_crawl_ids).values("crawl_id", "status").annotate(count=Count("id")):
                 snapshot_counts_by_crawl.setdefault(str(row["crawl_id"]), {})[row["status"]] = row["count"]
-            for row in (
-                snapshot_scope.filter(
-                    crawl_id__in=active_crawl_ids,
-                    status=Snapshot.StatusChoices.SEALED,
-                    downloaded_at__isnull=True,
-                    modified_at__gte=recently_cancelled_after,
-                )
-                .values("crawl_id")
-                .annotate(count=Count("id"))
-            ):
-                cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
+            if any(crawl.status == Crawl.StatusChoices.SEALED for crawl in active_crawls_list):
+                for row in (
+                    snapshot_scope.filter(
+                        crawl_id__in=active_crawl_ids,
+                        status=Snapshot.StatusChoices.SEALED,
+                        downloaded_at__isnull=True,
+                        modified_at__gte=recently_cancelled_after,
+                    )
+                    .values("crawl_id")
+                    .annotate(count=Count("id"))
+                ):
+                    cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
 
         if machine is not None:
             running_processes = Process.objects.filter(
@@ -1526,10 +1554,56 @@ def live_progress_view(request):
         crawls_by_id = {str(crawl.id): crawl for crawl in active_crawls_list}
         snapshots = list(
             snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl_id__in=active_crawl_ids)
-            .select_related("crawl")
+            .only(
+                "id",
+                "created_at",
+                "modified_at",
+                "url",
+                "timestamp",
+                "bookmarked_at",
+                "crawl_id",
+                "title",
+                "downloaded_at",
+                "fs_version",
+                "status",
+            )
             .order_by("crawl_id", "status", "modified_at")[:100],
         )
         snapshots_by_id = {str(snapshot.id): snapshot for snapshot in snapshots}
+        displayed_snapshots_by_crawl: dict[str, list[Snapshot]] = {str(crawl_id): [] for crawl_id in active_crawl_ids}
+        for snapshot in snapshots:
+            crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot.crawl_id), [])
+            if len(crawl_snapshots) < 5:
+                crawl_snapshots.append(snapshot)
+        displayed_snapshot_ids = [snapshot.id for crawl_snapshots in displayed_snapshots_by_crawl.values() for snapshot in crawl_snapshots]
+        archiveresults_by_snapshot: dict[str, list[ArchiveResult]] = {str(snapshot_id): [] for snapshot_id in displayed_snapshot_ids}
+        if displayed_snapshot_ids:
+            displayed_archiveresults = (
+                archiveresult_scope.filter(snapshot_id__in=displayed_snapshot_ids)
+                .select_related("process")
+                .only(
+                    "id",
+                    "snapshot_id",
+                    "plugin",
+                    "hook_name",
+                    "status",
+                    "output_str",
+                    "output_files",
+                    "output_size",
+                    "start_ts",
+                    "end_ts",
+                    "created_at",
+                    "modified_at",
+                    "process_id",
+                    "process__id",
+                    "process__pid",
+                    "process__started_at",
+                    "process__timeout",
+                )
+                .order_by("snapshot_id", "start_ts", "created_at")
+            )
+            for archiveresult in displayed_archiveresults:
+                archiveresults_by_snapshot.setdefault(str(archiveresult.snapshot_id), []).append(archiveresult)
 
         def find_snapshot_for_process(proc_pwd: Path) -> Snapshot | None:
             for path_part in reversed(proc_pwd.parts):
@@ -1551,7 +1625,9 @@ def live_progress_view(request):
                 continue
             proc_pwd = Path(proc.pwd)
             matched_snapshot = find_snapshot_for_process(proc_pwd)
-            matched_crawl = matched_snapshot.crawl if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+            matched_crawl = (
+                crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+            )
             if matched_snapshot is None:
                 if matched_crawl is None:
                     continue
@@ -1572,7 +1648,9 @@ def live_progress_view(request):
                 continue
             proc_pwd = Path(proc.pwd)
             matched_snapshot = find_snapshot_for_process(proc_pwd)
-            matched_crawl = matched_snapshot.crawl if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+            matched_crawl = (
+                crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+            )
             if matched_snapshot is None and matched_crawl is None:
                 continue
             crawl_id = str(matched_snapshot.crawl_id if matched_snapshot is not None else matched_crawl.id)
@@ -1619,13 +1697,6 @@ def live_progress_view(request):
             pending_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.QUEUED, 0)
             cancelled_snapshots = cancelled_snapshot_counts_by_crawl.get(str(crawl.id), 0)
 
-            # Get only ACTIVE snapshots to display (limit to 5 most recent)
-            active_crawl_snapshots = list(
-                snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl=crawl)
-                .select_related("crawl")
-                .order_by("status", "modified_at")[:5],
-            )
-
             # Count URLs in the crawl (for when snapshots haven't been created yet)
             urls_count = 0
             if crawl.urls:
@@ -1646,14 +1717,14 @@ def live_progress_view(request):
 
             # Get active snapshots for this crawl (already prefetched)
             active_snapshots_for_crawl = []
-            for snapshot in active_crawl_snapshots:
+            for snapshot in displayed_snapshots_by_crawl.get(str(crawl.id), []):
                 snapshot_run_started_at = snapshot.downloaded_at or snapshot.created_at
                 # Get archive results only for displayed active snapshots. Large crawls can
                 # contain thousands of sealed snapshots, and prefetching all their results
                 # makes the progress endpoint compete with the runner.
                 snapshot_results = [
                     ar
-                    for ar in snapshot.archiveresult_set.select_related("process").all()
+                    for ar in archiveresults_by_snapshot.get(str(snapshot.id), [])
                     if archiveresult_matches_current_run(ar, snapshot_run_started_at)
                 ]
 
