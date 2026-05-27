@@ -24,9 +24,13 @@ class SnapshotService(BaseService):
         snapshot = await Snapshot.objects.filter(id=event.snapshot_id, crawl_id=self.crawl_id).afirst()
 
         if snapshot is not None:
-            snapshot.status = Snapshot.StatusChoices.STARTED
-            snapshot.retry_at = None
-            await snapshot.asave(update_fields=["status", "retry_at", "modified_at"])
+            if snapshot.status == Snapshot.StatusChoices.QUEUED:
+                await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
+                await sync_to_async(snapshot.refresh_from_db, thread_sensitive=True)()
+            elif snapshot.status != Snapshot.StatusChoices.STARTED:
+                return
+            if snapshot.status != Snapshot.StatusChoices.STARTED:
+                return
             await sync_to_async(snapshot.ensure_crawl_symlink, thread_sensitive=True)()
 
     async def on_SnapshotCompletedEvent(self, event: SnapshotCompletedEvent) -> None:
@@ -35,10 +39,8 @@ class SnapshotService(BaseService):
         snapshot = await Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=event.snapshot_id).afirst()
         snapshot_id: str | None = None
         if snapshot is not None:
-            snapshot.status = Snapshot.StatusChoices.SEALED
-            snapshot.retry_at = None
             snapshot.downloaded_at = snapshot.downloaded_at or timezone.now()
-            await snapshot.asave(update_fields=["status", "retry_at", "downloaded_at", "modified_at"])
+            await snapshot.asave(update_fields=["downloaded_at", "modified_at"])
             stop_reason = await sync_to_async(self._crawl_limit_stop_reason, thread_sensitive=True)(snapshot.crawl)
             if snapshot.crawl_id and stop_reason == "crawl_max_size":
                 await (
@@ -53,18 +55,22 @@ class SnapshotService(BaseService):
                         modified_at=timezone.now(),
                     )
                 )
+            if snapshot.status == Snapshot.StatusChoices.QUEUED:
+                await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
+                await sync_to_async(snapshot.refresh_from_db, thread_sensitive=True)()
+            if snapshot.status == Snapshot.StatusChoices.STARTED:
+                await sync_to_async(snapshot.sm.seal, thread_sensitive=True)()
             snapshot_id = str(snapshot.id)
         if snapshot_id:
             snapshot = await Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").afirst()
             if snapshot is not None:
-                try:
-                    await sync_to_async(snapshot.write_index_jsonl, thread_sensitive=True)()
-                    await sync_to_async(snapshot.write_json_details, thread_sensitive=True)()
-                    await sync_to_async(snapshot.write_html_details, thread_sensitive=True)()
-                finally:
-                    pass
+                await sync_to_async(snapshot.write_index_jsonl, thread_sensitive=True)()
+                await sync_to_async(snapshot.write_json_details, thread_sensitive=True)()
+                await sync_to_async(snapshot.write_html_details, thread_sensitive=True)()
 
     def _crawl_limit_stop_reason(self, crawl) -> str:
-        config = dict(crawl.config or {})
+        from archivebox.config.common import get_config
+
+        config = get_config(crawl=crawl, include_machine=False)
         config["CRAWL_DIR"] = str(crawl.output_dir)
         return CrawlLimitState.from_config(config).get_stop_reason()

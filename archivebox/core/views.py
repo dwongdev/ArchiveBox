@@ -27,6 +27,8 @@ from django.utils.decorators import method_decorator
 from admin_data_views.typing import TableContext, ItemContext, SectionData
 from admin_data_views.utils import render_with_table_view, render_with_item_view, ItemLink
 
+from abx_dl.events import PROCESS_EXIT_SKIPPED
+
 from archivebox.config import CONSTANTS, CONSTANTS_CONFIG, VERSION
 from archivebox.config.common import get_config, get_all_configs
 from archivebox.config.configset import BaseConfigSet
@@ -1080,6 +1082,7 @@ class AddView(UserPassesTestMixin, FormView):
         max_urls = int(form.cleaned_data.get("max_urls") or 0)
         crawl_max_size = int(form.cleaned_data.get("crawl_max_size") or 0)
         snapshot_max_size = int(form.cleaned_data.get("snapshot_max_size") or 0)
+        delete_after = str(form.cleaned_data.get("delete_after") or "0").strip() or "0"
         crawl_max_concurrent_snapshots = int(form.cleaned_data["crawl_max_concurrent_snapshots"])
         plugins = ",".join(form.cleaned_data.get("plugins", []))
         schedule = form.cleaned_data.get("schedule", "").strip()
@@ -1125,6 +1128,8 @@ class AddView(UserPassesTestMixin, FormView):
         effective_config = get_config(persona=persona) if persona else get_config()
         if crawl_max_concurrent_snapshots != int(effective_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS):
             config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
+        if delete_after != str(effective_config.DELETE_AFTER):
+            config["DELETE_AFTER"] = delete_after
 
         # Merge custom config overrides
         config.update(plugin_config)
@@ -1257,6 +1262,7 @@ class WebAddView(AddView):
                 "max_urls": defaults_form.fields["max_urls"].initial or 0,
                 "crawl_max_size": defaults_form.fields["crawl_max_size"].initial or "0",
                 "snapshot_max_size": defaults_form.fields["snapshot_max_size"].initial or "0",
+                "delete_after": defaults_form.fields["delete_after"].initial or "0",
                 "crawl_max_concurrent_snapshots": defaults_form.fields["crawl_max_concurrent_snapshots"].initial,
                 "persona": defaults_form.fields["persona"].initial or "Default",
                 "config": "{}",
@@ -1293,7 +1299,6 @@ def live_progress_view(request):
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot, ArchiveResult
         from archivebox.machine.models import Process, Machine
-        from archivebox.machine.detect import get_host_guid
 
         if not request.user.is_authenticated or not request.user.is_active or not request.user.is_staff:
             return JsonResponse({"error": "Permission denied"}, status=403)
@@ -1413,8 +1418,8 @@ def live_progress_view(request):
                 return f"{CONSTANTS.ARCHIVE_DIR_NAME}/{snapshot['timestamp']}"
             crawl = crawls_by_id.get(str(snapshot["crawl_id"]))
             username = "web"
-            if crawl is not None and getattr(crawl, "created_by_id", None):
-                username = crawl.created_by.username
+            if crawl is not None and crawl["created_by_id"]:
+                username = crawl["created_by__username"]
             if username == "system":
                 username = "web"
             date_base = snapshot["bookmarked_at"] or snapshot["created_at"]
@@ -1430,7 +1435,7 @@ def live_progress_view(request):
                 config=request_config,
             )
 
-        machine_id = Machine.objects.filter(guid=get_host_guid()).values_list("id", flat=True).first()
+        machine_id = Machine.current().id
         orchestrator_proc = (
             Process.objects.filter(
                 machine_id=machine_id,
@@ -1458,7 +1463,10 @@ def live_progress_view(request):
         orchestrator_pid = orchestrator_proc.pid if orchestrator_proc else runner_worker_pid
 
         def count_statuses(queryset, statuses) -> dict[str, int]:
-            return {status: queryset.filter(status=status).count() for status in statuses}
+            counts = {status: 0 for status in statuses}
+            for row in queryset.filter(status__in=statuses).values("status").annotate(count=Count("id")):
+                counts[row["status"]] = row["count"]
+            return counts
 
         # Get model counts by status
         crawl_status_counts = count_statuses(crawl_scope, (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED))
@@ -1515,18 +1523,18 @@ def live_progress_view(request):
             if status == Crawl.StatusChoices.SEALED:
                 status_qs = status_qs.filter(modified_at__gte=recently_cancelled_after)
             active_crawl_candidates.extend(
-                status_qs.select_related("created_by").only(*active_crawl_fields).order_by("-modified_at")[:10],
+                status_qs.values(*active_crawl_fields).order_by("-modified_at")[:10],
             )
         active_crawls_list = sorted(
-            {str(crawl.id): crawl for crawl in active_crawl_candidates}.values(),
-            key=lambda crawl: crawl.modified_at,
+            {str(crawl["id"]): crawl for crawl in active_crawl_candidates}.values(),
+            key=lambda crawl: crawl["modified_at"],
             reverse=True,
         )[:10]
         persona_details_by_id: dict[str, dict[str, str]] = {}
         persona_details_by_name: dict[str, dict[str, str]] = {}
-        persona_ids = {crawl.persona_id for crawl in active_crawls_list if crawl.persona_id}
+        persona_ids = {crawl["persona_id"] for crawl in active_crawls_list if crawl["persona_id"]}
         persona_names = {
-            str((crawl.config or {}).get("DEFAULT_PERSONA") or "Default") for crawl in active_crawls_list if not crawl.persona_id
+            str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default") for crawl in active_crawls_list if not crawl["persona_id"]
         }
         if persona_ids or persona_names:
             from archivebox.personas.models import Persona
@@ -1538,13 +1546,13 @@ def live_progress_view(request):
                 }
                 persona_details_by_id[str(persona.id)] = persona_details
                 persona_details_by_name[persona.name] = persona_details
-        active_crawl_ids = [crawl.id for crawl in active_crawls_list]
+        active_crawl_ids = [crawl["id"] for crawl in active_crawls_list]
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         if active_crawl_ids:
             for row in snapshot_scope.filter(crawl_id__in=active_crawl_ids).values("crawl_id", "status").annotate(count=Count("id")):
                 snapshot_counts_by_crawl.setdefault(str(row["crawl_id"]), {})[row["status"]] = row["count"]
-            if any(crawl.status == Crawl.StatusChoices.SEALED for crawl in active_crawls_list):
+            if any(crawl["status"] == Crawl.StatusChoices.SEALED for crawl in active_crawls_list):
                 for row in (
                     snapshot_scope.filter(
                         crawl_id__in=active_crawl_ids,
@@ -1600,7 +1608,7 @@ def live_progress_view(request):
             downloaded_at__isnull=True,
             modified_at__gte=recently_cancelled_after,
         )
-        crawls_by_id = {str(crawl.id): crawl for crawl in active_crawls_list}
+        crawls_by_id = {str(crawl["id"]): crawl for crawl in active_crawls_list}
         snapshots = list(
             snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl_id__in=active_crawl_ids)
             .values(
@@ -1686,7 +1694,7 @@ def live_progress_view(request):
             if matched_snapshot is None:
                 if matched_crawl is None:
                     continue
-                crawl_id = str(matched_crawl.id)
+                crawl_id = str(matched_crawl["id"])
                 snapshot_id = ""
             else:
                 crawl_id = str(matched_snapshot["crawl_id"])
@@ -1708,7 +1716,7 @@ def live_progress_view(request):
             )
             if matched_snapshot is None and matched_crawl is None:
                 continue
-            crawl_id = str(matched_snapshot["crawl_id"] if matched_snapshot is not None else matched_crawl.id)
+            crawl_id = str(matched_snapshot["crawl_id"] if matched_snapshot is not None else matched_crawl["id"])
             snapshot_id = str(matched_snapshot["id"]) if matched_snapshot is not None else ""
 
             plugin, label, phase, hook_name = process_label(proc["cmd"])
@@ -1722,7 +1730,11 @@ def live_progress_view(request):
             status = (
                 "started"
                 if proc["status"] == Process.StatusChoices.RUNNING
-                else ("failed" if proc["exit_code"] not in (None, 0) else "succeeded")
+                else (
+                    "skipped"
+                    if proc["exit_code"] == PROCESS_EXIT_SKIPPED
+                    else ("failed" if proc["exit_code"] not in (None, 0) else "succeeded")
+                )
             )
             payload: dict[str, object] = {
                 "id": str(proc["id"]),
@@ -1745,24 +1757,25 @@ def live_progress_view(request):
         active_crawls = []
         total_workers = len(running_worker_ids)
         for crawl in active_crawls_list:
-            crawl_snapshot_counts = snapshot_counts_by_crawl.get(str(crawl.id), {})
+            crawl_id = str(crawl["id"])
+            crawl_snapshot_counts = snapshot_counts_by_crawl.get(crawl_id, {})
             total_snapshots = sum(crawl_snapshot_counts.values())
             completed_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.SEALED, 0)
             started_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.STARTED, 0)
             pending_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.QUEUED, 0)
-            cancelled_snapshots = cancelled_snapshot_counts_by_crawl.get(str(crawl.id), 0)
+            cancelled_snapshots = cancelled_snapshot_counts_by_crawl.get(crawl_id, 0)
 
             # Count URLs in the crawl (for when snapshots haven't been created yet)
             urls_count = 0
-            if crawl.urls:
-                urls_count = len([u for u in crawl.urls.split("\n") if u.strip() and not u.startswith("#")])
+            if crawl["urls"]:
+                urls_count = len([u for u in crawl["urls"].split("\n") if u.strip() and not u.startswith("#")])
 
             # Calculate crawl progress
             crawl_progress = int((completed_snapshots / total_snapshots) * 100) if total_snapshots > 0 else 0
-            crawl_run_started_at = crawl.created_at
+            crawl_run_started_at = crawl["created_at"]
             crawl_setup_plugins = [
                 payload
-                for payload, proc_started_at in process_records_by_crawl.get(str(crawl.id), [])
+                for payload, proc_started_at in process_records_by_crawl.get(crawl_id, [])
                 if is_current_run_timestamp(proc_started_at, crawl_run_started_at)
             ]
             crawl_setup_total = len(crawl_setup_plugins)
@@ -1772,7 +1785,7 @@ def live_progress_view(request):
 
             # Get active snapshots for this crawl (already prefetched)
             active_snapshots_for_crawl = []
-            for snapshot in displayed_snapshots_by_crawl.get(str(crawl.id), []):
+            for snapshot in displayed_snapshots_by_crawl.get(crawl_id, []):
                 snapshot_run_started_at = snapshot["downloaded_at"] or snapshot["created_at"]
                 # Get archive results only for displayed active snapshots. Large crawls can
                 # contain thousands of sealed snapshots, and prefetching all their results
@@ -1930,46 +1943,50 @@ def live_progress_view(request):
                 )
 
             # Check if crawl can start (for debugging stuck crawls)
-            can_start = bool(crawl.urls)
-            urls_preview = crawl.urls[:60] if crawl.urls else None
-            crawl_tags = [tag.strip() for tag in (crawl.tags_str or "").replace("\n", ",").split(",") if tag.strip()]
-            persona_details = persona_details_by_id.get(str(crawl.persona_id)) if crawl.persona_id else None
-            persona_name = persona_details["name"] if persona_details else str((crawl.config or {}).get("DEFAULT_PERSONA") or "Default")
+            can_start = bool(crawl["urls"])
+            urls_preview = crawl["urls"][:60] if crawl["urls"] else None
+            crawl_tags = [tag.strip() for tag in (crawl["tags_str"] or "").replace("\n", ",").split(",") if tag.strip()]
+            persona_details = persona_details_by_id.get(str(crawl["persona_id"])) if crawl["persona_id"] else None
+            persona_name = persona_details["name"] if persona_details else str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default")
             persona_details = persona_details or persona_details_by_name.get(persona_name)
-            crawl_output_size = crawl_output_sizes_by_crawl.get(str(crawl.id), 0)
+            crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
             avg_snapshot_size = int(crawl_output_size / total_snapshots) if total_snapshots else 0
 
             # Check if retry_at is in the future (would prevent worker from claiming)
-            retry_at_future = crawl.retry_at > now if crawl.retry_at else False
-            seconds_until_retry = int((crawl.retry_at - now).total_seconds()) if crawl.retry_at and retry_at_future else 0
+            retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False
+            seconds_until_retry = int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
             crawl_worker_state = (
                 "running"
-                if crawl_process_pids.get(str(crawl.id)) or any(snapshot.get("worker_pid") for snapshot in active_snapshots_for_crawl)
+                if crawl_process_pids.get(crawl_id) or any(snapshot.get("worker_pid") for snapshot in active_snapshots_for_crawl)
                 else "waiting"
             )
-            if crawl.status == Crawl.StatusChoices.SEALED and cancelled_snapshots:
+            if crawl["status"] == Crawl.StatusChoices.SEALED and cancelled_snapshots:
                 crawl_worker_state = "cancelled"
             elif (
-                crawl.status == Crawl.StatusChoices.STARTED and crawl_worker_state == "waiting" and (started_snapshots or pending_snapshots)
+                crawl["status"] == Crawl.StatusChoices.STARTED
+                and crawl_worker_state == "waiting"
+                and (started_snapshots or pending_snapshots)
             ):
                 crawl_worker_state = "stalled" if orchestrator_running else "crashed"
 
             active_crawls.append(
                 {
-                    "id": str(crawl.id),
-                    "label": str(crawl)[:60],
-                    "status": crawl.status,
-                    "started": crawl.created_at.isoformat() if crawl.created_at else None,
+                    "id": crawl_id,
+                    "label": (next((line.strip() for line in (crawl["urls"] or "").splitlines() if line.strip()), "") or crawl_id)[:60],
+                    "status": crawl["status"],
+                    "started": crawl["created_at"].isoformat() if crawl["created_at"] else None,
                     "progress": crawl_progress,
-                    "created_by": crawl.created_by.username,
+                    "created_by": crawl["created_by__username"],
                     "persona": persona_name,
                     "persona_admin_url": persona_details["admin_url"] if persona_details else None,
-                    "max_depth": crawl.max_depth,
-                    "max_urls": crawl.max_urls,
-                    "max_crawl_size": crawl.crawl_max_size,
-                    "max_snapshot_size": crawl.snapshot_max_size,
-                    "max_crawl_size_display": printable_filesize(crawl.crawl_max_size) if crawl.crawl_max_size else "unlimited",
-                    "max_snapshot_size_display": printable_filesize(crawl.snapshot_max_size) if crawl.snapshot_max_size else "unlimited",
+                    "max_depth": crawl["max_depth"],
+                    "max_urls": crawl["max_urls"],
+                    "max_crawl_size": crawl["crawl_max_size"],
+                    "max_snapshot_size": crawl["snapshot_max_size"],
+                    "max_crawl_size_display": printable_filesize(crawl["crawl_max_size"]) if crawl["crawl_max_size"] else "unlimited",
+                    "max_snapshot_size_display": printable_filesize(crawl["snapshot_max_size"])
+                    if crawl["snapshot_max_size"]
+                    else "unlimited",
                     "crawl_output_size": crawl_output_size,
                     "avg_snapshot_size": avg_snapshot_size,
                     "crawl_output_size_display": printable_filesize(crawl_output_size) if crawl_output_size else "0 B",
@@ -1992,7 +2009,7 @@ def live_progress_view(request):
                     "urls_preview": urls_preview,
                     "retry_at_future": retry_at_future,
                     "seconds_until_retry": seconds_until_retry,
-                    "worker_pid": crawl_process_pids.get(str(crawl.id)),
+                    "worker_pid": crawl_process_pids.get(crawl_id),
                     "worker_state": crawl_worker_state,
                 },
             )

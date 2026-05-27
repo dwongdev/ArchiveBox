@@ -12,7 +12,7 @@ from archivebox.misc.util import URL_REGEX, find_all_urls, parse_filesize_to_byt
 from taggit.utils import edit_string_for_tags, parse_tags
 from archivebox.base_models.admin import KeyValueWidget
 from archivebox.crawls.schedule_utils import validate_schedule
-from archivebox.config.common import get_config
+from archivebox.config.common import get_config, parse_delete_after
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.hooks import get_plugins, discover_plugin_configs, get_plugin_icon
 from archivebox.personas.models import Persona
@@ -558,6 +558,16 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             },
         ),
     )
+    delete_after = forms.CharField(
+        label="Delete after",
+        required=False,
+        initial="0",
+        widget=forms.TextInput(
+            attrs={
+                "placeholder": "0 = keep forever, or e.g. 1d / 6mo",
+            },
+        ),
+    )
     crawl_max_concurrent_snapshots = forms.IntegerField(
         label="Max concurrent snapshots",
         required=False,
@@ -663,9 +673,11 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         super().__init__(*args, **kwargs)
 
         default_persona = Persona.get_or_create_default()
+        default_config = get_config(persona=default_persona)
         self.fields["persona"].queryset = Persona.objects.order_by("name")
         self.fields["persona"].initial = default_persona.name
-        self.fields["crawl_max_concurrent_snapshots"].initial = get_config(persona=default_persona).CRAWL_MAX_CONCURRENT_SNAPSHOTS
+        self.fields["crawl_max_concurrent_snapshots"].initial = default_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS
+        self.fields["delete_after"].initial = default_config.DELETE_AFTER
 
         selected_persona = default_persona
         if self.is_bound:
@@ -748,6 +760,14 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         if value < 0:
             raise forms.ValidationError("Max snapshot size must be 0 or a positive number of bytes.")
         return value
+
+    def clean_delete_after(self):
+        raw_value = str(self.cleaned_data.get("delete_after") or "0").strip() or "0"
+        try:
+            parse_delete_after(raw_value)
+        except ValueError as err:
+            raise forms.ValidationError(str(err))
+        return raw_value
 
     def clean_crawl_max_concurrent_snapshots(self):
         value = self.cleaned_data.get("crawl_max_concurrent_snapshots")

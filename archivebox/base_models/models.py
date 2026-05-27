@@ -2,12 +2,15 @@
 
 __package__ = "archivebox.base_models"
 
+import shutil
+
 from archivebox.uuid_compat import uuid7
 from pathlib import Path
 
 from django.db import models
 from django.db.models import F
 from django.db import transaction
+from django.db.models.signals import pre_delete
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.urls import reverse_lazy
@@ -33,7 +36,7 @@ class AutoDateTimeField(models.DateTimeField):
     """DateTimeField that automatically updates on save (legacy compatibility)."""
 
     def pre_save(self, model_instance, add):
-        if add or not getattr(model_instance, self.attname):
+        if add or self.attname not in model_instance.__dict__ or not model_instance.__dict__[self.attname]:
             value = timezone.now()
             setattr(model_instance, self.attname, value)
             return value
@@ -109,9 +112,67 @@ class ModelWithConfig(models.Model):
         abstract = True
 
 
+class ModelWithDeleteAfter(models.Model):
+    delete_after_final_statuses: tuple[str, ...] = ()
+    delete_at = models.DateTimeField(default=None, null=True, blank=True, db_index=True)
+
+    class Meta(TypedModelMeta):
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        if self.delete_at is None:
+            self.set_delete_at_from_config()
+            if self.delete_at is not None and update_fields is not None:
+                kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "delete_at"]))
+        super().save(*args, **kwargs)
+
+    def get_delete_after_config_value(self):
+        from archivebox.config.common import get_config
+
+        return get_config(include_machine=False).DELETE_AFTER
+
+    def set_delete_at_from_config(self, config_value=None) -> bool:
+        if self.delete_at is not None:
+            return False
+
+        from archivebox.config.common import parse_delete_after
+
+        duration = parse_delete_after(self.get_delete_after_config_value() if config_value is None else config_value)
+        if duration is None:
+            return False
+
+        self.delete_at = (self.created_at or timezone.now()) + duration
+        return True
+
+    @classmethod
+    def missing_delete_at_candidates(cls):
+        return cls.objects.none()
+
+    @classmethod
+    def delete_expired(cls, *, batch_size: int = 100) -> int:
+        missing_delete_at = list(cls.missing_delete_at_candidates().order_by("created_at", "pk")[:batch_size])
+        for obj in missing_delete_at:
+            if obj.set_delete_at_from_config():
+                cls.objects.filter(pk=obj.pk, delete_at__isnull=True).update(delete_at=obj.delete_at)
+
+        queryset = cls.objects.filter(delete_at__isnull=False, delete_at__lte=timezone.now())
+        if cls.delete_after_final_statuses:
+            queryset = queryset.filter(status__in=cls.delete_after_final_statuses)
+
+        count = 0
+        expired = list(queryset.order_by("delete_at", "pk")[:batch_size])
+        for obj in expired:
+            obj.delete()
+            count += 1
+        return count
+
+
 class ModelWithOutputDir(ModelWithUUID):
     class Meta(ModelWithUUID.Meta):
         abstract = True
+
+    _delete_signal_registered = False
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
@@ -135,3 +196,53 @@ class ModelWithOutputDir(ModelWithUUID):
     @property
     def output_dir(self) -> Path:
         raise NotImplementedError(f"{self.__class__.__name__} must implement output_dir property")
+
+    def output_paths_for_delete(self) -> tuple[Path, ...]:
+        return (Path(self.output_dir),)
+
+    @classmethod
+    def validate_output_paths_for_delete(cls, paths) -> tuple[Path, ...]:
+        from archivebox.config.common import get_config
+
+        data_dir = get_config().DATA_DIR.resolve()
+        safe_paths = []
+        for raw_path in paths:
+            path = Path(raw_path)
+            is_safe = False
+            for candidate in (path.absolute(), path.resolve()):
+                try:
+                    candidate.relative_to(data_dir)
+                    is_safe = True
+                    break
+                except ValueError:
+                    continue
+            if not is_safe:
+                raise ValueError(f"Refusing to delete output path outside DATA_DIR: {path}")
+            safe_paths.append(path)
+        return tuple(safe_paths)
+
+    @classmethod
+    def delete_output_paths(cls, paths) -> None:
+        for path in cls.validate_output_paths_for_delete(paths):
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
+    @classmethod
+    def register_delete_signal(cls) -> None:
+        if cls._delete_signal_registered:
+            return
+
+        def schedule_output_dir_cleanup(sender, instance, **kwargs):
+            if not isinstance(instance, ModelWithOutputDir):
+                return
+            paths = instance.validate_output_paths_for_delete(instance.output_paths_for_delete())
+            transaction.on_commit(lambda paths=paths: instance.delete_output_paths(paths))
+
+        pre_delete.connect(
+            schedule_output_dir_cleanup,
+            dispatch_uid="archivebox.output_dir_cleanup_on_delete",
+            weak=False,
+        )
+        cls._delete_signal_registered = True

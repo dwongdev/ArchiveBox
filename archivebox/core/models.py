@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from statemachine import State, registry
 
 from django.db import models
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils.functional import cached_property
 from django.utils.text import slugify
 from django.utils import timezone
@@ -46,6 +46,7 @@ from archivebox.hooks import (
 )
 from archivebox.base_models.models import (
     ModelWithUUID,
+    ModelWithDeleteAfter,
     ModelWithOutputDir,
     ModelWithConfig,
     ModelWithNotes,
@@ -305,7 +306,7 @@ class SnapshotManager(models.Manager.from_queryset(SnapshotQuerySet)):  # ty: ig
         return self.get_queryset().delete()
 
 
-class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHealthStats, ModelWithStateMachine):
+class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHealthStats, ModelWithStateMachine):
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
@@ -354,6 +355,7 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
     retry_at_field_name = "retry_at"
     StatusChoices = ModelWithStateMachine.StatusChoices
     active_state = StatusChoices.STARTED
+    delete_after_final_statuses = (StatusChoices.SEALED,)
 
     crawl_id: uuid.UUID
     parent_snapshot_id: uuid.UUID | None
@@ -363,6 +365,7 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
     archiveresult_set: models.Manager["ArchiveResult"]
 
     class Meta(
+        ModelWithDeleteAfter.Meta,
         ModelWithOutputDir.Meta,
         ModelWithConfig.Meta,
         ModelWithNotes.Meta,
@@ -385,6 +388,18 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
 
     def __str__(self):
         return f"[{self.id}] {self.url[:64]}"
+
+    def get_delete_after_config_value(self):
+        return get_config(snapshot=self).DELETE_AFTER
+
+    @classmethod
+    def missing_delete_at_candidates(cls):
+        from archivebox.personas.models import Persona
+
+        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
+        return cls.objects.filter(delete_at__isnull=True).filter(
+            Q(config__has_key="DELETE_AFTER") | Q(crawl__config__has_key="DELETE_AFTER") | Q(crawl__persona_id__in=persona_ids),
+        )
 
     @classmethod
     def is_archivebox_internal_url(cls, url: str) -> bool:
@@ -3006,7 +3021,7 @@ class SnapshotMachine(BaseStateMachine):
                 cast(Any, crawl).sm.seal()
 
 
-class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
+class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
     class StatusChoices(models.TextChoices):
         QUEUED = "queued", "Queued"
         STARTED = "started", "Started"
@@ -3025,6 +3040,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
         StatusChoices.NORESULTS,
     )
     FINAL_OR_ACTIVE_STATES = (*FINAL_STATES, ACTIVE_STATE)
+    delete_after_final_statuses = FINAL_STATES
 
     @classmethod
     def normalize_status(cls, status: str | None) -> str:
@@ -3091,6 +3107,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
     process_id: uuid.UUID | None
 
     class Meta(
+        ModelWithDeleteAfter.Meta,
         ModelWithOutputDir.Meta,
         ModelWithConfig.Meta,
         ModelWithNotes.Meta,
@@ -3105,6 +3122,21 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
 
     def __str__(self):
         return f"[{self.id}] {self.snapshot.url[:64]} -> {self.plugin}"
+
+    def get_delete_after_config_value(self):
+        return get_config(archiveresult=self).DELETE_AFTER
+
+    @classmethod
+    def missing_delete_at_candidates(cls):
+        from archivebox.personas.models import Persona
+
+        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
+        return cls.objects.filter(delete_at__isnull=True).filter(
+            Q(config__has_key="DELETE_AFTER")
+            | Q(snapshot__config__has_key="DELETE_AFTER")
+            | Q(snapshot__crawl__config__has_key="DELETE_AFTER")
+            | Q(snapshot__crawl__persona_id__in=persona_ids),
+        )
 
     @property
     def created_by(self):
@@ -3193,6 +3225,12 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
             return None
 
     def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        if self.delete_at is None:
+            self.set_delete_at_from_config()
+            if self.delete_at is not None and update_fields is not None:
+                kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "delete_at"]))
+
         # Skip ModelWithOutputDir.save() to avoid creating index.json in plugin directories
         # Call the Django Model.save() directly instead
         models.Model.save(self, *args, **kwargs)

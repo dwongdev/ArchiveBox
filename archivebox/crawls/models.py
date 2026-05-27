@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from django.db import IntegrityError, models, transaction
+from django.db.models import Q
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.conf import settings
@@ -23,6 +24,7 @@ from rich import print
 
 from archivebox.base_models.models import (
     ModelWithUUID,
+    ModelWithDeleteAfter,
     ModelWithOutputDir,
     ModelWithConfig,
     ModelWithNotes,
@@ -113,7 +115,7 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
         )
 
 
-class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWithStateMachine):
+class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWithStateMachine):
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk, null=False)
@@ -154,6 +156,7 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
     state_field_name = "status"
     StatusChoices = ModelWithStateMachine.StatusChoices
     active_state = StatusChoices.STARTED
+    delete_after_final_statuses = (StatusChoices.SEALED,)
 
     schedule_id: uuid.UUID | None
     sm: "CrawlMachine"
@@ -161,6 +164,7 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
     snapshot_set: models.Manager["Snapshot"]
 
     class Meta(
+        ModelWithDeleteAfter.Meta,
         ModelWithOutputDir.Meta,
         ModelWithConfig.Meta,
         ModelWithHealthStats.Meta,
@@ -179,6 +183,18 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
         # Show last 8 digits of UUID and more of the URL
         short_id = str(self.id)[-8:]
         return f"[...{short_id}] {first_url[:120]}"
+
+    def get_delete_after_config_value(self):
+        from archivebox.config.common import get_config
+
+        return get_config(crawl=self).DELETE_AFTER
+
+    @classmethod
+    def missing_delete_at_candidates(cls):
+        from archivebox.personas.models import Persona
+
+        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
+        return cls.objects.filter(delete_at__isnull=True).filter(Q(config__has_key="DELETE_AFTER") | Q(persona_id__in=persona_ids))
 
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
@@ -975,6 +991,8 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             )
             for index, url in enumerate(urls)
         ]
+        for snapshot in snapshots:
+            snapshot.set_delete_at_from_config(config.DELETE_AFTER)
 
         try:
             created_snapshots = list(Snapshot.objects.bulk_create(snapshots))

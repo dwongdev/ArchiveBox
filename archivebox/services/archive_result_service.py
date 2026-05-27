@@ -9,7 +9,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 from django.utils import timezone
 
-from abx_dl.events import ArchiveResultEvent, ProcessCompletedEvent, ProcessStartedEvent, SnapshotEvent
+from abx_dl.events import PROCESS_EXIT_SKIPPED, ArchiveResultEvent, ProcessCompletedEvent, ProcessStartedEvent, SnapshotEvent
 from abx_dl.output_files import guess_mimetype
 from abx_dl.services.base import BaseService
 
@@ -287,32 +287,35 @@ class ArchiveResultService(BaseService):
         records = _iter_archiveresult_records(event.stdout)
         if records:
             for record in records:
+                record_status = _normalize_status(record.get("status") or "")
+                record_failed = record_status == "failed" or (not record_status and event.exit_code not in (0, PROCESS_EXIT_SKIPPED))
                 await event.emit(
                     ArchiveResultEvent(
                         snapshot_id=record.get("snapshot_id") or snapshot_event.snapshot_id,
                         plugin=record.get("plugin") or event.plugin_name,
                         hook_name=record.get("hook_name") or event.hook_name,
-                        status=record.get("status") or "",
+                        status=record_status,
                         output_str=record.get("output_str") or "",
                         output_json=record.get("output_json") if isinstance(record.get("output_json"), dict) else None,
                         output_files=event.output_files,
                         start_ts=event.start_ts,
                         end_ts=event.end_ts,
-                        error=record.get("error") or (event.stderr if event.exit_code != 0 else ""),
+                        error=record.get("error") or (event.stderr if record_failed else ""),
                     ),
                 ).now()
             return
 
+        process_failed = event.exit_code not in (0, PROCESS_EXIT_SKIPPED)
         await event.emit(
             ArchiveResultEvent(
                 snapshot_id=snapshot_event.snapshot_id,
                 plugin=event.plugin_name,
                 hook_name=event.hook_name,
-                status="failed" if event.exit_code != 0 else ("succeeded" if _has_content_files(event.output_files) else "skipped"),
-                output_str=event.stderr if event.exit_code != 0 else "",
+                status="failed" if process_failed else ("succeeded" if _has_content_files(event.output_files) else "skipped"),
+                output_str=event.stderr if process_failed else "",
                 output_files=event.output_files,
                 start_ts=event.start_ts,
                 end_ts=event.end_ts,
-                error=event.stderr if event.exit_code != 0 else "",
+                error=event.stderr if process_failed else "",
             ),
         ).now()

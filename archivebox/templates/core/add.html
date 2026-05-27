@@ -130,6 +130,15 @@
                                 </div>
 
                                 <div class="crawl-limit-field">
+                                    {{ form.delete_after.label_tag }}
+                                    {{ form.delete_after }}
+                                    {% if form.delete_after.errors %}
+                                        <div class="error">{{ form.delete_after.errors }}</div>
+                                    {% endif %}
+                                    <div class="help-text">0 keeps rows forever. Use <code>1h</code>, <code>7d</code>, <code>4w</code>, <code>6mo</code>, or <code>1y</code>.</div>
+                                </div>
+
+                                <div class="crawl-limit-field">
                                     {{ form.crawl_max_concurrent_snapshots.label_tag }}
                                     {{ form.crawl_max_concurrent_snapshots }}
                                     {% if form.crawl_max_concurrent_snapshots.errors %}
@@ -398,6 +407,11 @@
                     const concurrencyValue = personaData.effective_config?.CRAWL_MAX_CONCURRENT_SNAPSHOTS;
                     if (concurrencyInput && concurrencyValue) {
                         concurrencyInput.value = concurrencyValue;
+                    }
+                    const deleteAfterInput = document.querySelector('input[name="delete_after"]');
+                    const deleteAfterValue = personaData.effective_config?.DELETE_AFTER;
+                    if (deleteAfterInput && deleteAfterValue !== undefined && deleteAfterValue !== null) {
+                        deleteAfterInput.value = deleteAfterValue || '0';
                     }
                     if (typeof window.archiveboxSetPluginConfigValues === 'function') {
                         window.archiveboxSetPluginConfigValues(personaData.effective_config || {}, personaData.binary_urls || {});

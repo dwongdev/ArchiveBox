@@ -3,7 +3,6 @@
 __package__ = "archivebox.cli"
 __command__ = "archivebox remove"
 
-import shutil
 from pathlib import Path
 from collections.abc import Iterable
 
@@ -12,7 +11,6 @@ import rich_click as click
 from django.db.models import QuerySet
 
 from archivebox.config import DATA_DIR
-from archivebox.config.common import get_config
 from archivebox.config.django import setup_django
 from archivebox.misc.util import enforce_types, docstring
 from archivebox.misc.checks import check_data_folder
@@ -33,7 +31,6 @@ def remove(
     after: float | None = None,
     before: float | None = None,
     yes: bool = False,
-    delete: bool = False,
     out_dir: Path = DATA_DIR,
 ) -> QuerySet:
     """Remove the specified URLs from the archive"""
@@ -63,18 +60,7 @@ def remove(
         raise SystemExit(1)
 
     log_list_finished(snapshots)
-    log_removal_started(snapshots, yes=yes, delete=delete)
-
-    timer = TimedProgress(360, prefix="      ")
-    try:
-        for snapshot in snapshots:
-            if delete:
-                shutil.rmtree(snapshot.output_dir, ignore_errors=True)
-                legacy_path = get_config().ARCHIVE_DIR / snapshot.timestamp
-                if legacy_path.is_symlink():
-                    legacy_path.unlink(missing_ok=True)
-    finally:
-        timer.end()
+    log_removal_started(snapshots, yes=yes)
 
     to_remove = snapshots.count()
 
@@ -91,7 +77,6 @@ def remove(
 
 @click.command()
 @click.option("--yes", is_flag=True, help="Remove links instantly without prompting to confirm")
-@click.option("--delete", is_flag=True, help="Delete the archived content and metadata folder in addition to removing from index")
 @click.option("--before", type=float, help="Remove only URLs bookmarked before timestamp")
 @click.option("--after", type=float, help="Remove only URLs bookmarked after timestamp")
 @click.option(

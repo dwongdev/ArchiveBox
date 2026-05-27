@@ -46,6 +46,7 @@ def test_add_view_renders_tag_editor_and_url_filter_fields(client, admin_user, m
     assert 'name="max_urls"' in body
     assert 'name="crawl_max_size"' in body
     assert 'name="snapshot_max_size"' in body
+    assert 'name="delete_after"' in body
     assert 'name="crawl_max_concurrent_snapshots"' in body
     assert '<input type="text" name="notes"' in body
     assert body.index('name="persona"') < body.index("<h3>Crawl Plugins</h3>")
@@ -120,7 +121,8 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
             "max_urls": "3",
             "crawl_max_size": "45mb",
             "snapshot_max_size": "5mb",
-            "crawl_max_concurrent_snapshots": "4",
+            "delete_after": "2h",
+            "crawl_max_concurrent_snapshots": "5",
             "url_filters_allowlist": "example.com\n*.example.com",
             "url_filters_denylist": "cdn.example.com",
             "notes": "Created from /add/",
@@ -144,7 +146,9 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
     assert crawl.config["CRAWL_MAX_URLS"] == 3
     assert crawl.config["CRAWL_MAX_SIZE"] == 45 * 1024 * 1024
     assert crawl.config["SNAPSHOT_MAX_SIZE"] == 5 * 1024 * 1024
-    assert crawl.config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] == 4
+    assert crawl.config["DELETE_AFTER"] == "2h"
+    assert crawl.delete_at is not None
+    assert crawl.config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] == 5
     assert crawl.config["URL_ALLOWLIST"] == "example.com\n*.example.com"
     assert crawl.config["URL_DENYLIST"] == "cdn.example.com"
     assert "OVERWRITE" not in crawl.config

@@ -7,6 +7,7 @@ import secrets
 import sys
 import shutil
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, ClassVar, cast
 from pathlib import Path
 
@@ -273,6 +274,14 @@ class ArchivingConfig(BaseConfigSet):
     SAVE_DENYLIST: dict[str, list[str]] = Field(default={})
 
     DEFAULT_PERSONA: str = Field(default="Default")
+    DELETE_AFTER: str = Field(
+        default="0",
+        description=(
+            "Automatically delete Crawl, Snapshot, ArchiveResult, and Process rows after this duration. "
+            "Use 0, '', or None to disable. Allowed units: h/hr/hour, d/day, w/week, mo/month, y/year; "
+            "minimum non-zero duration is 1h."
+        ),
+    )
 
     def warn_if_invalid(self) -> None:
         if int(self.TIMEOUT) < 5:
@@ -292,6 +301,14 @@ class ArchivingConfig(BaseConfigSet):
 
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return v
+
+    @field_validator("DELETE_AFTER", mode="before")
+    @classmethod
+    def validate_delete_after(cls, value):
+        parse_delete_after(value)
+        if value is None:
+            return "0"
+        return str(value).strip() or "0"
 
     @property
     def URL_ALLOWLIST_PTN(self) -> re.Pattern | None:
@@ -324,6 +341,38 @@ class ArchivingConfig(BaseConfigSet):
             if self.SAVE_DENYLIST
             else {}
         )
+
+
+def parse_delete_after(value) -> timedelta | None:
+    if value is None:
+        return None
+
+    raw = str(value).strip().lower()
+    if raw in ("", "0", "none", "false", "no", "off"):
+        return None
+
+    match = re.fullmatch(r"(\d+)\s*(h|hr|hrs|hour|hours|d|day|days|w|week|weeks|mo|month|months|y|yr|yrs|year|years)", raw)
+    if not match:
+        raise ValueError("DELETE_AFTER must be 0 or a duration like 1h, 7d, 4w, 6mo, or 1y.")
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        return None
+    if unit in ("h", "hr", "hrs", "hour", "hours"):
+        duration = timedelta(hours=amount)
+    elif unit in ("d", "day", "days"):
+        duration = timedelta(days=amount)
+    elif unit in ("w", "week", "weeks"):
+        duration = timedelta(weeks=amount)
+    elif unit in ("mo", "month", "months"):
+        duration = timedelta(days=30 * amount)
+    else:
+        duration = timedelta(days=365 * amount)
+
+    if duration < timedelta(hours=1):
+        raise ValueError("DELETE_AFTER must be 0 or at least 1h.")
+    return duration
 
 
 class SearchBackendConfig(BaseConfigSet):

@@ -107,7 +107,6 @@ class ListCommandSchema(Schema):
 
 
 class RemoveCommandSchema(Schema):
-    delete: bool = True
     after: float | None = 0
     before: float | None = 999999999999999
     filter_type: str = FilterTypeChoices.exact
@@ -262,7 +261,6 @@ def cli_remove(request: HttpRequest, args: RemoveCommandSchema):
 
     remove(
         yes=True,  # no way to interactively ask for confirmation via API, so we force yes
-        delete=args.delete,
         snapshots=snapshots_to_remove,
         before=args.before,
         after=args.after,

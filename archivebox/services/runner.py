@@ -356,11 +356,8 @@ class CrawlRunner:
                     except asyncio.CancelledError as err:
                         if _is_external_task_cancelled(err):
                             raise
-                        await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
-                        await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
+                        stop_scheduling = True
                     except Exception as err:
-                        await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
-                        await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                         task_errors.append(err)
                         stop_scheduling = True
                     continue
@@ -387,8 +384,7 @@ class CrawlRunner:
                 except asyncio.CancelledError as err:
                     if _is_external_task_cancelled(err):
                         raise
-                    await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
-                    await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
+                    stop_scheduling = True
                 except Exception as err:
                     task_errors.append(err)
                     stop_scheduling = True
@@ -411,8 +407,6 @@ class CrawlRunner:
                 except asyncio.CancelledError as err:
                     if _is_external_task_cancelled(err):
                         raise
-                    await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
-                    await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                 except Exception as err:
                     task_errors.append(err)
         if task_errors:
@@ -422,11 +416,16 @@ class CrawlRunner:
 
     async def enqueue_pending_snapshots_from_projection(self) -> None:
         from archivebox.core.models import Snapshot
+        from archivebox.config.common import get_config
 
         if not isinstance(get_current_event(), CrawlStartEvent):
             return
         if await self.crawl_is_cancelled():
             return
+
+        await sync_to_async(self.crawl.refresh_from_db, thread_sensitive=True)()
+        config = await sync_to_async(lambda: get_config(crawl=self.crawl, include_machine=False), thread_sensitive=True)()
+        self.max_concurrent_snapshots = max(1, int(config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]))
 
         active_snapshot_ids = [snapshot_id for snapshot_id, task in self.snapshot_tasks.items() if not task.done()]
         available_slots = max(0, self.max_concurrent_snapshots - len(active_snapshot_ids))
@@ -499,16 +498,29 @@ class CrawlRunner:
         crawl = Crawl.objects.get(id=self.crawl.id)
         if crawl.is_finished():
             if crawl.status != Crawl.StatusChoices.SEALED:
-                crawl.status = Crawl.StatusChoices.SEALED
-                crawl.retry_at = None
-                crawl.save(update_fields=["status", "retry_at", "modified_at"])
+                if crawl.status == Crawl.StatusChoices.STARTED:
+                    crawl.sm.seal()
+                else:
+                    crawl.update_and_requeue(
+                        status=Crawl.StatusChoices.SEALED,
+                        retry_at=None,
+                    )
             return
         if crawl.status == Crawl.StatusChoices.SEALED:
-            crawl.status = Crawl.StatusChoices.QUEUED
+            crawl.update_and_requeue(
+                status=Crawl.StatusChoices.QUEUED,
+                retry_at=timezone.now(),
+            )
+            return
         elif crawl.status != Crawl.StatusChoices.STARTED:
-            crawl.status = Crawl.StatusChoices.STARTED
-        crawl.retry_at = crawl.retry_at or timezone.now()
-        crawl.save(update_fields=["status", "retry_at", "modified_at"])
+            crawl.update_and_requeue(
+                status=Crawl.StatusChoices.STARTED,
+                retry_at=crawl.retry_at or timezone.now(),
+            )
+            return
+        crawl.update_and_requeue(
+            retry_at=crawl.retry_at or timezone.now(),
+        )
 
     def _create_live_ui(self) -> LiveBusUI | None:
         stdout_is_tty = sys.stdout.isatty()
@@ -590,25 +602,28 @@ class CrawlRunner:
 
     async def enqueue_discovered_snapshots_from_outputs(self, snapshot_payload: dict[str, Any]) -> None:
         from archivebox.core.models import Snapshot
+        from archivebox.config.common import get_config
         from archivebox.hooks import collect_urls_from_plugins
 
         await sync_to_async(self.crawl.refresh_from_db, thread_sensitive=True)()
         if int(snapshot_payload["depth"]) >= self.crawl.max_depth:
-            return
-        if CrawlLimitState.from_config(snapshot_payload["config"]).get_stop_reason() == "crawl_max_size":
             return
 
         discovered_urls = await sync_to_async(collect_urls_from_plugins, thread_sensitive=True)(Path(snapshot_payload["output_dir"]))
         if not discovered_urls:
             return
 
-        parent_snapshot = snapshot_payload.get("_snapshot")
+        parent_snapshot = await sync_to_async(
+            lambda: Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_payload["id"]).first(),
+            thread_sensitive=True,
+        )()
         if parent_snapshot is None:
-            parent_snapshot = await sync_to_async(
-                lambda: Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_payload["id"]).first(),
-                thread_sensitive=True,
-            )()
-        if parent_snapshot is None:
+            return
+        config = await sync_to_async(
+            lambda: get_config(crawl=self.crawl, snapshot=parent_snapshot, include_machine=False),
+            thread_sensitive=True,
+        )()
+        if CrawlLimitState.from_config(config).get_stop_reason() == "crawl_max_size":
             return
 
         await sync_to_async(self.crawl.create_discovered_snapshots, thread_sensitive=True)(
@@ -884,9 +899,13 @@ class CrawlRunner:
         snapshot = Snapshot.objects.filter(id=snapshot_id).first()
         if snapshot is None or snapshot.status == Snapshot.StatusChoices.SEALED:
             return
-        snapshot.status = Snapshot.StatusChoices.SEALED
-        snapshot.retry_at = None
-        snapshot.save(update_fields=["status", "retry_at", "modified_at"])
+        if snapshot.status == Snapshot.StatusChoices.STARTED:
+            snapshot.sm.seal()
+            return
+        snapshot.update_and_requeue(
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=None,
+        )
 
 
 def run_crawl(
@@ -1106,14 +1125,20 @@ def recover_orphaned_crawls() -> int:
 
         snapshots = list(crawl.snapshot_set.all())
         if not snapshots or all(snapshot.status == Snapshot.StatusChoices.SEALED for snapshot in snapshots):
-            crawl.status = Crawl.StatusChoices.SEALED
-            crawl.retry_at = None
-            crawl.save(update_fields=["status", "retry_at", "modified_at"])
+            if crawl.status == Crawl.StatusChoices.STARTED:
+                crawl.sm.seal()
+            else:
+                crawl.update_and_requeue(
+                    status=Crawl.StatusChoices.SEALED,
+                    retry_at=None,
+                )
             recovered += 1
             continue
 
-        crawl.retry_at = now
-        crawl.save(update_fields=["retry_at", "modified_at"])
+        crawl.update_and_requeue(
+            status=Crawl.StatusChoices.QUEUED,
+            retry_at=now,
+        )
         recovered += 1
 
     return recovered
@@ -1171,27 +1196,38 @@ def recover_orphaned_snapshots() -> int:
 
         results = list(snapshot.archiveresult_set.all())
         if results and all(result.status in ArchiveResult.FINAL_STATES for result in results):
-            snapshot.status = Snapshot.StatusChoices.SEALED
-            snapshot.retry_at = None
             snapshot.downloaded_at = snapshot.downloaded_at or now
-            snapshot.save(update_fields=["status", "retry_at", "downloaded_at", "modified_at"])
+            snapshot.save(update_fields=["downloaded_at", "modified_at"])
+            if snapshot.status == Snapshot.StatusChoices.STARTED:
+                snapshot.sm.seal()
+            else:
+                snapshot.update_and_requeue(
+                    status=Snapshot.StatusChoices.SEALED,
+                    retry_at=None,
+                )
 
             crawl = snapshot.crawl
             if crawl.is_finished() and crawl.status != Crawl.StatusChoices.SEALED:
-                crawl.status = Crawl.StatusChoices.SEALED
-                crawl.retry_at = None
-                crawl.save(update_fields=["status", "retry_at", "modified_at"])
+                if crawl.status == Crawl.StatusChoices.STARTED:
+                    crawl.sm.seal()
+                else:
+                    crawl.update_and_requeue(
+                        status=Crawl.StatusChoices.SEALED,
+                        retry_at=None,
+                    )
             recovered += 1
             continue
 
-        snapshot.status = Snapshot.StatusChoices.QUEUED
-        snapshot.retry_at = now
-        snapshot.save(update_fields=["status", "retry_at", "modified_at"])
+        snapshot.update_and_requeue(
+            status=Snapshot.StatusChoices.QUEUED,
+            retry_at=now,
+        )
 
         crawl = snapshot.crawl
-        crawl.status = Crawl.StatusChoices.QUEUED
-        crawl.retry_at = now
-        crawl.save(update_fields=["status", "retry_at", "modified_at"])
+        crawl.update_and_requeue(
+            status=Crawl.StatusChoices.QUEUED,
+            retry_at=now,
+        )
         recovered += 1
 
     return recovered
@@ -1199,19 +1235,24 @@ def recover_orphaned_snapshots() -> int:
 
 def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> int:
     from archivebox.crawls.models import Crawl, CrawlSchedule
-    from archivebox.core.models import Snapshot
+    from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.machine.models import Binary, Process
 
     last_recovery_at = 0.0
+    last_retention_at = 0.0
     while True:
+        now_monotonic = time.monotonic()
         if daemon:
-            now_monotonic = time.monotonic()
             if now_monotonic - last_recovery_at >= 30.0:
                 Process.cleanup_stale_running()
                 Process.cleanup_orphaned_workers()
                 recover_orphaned_snapshots()
                 recover_orphaned_crawls()
                 last_recovery_at = now_monotonic
+        if now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
+            for model in (ArchiveResult, Snapshot, Crawl, Process):
+                model.delete_expired(batch_size=100)
+            last_retention_at = now_monotonic
 
         if daemon and crawl_id is None:
             now = timezone.now()

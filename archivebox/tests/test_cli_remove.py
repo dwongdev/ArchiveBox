@@ -5,7 +5,7 @@ Verify remove deletes snapshots from DB and filesystem.
 """
 
 import os
-import sqlite3
+import json
 import subprocess
 from pathlib import Path
 
@@ -24,6 +24,26 @@ def _find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
     return None
 
 
+def _snapshot_rows(data_dir: Path, env: dict) -> list[dict]:
+    script = """
+import json
+from archivebox.core.models import Snapshot
+print(json.dumps([
+    {"id": str(snapshot.id), "url": snapshot.url}
+    for snapshot in Snapshot.objects.order_by("url")
+]))
+"""
+    result = subprocess.run(
+        ["archivebox", "manage", "shell", "-c", script],
+        cwd=data_dir,
+        capture_output=True,
+        env=env,
+        timeout=30,
+        check=True,
+    )
+    return json.loads(result.stdout.decode("utf-8").strip().splitlines()[-1])
+
+
 def test_remove_deletes_snapshot_from_db(tmp_path, process, disable_extractors_dict):
     """Test that remove command deletes snapshot from database."""
     os.chdir(tmp_path)
@@ -35,12 +55,11 @@ def test_remove_deletes_snapshot_from_db(tmp_path, process, disable_extractors_d
         env=disable_extractors_dict,
     )
 
-    # Verify it exists
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
-    assert count_before == 1
+    rows = _snapshot_rows(tmp_path, disable_extractors_dict)
+    assert len(rows) == 1
+    snapshot_id = rows[0]["id"]
+    snapshot_dir = _find_snapshot_dir(tmp_path, snapshot_id)
+    assert snapshot_dir is not None, f"Snapshot output directory not found for {snapshot_id}"
 
     # Remove it
     subprocess.run(
@@ -49,17 +68,12 @@ def test_remove_deletes_snapshot_from_db(tmp_path, process, disable_extractors_d
         env=disable_extractors_dict,
     )
 
-    # Verify it's gone
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
-
-    assert count_after == 0
+    assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 0
+    assert not snapshot_dir.exists()
 
 
 def test_remove_deletes_archive_directory(tmp_path, process, disable_extractors_dict):
-    """Test that remove --delete removes the current snapshot output directory."""
+    """Test that remove --yes removes the current snapshot output directory."""
     os.chdir(tmp_path)
 
     # Add a snapshot
@@ -69,16 +83,15 @@ def test_remove_deletes_archive_directory(tmp_path, process, disable_extractors_
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = str(c.execute("SELECT id FROM core_snapshot").fetchone()[0])
-    conn.close()
+    rows = _snapshot_rows(tmp_path, disable_extractors_dict)
+    assert len(rows) == 1
+    snapshot_id = rows[0]["id"]
 
     snapshot_dir = _find_snapshot_dir(tmp_path, snapshot_id)
     assert snapshot_dir is not None, f"Snapshot output directory not found for {snapshot_id}"
 
     subprocess.run(
-        ["archivebox", "remove", "https://example.com", "--yes", "--delete"],
+        ["archivebox", "remove", "https://example.com", "--yes"],
         capture_output=True,
         env=disable_extractors_dict,
     )
@@ -109,6 +122,37 @@ def test_remove_yes_flag_skips_confirmation(tmp_path, process, disable_extractor
     assert "Index now contains 0 links." in output
 
 
+def test_remove_without_yes_prompts_and_keeps_snapshot(tmp_path, process, disable_extractors_dict):
+    """Test that omitting --yes prompts for confirmation and keeps data when declined."""
+    os.chdir(tmp_path)
+
+    subprocess.run(
+        ["archivebox", "add", "--index-only", "--depth=0", "https://example.com"],
+        capture_output=True,
+        env=disable_extractors_dict,
+        check=True,
+    )
+
+    rows = _snapshot_rows(tmp_path, disable_extractors_dict)
+    assert len(rows) == 1
+    snapshot_dir = _find_snapshot_dir(tmp_path, rows[0]["id"])
+    assert snapshot_dir is not None
+
+    result = subprocess.run(
+        ["archivebox", "remove", "https://example.com"],
+        input=b"n\n",
+        capture_output=True,
+        env=disable_extractors_dict,
+        timeout=30,
+    )
+
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == 0
+    assert "Do you want to proceed" in output or "y/[n]" in output
+    assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 1
+    assert snapshot_dir.exists()
+
+
 def test_remove_multiple_snapshots(tmp_path, process, disable_extractors_dict):
     """Test removing multiple snapshots at once."""
     os.chdir(tmp_path)
@@ -121,12 +165,7 @@ def test_remove_multiple_snapshots(tmp_path, process, disable_extractors_dict):
             env=disable_extractors_dict,
         )
 
-    # Verify both exist
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
-    assert count_before == 2
+    assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 2
 
     # Remove both
     subprocess.run(
@@ -135,13 +174,7 @@ def test_remove_multiple_snapshots(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    # Verify both are gone
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
-
-    assert count_after == 0
+    assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 0
 
 
 def test_remove_with_filter(tmp_path, process, disable_extractors_dict):
@@ -186,13 +219,8 @@ def test_remove_with_regex_filter_deletes_all_matches(tmp_path, process, disable
         check=True,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
-
     output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
-    assert count_after == 0
+    assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 0
     assert "Removed" in output or "Found" in output
 
 

@@ -15,12 +15,11 @@ from typing import TYPE_CHECKING, Any, cast
 from statemachine import State, registry
 
 from django.db import models
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django.utils.functional import cached_property
-from django_stubs_ext.db.models import TypedModelMeta
 
-from archivebox.base_models.models import ModelWithHealthStats
+from archivebox.base_models.models import ModelWithDeleteAfter, ModelWithHealthStats
 from archivebox.workers.models import BaseStateMachine, ModelWithStateMachine
 from .detect import get_host_guid, get_os_info, get_vm_info, get_host_network, get_host_stats
 
@@ -132,7 +131,7 @@ def _sanitize_machine_config(config: dict[str, Any] | None, *, lib_dir: str | Pa
         return {}
 
     sanitized = {key: value for key, value in config.items() if str(key).endswith("_BINARY")}
-    active_lib_dir = Path(lib_dir).expanduser().resolve(strict=False) if lib_dir else None
+    active_lib_dir = Path(lib_dir).expanduser().absolute() if lib_dir else None
     for key, value in list(sanitized.items()):
         if not str(key).endswith("_BINARY"):
             continue
@@ -149,7 +148,7 @@ def _sanitize_machine_config(config: dict[str, Any] | None, *, lib_dir: str | Pa
                     sanitized.pop(key, None)
                     continue
                 if active_lib_dir is not None:
-                    resolved_path = path.resolve(strict=False)
+                    resolved_path = path.absolute()
                     try:
                         resolved_path.relative_to(active_lib_dir)
                     except ValueError:
@@ -201,10 +200,7 @@ class Machine(ModelWithHealthStats):
         global _CURRENT_MACHINE
         if _CURRENT_MACHINE:
             if timezone.now() < _CURRENT_MACHINE.modified_at + timedelta(seconds=MACHINE_RECHECK_INTERVAL):
-                if not cls.objects.filter(id=_CURRENT_MACHINE.id).exists():
-                    _CURRENT_MACHINE = None
-                else:
-                    return cls._sanitize_config(_CURRENT_MACHINE)
+                return _CURRENT_MACHINE
             else:
                 _CURRENT_MACHINE = None
 
@@ -249,9 +245,9 @@ class Machine(ModelWithHealthStats):
 
     @classmethod
     def _sanitize_config(cls, machine: Machine) -> Machine:
-        from archivebox.config.constants import CONSTANTS
+        from archivebox.config.common import get_config
 
-        sanitized = _sanitize_machine_config(machine.config, lib_dir=os.environ.get("LIB_DIR") or CONSTANTS.DEFAULT_LIB_DIR)
+        sanitized = _sanitize_machine_config(machine.config, lib_dir=get_config(include_machine=False).LIB_DIR)
         current = machine.config or {}
         if sanitized != current:
             machine.config = sanitized
@@ -908,7 +904,7 @@ class ProcessManager(models.Manager):
         return process
 
 
-class Process(models.Model):
+class Process(ModelWithDeleteAfter, models.Model):
     """
     Tracks a single OS process execution.
 
@@ -1098,10 +1094,11 @@ class Process(models.Model):
     archiveresult: ArchiveResult
 
     state_machine_name: str = "archivebox.machine.models.ProcessMachine"
+    delete_after_final_statuses = (StatusChoices.EXITED,)
 
     objects = ProcessManager()  # pyright: ignore[reportIncompatibleVariableOverride]
 
-    class Meta(TypedModelMeta):
+    class Meta(ModelWithDeleteAfter.Meta):
         app_label = "machine"
         verbose_name = "Process"
         verbose_name_plural = "Processes"
@@ -1117,6 +1114,23 @@ class Process(models.Model):
     def __str__(self) -> str:
         cmd_str = " ".join(self.cmd[:3]) if self.cmd else "(no cmd)"
         return f"Process[{self.id}] {cmd_str} ({self.status})"
+
+    def get_delete_after_config_value(self):
+        from archivebox.config.common import get_config
+
+        value = self.env.get("DELETE_AFTER")
+        if value not in (None, ""):
+            return value
+        value = (self.machine.config or {}).get("DELETE_AFTER")
+        if value not in (None, ""):
+            return value
+        return get_config(include_machine=False).DELETE_AFTER
+
+    @classmethod
+    def missing_delete_at_candidates(cls):
+        return cls.objects.filter(delete_at__isnull=True).filter(
+            Q(env__has_key="DELETE_AFTER") | Q(machine__config__has_key="DELETE_AFTER"),
+        )
 
     # Properties that delegate to related objects
     @property

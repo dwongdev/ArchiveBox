@@ -443,20 +443,14 @@ def log_list_finished(snapshots):
     print()
 
 
-def log_removal_started(snapshots, yes: bool, delete: bool):
+def log_removal_started(snapshots, yes: bool):
     count = snapshots.count() if hasattr(snapshots, "count") else len(snapshots)
     print(f"[yellow3][i] Found {count} matching URLs to remove.[/]")
-    if delete:
-        file_counts = [s.num_outputs for s in snapshots if os.access(s.output_dir, os.R_OK)]
-        print(
-            f"    {count} Links will be de-listed from the main index, and their archived content folders will be deleted from disk.\n"
-            f"    ({len(file_counts)} data folders with {sum(file_counts)} archived files will be deleted!)",
-        )
-    else:
-        print(
-            "    Matching links will be de-listed from the main index, but their archived content folders will remain in place on disk.\n"
-            "    (Pass --delete if you also want to permanently delete the data folders)",
-        )
+    file_counts = [s.num_outputs for s in snapshots if os.access(s.output_dir, os.R_OK)]
+    print(
+        f"    {count} Links will be deleted from the index and their archived content folders will be deleted from disk.\n"
+        f"    ({len(file_counts)} data folders with {sum(file_counts)} archived files will be deleted!)",
+    )
 
     if not yes:
         print()
