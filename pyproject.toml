@@ -55,6 +55,7 @@ dependencies = [
     "rich>=14.2.0",          # for: pretty CLI output
     "rich-click>=1.9.5",     # for: pretty CLI command help text & output
     "ipython>=8.27.0",       # for: archivebox shell (TODO: replace with bpython?)
+    "toml>=0.10.2",          # for: archivebox config output and TOML migration helpers
     ### Host OS / System
     "supervisor>=4.2.5",     # for: archivebox server starting daphne and workers
     "psutil>=6.0.0",         # for: monitoring orchestractor,actors,workers,etc. and machine.models.Process
@@ -80,7 +81,7 @@ dependencies = [
     ### Binary/Package Management
     "abxbus==2.5.7",          # EventBus API
     "abxpkg>=1.11.8",         # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
-    "abx-plugins>=1.11.11",  # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
+    "abx-plugins>=1.11.12",  # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
     "abx-dl>=1.11.12",       # shared ArchiveBox downloader package with blocking install preflight
     ### UUID7 backport for Python <3.14
     "uuid7>=0.1.0; python_version < '3.14'",  # provides the uuid_extensions module on Python 3.13

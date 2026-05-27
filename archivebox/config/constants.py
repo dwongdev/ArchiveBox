@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from benedict import benedict
+from platformdirs import user_config_path
 
 from archivebox.misc.logging import DEFAULT_CLI_COLORS
 
@@ -26,6 +27,7 @@ from .paths import (
     DATA_DIR,
     ARCHIVE_DIR,
     USERS_DIR,
+    _env_path,
     get_collection_id,
     get_machine_id,
     get_machine_type,
@@ -113,8 +115,11 @@ class ConstantsDict:
     DEFAULT_TMP_DIR: Path = DATA_DIR / TMP_DIR_NAME / MACHINE_ID  # ./data/tmp/abc3244323
 
     LIB_DIR_NAME: str = "lib"
-    DEFAULT_LIB_DIR: Path = DATA_DIR / LIB_DIR_NAME / MACHINE_TYPE  # ./data/lib/arm64-linux-docker
-    DEFAULT_LIB_BIN_DIR: Path = DEFAULT_LIB_DIR / "bin"  # ./data/lib/arm64-linux-docker/bin
+    DEFAULT_LIB_DIR: Path = _env_path(
+        "LIB_DIR",
+        user_config_path("abx") / LIB_DIR_NAME,
+    )
+    DEFAULT_LIB_BIN_DIR: Path = _env_path("LIB_BIN_DIR", DEFAULT_LIB_DIR / "bin")
 
     RESERVED_ARCHIVE_DIR_NAMES: frozenset[str] = frozenset(
         (

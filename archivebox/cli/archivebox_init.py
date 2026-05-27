@@ -136,8 +136,6 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
 
     CONSTANTS.PERSONAS_DIR.mkdir(parents=True, exist_ok=True)
     CONSTANTS.DEFAULT_TMP_DIR.mkdir(parents=True, exist_ok=True)
-    CONSTANTS.DEFAULT_LIB_DIR.mkdir(parents=True, exist_ok=True)
-    (CONSTANTS.DEFAULT_LIB_DIR / "bin").mkdir(parents=True, exist_ok=True)
 
     from archivebox.config.paths import get_or_create_working_tmp_dir, get_or_create_working_lib_dir
 

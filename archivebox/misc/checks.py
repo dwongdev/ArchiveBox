@@ -288,7 +288,7 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
                     "  - It [yellow]should[/yellow] be able to hold at least 1GB of data (some dependencies like Chrome can be large).[/grey53]",
                     "",
                     "[violet]Hint:[/violet] Fix it by setting LIB_DIR to a path that meets these requirements, e.g.:",
-                    f"      [green]archivebox config --set LIB_DIR={get_or_create_working_lib_dir(autofix=False, quiet=True) or '/opt/archivebox/lib'}[/green]",
+                    f"      [green]archivebox config --set LIB_DIR={get_or_create_working_lib_dir(autofix=False, quiet=True) or config.LIB_DIR}[/green]",
                     "",
                 ),
             )

@@ -27,19 +27,12 @@ def _format_binary_abspath(
     except Exception:
         normalized = path
 
-    machine = platform.machine().lower()
-    system = platform.system().lower()
-    arch_scope = f"{machine}-{system}"
-
     candidate_bases: tuple[tuple[Path, str], ...] = (
         (pwd, "./"),
         (lib_dir, "LIB_DIR/"),
         (Path(os.environ.get("LIB_DIR", "")), "LIB_DIR/") if os.environ.get("LIB_DIR") else (Path(), ""),
         (personas_dir, "PERSONAS_DIR/"),
         (Path(os.environ.get("PERSONAS_DIR", "")), "PERSONAS_DIR/") if os.environ.get("PERSONAS_DIR") else (Path(), ""),
-        (home / ".config" / "abx" / "lib" / arch_scope, "LIB_DIR/"),
-        (home / ".config" / "abx" / "lib", "LIB_DIR/"),
-        (home / ".config" / "abx" / "personas", "PERSONAS_DIR/"),
         (home, "~/"),
     )
 
@@ -226,7 +219,7 @@ def version(
                             installed.abspath,
                             pwd=Path.cwd(),
                             lib_dir=config.LIB_DIR,
-                            personas_dir=Path.home() / ".config" / "abx" / "personas",
+                            personas_dir=config.PERSONAS_DIR,
                             home=Path.home(),
                         )
                         if compact_paths

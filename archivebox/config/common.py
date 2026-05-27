@@ -431,6 +431,18 @@ class ArchiveBoxBaseConfig(
             users_dir = self.ARCHIVE_DIR / users_dir
         self.USERS_DIR = users_dir.resolve()
 
+        lib_dir = self.LIB_DIR.expanduser()
+        if not lib_dir.is_absolute():
+            lib_dir = self.DATA_DIR / lib_dir
+        self.LIB_DIR = lib_dir.resolve()
+
+        lib_bin_dir = self.LIB_BIN_DIR.expanduser()
+        if lib_bin_dir == CONSTANTS.DEFAULT_LIB_BIN_DIR and self.LIB_DIR != CONSTANTS.DEFAULT_LIB_DIR:
+            lib_bin_dir = self.LIB_DIR / "bin"
+        elif not lib_bin_dir.is_absolute():
+            lib_bin_dir = self.DATA_DIR / lib_bin_dir
+        self.LIB_BIN_DIR = lib_bin_dir.resolve()
+
         return self
 
 
@@ -567,6 +579,8 @@ def get_config(
     config_data["ABX_RUNTIME"] = "archivebox"
 
     config = ArchiveBoxConfig.model_validate(config_data)
+    os.environ["LIB_DIR"] = str(config.LIB_DIR)
+    os.environ["LIB_BIN_DIR"] = str(config.LIB_BIN_DIR)
     os.environ["ABXPKG_LIB_DIR"] = str(config.LIB_DIR)
     archiving_warning_key = (config.TIMEOUT, config.USE_COLOR)
     if archiving_warning_key not in _WARNED_ARCHIVING_CONFIGS:

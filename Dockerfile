@@ -86,6 +86,7 @@ ENV ARCHIVEBOX_USER="archivebox" \
 ENV CODE_DIR=/app \
     DATA_DIR=/data \
     LIB_DIR=/opt/archivebox/lib \
+    LIB_BIN_DIR=/opt/archivebox/lib/bin \
     ABXPKG_LIB_DIR=/opt/archivebox/lib \
     PLAYWRIGHT_BROWSERS_PATH=/browsers
 
@@ -266,7 +267,7 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     echo "[+] PIP Installing ArchiveBox dependencies from pyproject.toml..." \
     && apt-get update -qq \
     && apt-get install -qq -y --no-install-recommends build-essential gcc python3-dev \
-    && uv sync \
+    && uv --no-cache sync \
         --refresh \
         --no-dev \
         --inexact \
@@ -343,7 +344,13 @@ RUN echo "[+] Initializing image collection..." \
     && PUID=0 PGID=0 archivebox init \
     && find "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
-    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$DATA_DIR"/logs "$DATA_DIR"/sources "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas "$DATA_DIR"/index.sqlite3 "$DATA_DIR"/ArchiveBox.conf 2>/dev/null || true)
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
+    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" \
+        "$DATA_DIR" "$DATA_DIR"/.archivebox_id "$DATA_DIR"/ArchiveBox.conf "$DATA_DIR"/index.sqlite3 \
+        "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
+        "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
+        "$DATA_DIR"/tmp "$DATA_DIR"/tmp/* \
+        2>/dev/null || true)
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
@@ -353,7 +360,9 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
 
 # Verify ArchiveBox is installed and write full version/dependency info.
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$LIB_DIR"/bin "$PLAYWRIGHT_BROWSERS_PATH" \
+    && gosu "$ARCHIVEBOX_USER" archivebox install 2>&1 | tee -a /VERSION.txt \
     && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
