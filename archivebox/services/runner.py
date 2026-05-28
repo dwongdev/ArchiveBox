@@ -20,6 +20,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 from django.utils import timezone
 from rich.console import Console
+from rich.text import Text
 
 from abx_dl.events import (
     BinaryRequestEvent,
@@ -73,6 +74,43 @@ from .tag_service import TagService
 def _bus_name(prefix: str, identifier: str) -> str:
     normalized = "".join(ch if ch.isalnum() else "_" for ch in identifier)
     return f"{prefix}_{normalized}"
+
+
+def _runner_short_id(identifier) -> str:
+    return str(identifier).replace("-", "")[-8:]
+
+
+def _runner_label(value: str, *, reserve: int) -> str:
+    width = max(24, shutil.get_terminal_size(fallback=(120, 40)).columns - reserve)
+    value = " ".join(str(value or "").split())
+    if len(value) <= width:
+        return value
+    return f"{value[: max(0, width - 3)]}..."
+
+
+def _runner_console_line(*, crawl, snapshot=None, status: str = "STARTED") -> None:
+    line = Text()
+    line.append(f"[Crawl#{_runner_short_id(crawl.id)}]", style="cyan bold")
+    line.append(" ")
+    if snapshot is not None:
+        line.append(f"[Snapshot#{_runner_short_id(snapshot.id)}]", style="magenta bold")
+        line.append(" ")
+    status_styles = {
+        "STARTED": "green bold",
+        "SEALED": "blue bold",
+        "PAUSED": "yellow bold",
+    }
+    line.append(f"[{status}]", style=status_styles.get(status, "white bold"))
+    line.append(" ")
+    prefix_width = len(line.plain)
+    if snapshot is not None:
+        label = snapshot.url
+    else:
+        label = (getattr(crawl, "label", "") or "").strip()
+        if not label:
+            label = (getattr(crawl, "urls", "") or "").partition("\n")[0].strip() or str(crawl.id)
+    line.append(_runner_label(label, reserve=prefix_width))
+    Console(highlight=False).print(line)
 
 
 def _count_selected_hooks(plugins: dict[str, Plugin], selected_plugins: list[str] | None) -> int:
@@ -137,6 +175,12 @@ async def _run_event_now(event, timeout: float | None = None):
     return event
 
 
+async def _emit_event_now(bus, event, timeout: float | None = None, parent_event=None):
+    if parent_event is not None:
+        event.event_parent_id = parent_event.event_id
+    return await _run_event_now(bus.emit(event), timeout)
+
+
 def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     if os.environ.get("PYTEST_CURRENT_TEST") and not allow_under_pytest:
         return False
@@ -186,11 +230,12 @@ class CrawlRunner:
         selected_plugins: list[str] | None = None,
         process_discovered_snapshots_inline: bool = True,
         show_progress: bool = True,
+        interactive_interrupts: bool = False,
     ):
         self.crawl = crawl
         self.bus = create_bus(name=_bus_name("ArchiveBox", str(crawl.id)), total_timeout=3600.0)
         self.plugins = discover_plugins()
-        HookProcessService(self.bus, emit_jsonl=False, interactive_tty=False)
+        HookProcessService(self.bus, emit_jsonl=False, interactive_tty=interactive_interrupts)
         register_sonic_daemon_event_handler(self.bus)
         PersistedProcessService(self.bus)
         BinaryService(self.bus)
@@ -199,6 +244,7 @@ class CrawlRunner:
         MachineService(self.bus)
         self.process_discovered_snapshots_inline = process_discovered_snapshots_inline
         self.show_progress = show_progress
+        self.interactive_interrupts = interactive_interrupts
 
         async def ignore_snapshot(_snapshot_id: str) -> None:
             return None
@@ -236,8 +282,17 @@ class CrawlRunner:
             previous = signal.getsignal(sig)
 
             def request_abort(_signum, _frame, sig=sig) -> None:
-                os.write(sys.stdout.fileno(), f"\n[🛑] Got {sig.name}, stopping gracefully...\n".encode())
+                already_requested = self._signal_abort_requested
+                if not already_requested:
+                    message = (
+                        f"\n[🛑] Got {sig.name}, aborting the active hook...\n"
+                        if self.interactive_interrupts
+                        else f"\n[🛑] Got {sig.name}, stopping gracefully...\n"
+                    )
+                    os.write(sys.stdout.fileno(), message.encode())
                 self._request_abort_from_signal(sig)
+                if not already_requested:
+                    return
                 raise KeyboardInterrupt
 
             signal.signal(sig, request_abort)
@@ -251,9 +306,10 @@ class CrawlRunner:
             signal.signal(sig, previous)
 
     def _request_abort_from_signal(self, _sig: signal.Signals) -> None:
+        already_requested = self._signal_abort_requested
         self._signal_abort_requested = True
         self._skip_wait_until_idle = True
-        if self._run_task is not None and not self._run_task.done():
+        if (not self.interactive_interrupts or already_requested) and self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
 
     async def crawl_is_cancelled(self) -> bool:
@@ -846,30 +902,40 @@ class CrawlRunner:
                 finally:
                     if self.snapshot_tasks:
                         await self.drain_snapshot_tasks()
-                    await _run_event_now(
-                        event.emit(
-                            CrawlCleanupEvent(
-                                url=snapshot["url"],
-                                snapshot_id=snapshot["id"],
-                                output_dir=str(output_dir),
-                                event_timeout=crawl_setup_phase_timeout,
-                                event_handler_slow_timeout=slow_warning_timeout(crawl_setup_phase_timeout),
+                    await asyncio.shield(
+                        asyncio.create_task(
+                            _emit_event_now(
+                                self.bus,
+                                CrawlCleanupEvent(
+                                    url=snapshot["url"],
+                                    snapshot_id=snapshot["id"],
+                                    output_dir=str(output_dir),
+                                    event_timeout=crawl_setup_phase_timeout,
+                                    event_handler_slow_timeout=slow_warning_timeout(crawl_setup_phase_timeout),
+                                ),
+                                crawl_setup_phase_timeout,
+                                parent_event=event,
                             ),
+                            context=contextvars.Context(),
                         ),
-                        crawl_setup_phase_timeout,
                     )
             finally:
                 cancel_watcher.cancel()
                 await asyncio.gather(cancel_watcher, return_exceptions=True)
-            await _run_event_now(
-                event.emit(
-                    CrawlCompletedEvent(
-                        url=snapshot["url"],
-                        snapshot_id=snapshot["id"],
-                        output_dir=str(output_dir),
+            await asyncio.shield(
+                asyncio.create_task(
+                    _emit_event_now(
+                        self.bus,
+                        CrawlCompletedEvent(
+                            url=snapshot["url"],
+                            snapshot_id=snapshot["id"],
+                            output_dir=str(output_dir),
+                        ),
+                        CrawlCompletedEvent.model_fields["event_timeout"].default,
+                        parent_event=event,
                     ),
+                    context=contextvars.Context(),
                 ),
-                CrawlCompletedEvent.model_fields["event_timeout"].default,
             )
 
         on_archivebox_CrawlStartEvent.__name__ = "on_archivebox_CrawlStartEvent__run_snapshots"
@@ -1046,6 +1112,7 @@ def run_crawl(
     selected_plugins: list[str] | None = None,
     process_discovered_snapshots_inline: bool = True,
     show_progress: bool = True,
+    interactive_interrupts: bool = False,
 ) -> None:
     from archivebox.crawls.models import Crawl
     from django.db import close_old_connections
@@ -1061,6 +1128,7 @@ def run_crawl(
                     selected_plugins=selected_plugins,
                     process_discovered_snapshots_inline=process_discovered_snapshots_inline,
                     show_progress=show_progress,
+                    interactive_interrupts=interactive_interrupts,
                 ).run(),
             )
         finally:
@@ -1197,9 +1265,9 @@ def run_snapshot_maintenance(snapshot_id: str) -> bool:
     return True
 
 
-def run_due_crawl(crawl, *, lock_seconds: int) -> bool:
+def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = False) -> bool:
     if crawl.is_paused:
-        print(f"[runner] Crawl {str(crawl.id)[-12:]} paused; skipping until resumed", flush=True)
+        _runner_console_line(crawl=crawl, status="PAUSED")
         return True
     if crawl.status in (crawl.StatusChoices.QUEUED, crawl.StatusChoices.STARTED):
         from archivebox.core.models import Snapshot
@@ -1255,29 +1323,28 @@ def run_due_crawl(crawl, *, lock_seconds: int) -> bool:
             return True
         if not crawl.claim_processing_lock(lock_seconds=lock_seconds):
             return False
-        print(f"[runner] Crawl {str(crawl.id)[-12:]} running status={crawl.status} snapshots={snapshot_count}", flush=True)
-        run_crawl(str(crawl.id), process_discovered_snapshots_inline=True)
+        _runner_console_line(crawl=crawl)
+        run_crawl(str(crawl.id), process_discovered_snapshots_inline=True, interactive_interrupts=interactive_interrupts)
         return True
 
     if crawl.status == crawl.StatusChoices.SEALED:
-        print(f"[runner] Crawl {str(crawl.id)[-12:]} sealed; clearing retry tick", flush=True)
+        _runner_console_line(crawl=crawl, status="SEALED")
         crawl.retry_at = None
         crawl.save(update_fields=["retry_at", "modified_at"])
         return True
 
-    print(f"[runner] Crawl {str(crawl.id)[-12:]} status={crawl.status}; clearing retry tick", flush=True)
     crawl.retry_at = None
     crawl.save(update_fields=["retry_at", "modified_at"])
     return True
 
 
-def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
+def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: bool = False) -> bool:
     from archivebox.core.models import Snapshot
 
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
-            print(f"[runner] Snapshot {str(snapshot.id)[-12:]} paused maintenance fs_version={snapshot.fs_version}", flush=True)
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
             run_snapshot_maintenance(str(snapshot.id))
             if not selected_plugins:
                 # No targeted plugin rows remain, so put paused snapshots back
@@ -1298,10 +1365,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
         if not Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
             return False
         try:
-            print(
-                f"[runner] Snapshot {str(snapshot.id)[-12:]} paused targeted plugins={','.join(selected_plugins)} url={snapshot.url}",
-                flush=True,
-            )
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
             # Explicit maintenance, e.g. `archivebox update --index-only`, may
             # need to run search/index hooks for a paused snapshot. That should
             # not resume the crawl or make unrelated queued work runnable, so
@@ -1312,6 +1376,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
                 snapshot_ids=[str(snapshot.id)],
                 selected_plugins=selected_plugins,
                 process_discovered_snapshots_inline=True,
+                interactive_interrupts=interactive_interrupts,
             )
         finally:
             # Targeted plugin rows can complete while the Snapshot remains
@@ -1328,22 +1393,17 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
             # migration. Run the filesystem/json save path before queued search
             # backfill rows so both maintenance streams stay ordered without
             # changing Snapshot.status away from SEALED.
-            print(
-                f"[runner] Snapshot {str(snapshot.id)[-12:]} sealed maintenance fs_version={snapshot.fs_version} url={snapshot.url}",
-                flush=True,
-            )
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
             return run_snapshot_maintenance(str(snapshot.id))
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
-            print(
-                f"[runner] Snapshot {str(snapshot.id)[-12:]} sealed targeted plugins={','.join(selected_plugins)} url={snapshot.url}",
-                flush=True,
-            )
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
             run_crawl(
                 str(snapshot.crawl_id),
                 snapshot_ids=[str(snapshot.id)],
                 selected_plugins=selected_plugins,
                 process_discovered_snapshots_inline=True,
+                interactive_interrupts=interactive_interrupts,
             )
             return True
         return run_snapshot_maintenance(str(snapshot.id))
@@ -1351,18 +1411,18 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
     if snapshot.status == Snapshot.StatusChoices.STARTED:
         _reset_count, running_count = reset_abandoned_snapshot_results(snapshot)
         if running_count:
-            print(f"[runner] Snapshot {str(snapshot.id)[-12:]} still has {running_count} running ArchiveResults", flush=True)
             snapshot.update_and_requeue(retry_at=timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS))
             return True
 
     if not snapshot.claim_processing_lock(lock_seconds=lock_seconds):
         return False
-    print(f"[runner] Snapshot {str(snapshot.id)[-12:]} running status={snapshot.status} url={snapshot.url}", flush=True)
+    _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
     run_crawl(
         str(snapshot.crawl_id),
         snapshot_ids=[str(snapshot.id)],
         selected_plugins=queued_plugins_for_snapshot(str(snapshot.id)),
         process_discovered_snapshots_inline=True,
+        interactive_interrupts=interactive_interrupts,
     )
     return True
 
@@ -1488,7 +1548,13 @@ def run_install(*, plugin_names: list[str] | None = None) -> None:
     asyncio.run(_run_install(plugin_names=plugin_names))
 
 
-def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None, maintenance_only: bool = False) -> int:
+def run_pending_crawls(
+    *,
+    daemon: bool = False,
+    crawl_id: str | None = None,
+    maintenance_only: bool = False,
+    interactive_interrupts: bool = False,
+) -> int:
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.machine.models import Binary, Process
@@ -1515,7 +1581,11 @@ def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None, mai
                 due_crawls = due_crawls.filter(id=crawl_id)
             due_crawl = due_crawls.order_by("retry_at", "created_at").first()
             if due_crawl is not None:
-                if not run_due_crawl(due_crawl, lock_seconds=crawl_claim_lock_seconds):
+                if not run_due_crawl(
+                    due_crawl,
+                    lock_seconds=crawl_claim_lock_seconds,
+                    interactive_interrupts=interactive_interrupts,
+                ):
                     continue
                 continue
 
@@ -1526,7 +1596,7 @@ def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None, mai
             due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
         due_snapshot = due_snapshots.order_by("retry_at", "created_at").first()
         if due_snapshot is not None:
-            if not run_due_snapshot(due_snapshot, lock_seconds=60):
+            if not run_due_snapshot(due_snapshot, lock_seconds=60, interactive_interrupts=interactive_interrupts):
                 continue
             continue
 

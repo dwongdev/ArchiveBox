@@ -533,11 +533,9 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
             try:
                 snapshot.status = Snapshot.StatusChoices.SEALED
                 snapshot.retry_at = timezone.now()
-                Snapshot.objects.bulk_create([snapshot])
-                Snapshot.objects.filter(pk=snapshot.pk).update(
-                    status=Snapshot.StatusChoices.SEALED,
-                    retry_at=snapshot.retry_at,
-                )
+                # Snapshot.save() owns URL validation and filesystem/index side
+                # effects. Do not use bulk_create() here; it bypasses save().
+                snapshot.save()
 
                 crawl = _get_snapshot_crawl(snapshot)
                 if crawl is not None:

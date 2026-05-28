@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from django.shortcuts import render, redirect
-from django.http import FileResponse, JsonResponse, HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
+from django.http import JsonResponse, HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.views import View
@@ -22,7 +22,6 @@ from django.db.models import CharField, Count, Q, Prefetch, Sum
 from django.db.models.functions import Cast
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
-from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.gzip import gzip_page
 from django.utils.decorators import method_decorator
@@ -79,7 +78,6 @@ from archivebox.hooks import (
 
 ABX_PLUGINS_GITHUB_BASE_URL = "https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/"
 LIVE_PLUGIN_BASE_URL = "/admin/environment/plugins/"
-SCREENCAST_SIGNER = TimestampSigner(salt="archivebox.live-progress.screencast")
 
 
 def _get_request_config(request: HttpRequest, *, resolve_plugins: bool = False):
@@ -1257,9 +1255,12 @@ class AddView(UserPassesTestMixin, FormView):
             crawl.save(update_fields=["schedule"])
 
         crawl.create_snapshots_from_urls()
-        from archivebox.services.runner import ensure_background_runner
+        if crawl.snapshot_set.exists():
+            from archivebox.services.runner import ensure_background_runner
 
-        ensure_background_runner()
+            ensure_background_runner()
+        else:
+            crawl.sm.seal()
 
         return crawl
 
@@ -1384,33 +1385,6 @@ class HealthCheckView(View):
         Handle a GET request
         """
         return HttpResponse("OK", content_type="text/plain", status=200)
-
-
-def live_progress_screencast_frame_view(request, object_id: str):
-    """Serve cache-only Chrome screencast frames through the admin app."""
-    if not is_admin_user(request):
-        return HttpResponseForbidden("Permission denied")
-
-    token = request.GET.get("token", "")
-    try:
-        if SCREENCAST_SIGNER.unsign(token, max_age=60) != str(object_id):
-            return HttpResponseForbidden("Permission denied")
-    except (BadSignature, SignatureExpired):
-        return HttpResponseForbidden("Permission denied")
-
-    live_root = (CONSTANTS.CACHE_DIR / "chrome_screencast").resolve()
-    frame_path = live_root / str(object_id) / "latest.jpg"
-    try:
-        resolved_frame_path = frame_path.resolve(strict=True)
-    except FileNotFoundError:
-        raise Http404 from None
-    if not resolved_frame_path.is_file() or live_root not in resolved_frame_path.parents:
-        raise Http404
-
-    response = FileResponse(resolved_frame_path.open("rb"), content_type="image/jpeg")
-    response["Cache-Control"] = "no-store, max-age=0"
-    response["X-Content-Type-Options"] = "nosniff"
-    return response
 
 
 @gzip_page
@@ -1560,16 +1534,17 @@ def live_progress_view(request):
             url = str(url or "")
             return url if len(url) <= 96 else f"{url[:93]}..."
 
-        def screencast_frame_url(object_id: str) -> str:
-            frame_path = CONSTANTS.CACHE_DIR / "chrome_screencast" / object_id / "latest.jpg"
+        def screencast_frame_url(crawl_id: str, crawl_dir: Path) -> str:
+            frame_path = crawl_dir / "chrome_screencast" / "latest.jpg"
             try:
                 frame_stat = frame_path.stat()
             except OSError:
                 return ""
             if frame_stat.st_size <= 0:
                 return ""
-            token = SCREENCAST_SIGNER.sign(object_id)
-            return f"/admin/live-progress/screencast/{object_id}.jpg?v={frame_stat.st_mtime_ns}&token={quote(token)}"
+            if now.timestamp() - frame_stat.st_mtime > 15:
+                return ""
+            return f"/api/v1/crawls/crawl/{crawl_id}/files/chrome_screencast/latest.jpg"
 
         machine_id = Machine.current().id
         orchestrator_proc = (
@@ -1982,7 +1957,7 @@ def live_progress_view(request):
             crawl_setup_completed = sum(1 for item in crawl_setup_plugins if item.get("status") == "succeeded")
             crawl_setup_failed = sum(1 for item in crawl_setup_plugins if item.get("status") == "failed")
             crawl_setup_pending = sum(1 for item in crawl_setup_plugins if item.get("status") == "queued")
-            crawl_screencast_url = screencast_frame_url(crawl_id)
+            crawl_screencast_url = screencast_frame_url(crawl_id, active_crawl_objects[crawl_id].output_dir)
             crawl_screencast_link = f"/admin/crawls/crawl/{crawl_id}/change/" if crawl_screencast_url else ""
 
             # Get active snapshots for this crawl (already prefetched)
@@ -2034,7 +2009,7 @@ def live_progress_view(request):
                     snapshot_preview_url = snapshot_favicon_url
 
                 if snapshot["status"] == Snapshot.StatusChoices.STARTED:
-                    snapshot_screencast_url = screencast_frame_url(str(snapshot["id"]))
+                    snapshot_screencast_url = screencast_frame_url(crawl_id, active_crawl_objects[crawl_id].output_dir)
                     snapshot_screencast_link = snapshot_view_url(snapshot) if snapshot_screencast_url else ""
 
                 def plugin_sort_key(ar):

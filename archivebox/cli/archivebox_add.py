@@ -197,10 +197,14 @@ def add(
         # Just create the crawl but don't start processing
         print("[yellow]\\[*] Index-only mode - crawl created but not started[/yellow]")
         crawl.create_snapshots_from_urls()
+        if not crawl.snapshot_set.exists():
+            crawl.sm.seal()
         return crawl, crawl.snapshot_set.all()
 
     if bg:
         crawl.create_snapshots_from_urls()
+        if not crawl.snapshot_set.exists():
+            crawl.sm.seal()
 
     # 5. Start the crawl runner to process the queue
     #    The runner will:
@@ -225,10 +229,14 @@ def add(
         exit_code = 0
         try:
             try:
-                with foreground_shutdown_signals(), foreground_parent_watchdog():
+                with foreground_shutdown_signals(first_signal_message=None), foreground_parent_watchdog():
                     while True:
                         standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
-                        exit_code = run_runner_worker(["--crawl-id", str(crawl.id)], name=f"worker_runner_add_{os.getpid()}")
+                        exit_code = run_runner_worker(
+                            ["--crawl-id", str(crawl.id)],
+                            name=f"worker_runner_add_{os.getpid()}",
+                            interactive_interrupts=True,
+                        )
                         if exit_code == 0:
                             break
                         if not command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):

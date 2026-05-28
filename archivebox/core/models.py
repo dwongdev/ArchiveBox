@@ -1342,8 +1342,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                     self.tags.add(tag)
 
     def _merge_archive_results_from_index(self, index_data: dict, update_existing: bool = True):
-        """Merge ArchiveResults - keep both (by plugin+start_ts)."""
-        existing = {(ar.plugin, ar.start_ts): ar for ar in ArchiveResult.objects.filter(snapshot=self)}
+        """Merge ArchiveResults one row per hook; retries update the existing row."""
+        existing = {(ar.plugin, ar.hook_name): ar for ar in ArchiveResult.objects.filter(snapshot=self)}
         if update_existing:
             for archiveresult in existing.values():
                 normalized_status = ArchiveResult.normalize_status(archiveresult.status)
@@ -1404,7 +1404,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         output_json = result_data.get("output_json")
         output_mimetypes = result_data.get("output_mimetypes", "")
 
-        existing_result = existing.get((plugin, start_ts))
+        hook_name = result_data.get("hook_name", "")
+        existing_result = existing.get((plugin, hook_name))
         if existing_result:
             if not update_existing:
                 return
@@ -1413,22 +1414,25 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             if existing_result.status != status:
                 existing_result.status = status
                 update_fields.append("status")
-            if output_str and not existing_result.output_str:
+            if output_str and existing_result.output_str != output_str:
                 existing_result.output_str = output_str
                 update_fields.append("output_str")
-            if output_json and not existing_result.output_json:
+            if output_json and existing_result.output_json != output_json:
                 existing_result.output_json = output_json
                 update_fields.append("output_json")
-            if output_files and not existing_result.output_files:
+            if output_files and existing_result.output_files != output_files:
                 existing_result.output_files = output_files
                 update_fields.append("output_files")
-            if output_size and not existing_result.output_size:
+            if "output_size" in result_data and existing_result.output_size != output_size:
                 existing_result.output_size = output_size
                 update_fields.append("output_size")
-            if output_mimetypes and not existing_result.output_mimetypes:
+            if output_mimetypes and existing_result.output_mimetypes != output_mimetypes:
                 existing_result.output_mimetypes = output_mimetypes
                 update_fields.append("output_mimetypes")
-            if end_ts and not existing_result.end_ts:
+            if start_ts and existing_result.start_ts != start_ts:
+                existing_result.start_ts = start_ts
+                update_fields.append("start_ts")
+            if end_ts and existing_result.end_ts != end_ts:
                 existing_result.end_ts = end_ts
                 update_fields.append("end_ts")
             if update_fields:
@@ -1455,7 +1459,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             archiveresult = ArchiveResult.objects.create(
                 snapshot=self,
                 plugin=plugin,
-                hook_name=result_data.get("hook_name", ""),
+                hook_name=hook_name,
                 status=status,
                 output_str=output_str,
                 output_json=output_json,
@@ -1466,7 +1470,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 end_ts=end_ts,
                 process=process,
             )
-        existing[(plugin, start_ts)] = archiveresult
+        existing[(plugin, hook_name)] = archiveresult
 
     def write_index_json(self):
         """Write index.json in 0.9.x format (deprecated, use write_index_jsonl)."""
@@ -2447,15 +2451,13 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             hook_name = hook_path.name  # e.g., 'on_Snapshot__50_wget.py'
             plugin = hook_path.parent.name  # e.g., 'wget'
 
-            # Check if AR already exists for this specific hook
-            if ArchiveResult.objects.filter(snapshot=self, hook_name=hook_name).exists():
-                continue
-
-            archiveresult, created = ArchiveResult.objects.get_or_create(
+            # ArchiveResult output is one filesystem directory per plugin hook, so
+            # retries must update this row in place instead of creating siblings.
+            archiveresult, _created = ArchiveResult.objects.get_or_create(
                 snapshot=self,
+                plugin=plugin,
                 hook_name=hook_name,
                 defaults={
-                    "plugin": plugin,
                     "status": ArchiveResult.INITIAL_STATE,
                 },
             )
@@ -3277,6 +3279,9 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             models.Index(fields=["snapshot", "status"], name="archiveresult_snap_status_idx"),
             models.Index(fields=["-start_ts", "-id"], name="archiveresult_start_idx"),
         ]
+        constraints = [
+            models.UniqueConstraint(fields=["snapshot", "plugin", "hook_name"], name="unique_archiveresult_per_snapshot_hook"),
+        ]
 
     def __str__(self):
         return f"[{self.id}] {self.snapshot.url[:64]} -> {self.plugin}"
@@ -3381,15 +3386,16 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             except ArchiveResult.DoesNotExist:
                 pass
 
-        # Get or create by snapshot_id + plugin
+        # Get or create by snapshot_id + plugin + hook_name. The filesystem has a
+        # single output dir for each hook, so retries update that same DB row.
         try:
             snapshot = Snapshot.objects.get(id=snapshot_id)
 
             result, _ = ArchiveResult.objects.get_or_create(
                 snapshot=snapshot,
                 plugin=plugin,
+                hook_name=record.get("hook_name", ""),
                 defaults={
-                    "hook_name": record.get("hook_name", ""),
                     "status": record.get("status", "queued"),
                     "output_str": record.get("output_str", ""),
                 },

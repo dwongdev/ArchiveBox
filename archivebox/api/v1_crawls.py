@@ -1,8 +1,9 @@
 __package__ = "archivebox.api"
 
+from pathlib import Path
 from uuid import UUID
 from datetime import datetime
-from django.http import HttpRequest
+from django.http import FileResponse, HttpRequest
 from django.shortcuts import redirect
 from django.utils import timezone
 
@@ -15,7 +16,7 @@ from ninja.errors import HttpError
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
 
-from .auth import API_AUTH_METHODS
+from .auth import API_AUTH_METHODS, auth_using_token
 
 router = Router(tags=["Crawl Models"], auth=API_AUTH_METHODS)
 
@@ -117,6 +118,8 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
         created_by=request.user if isinstance(request.user, User) else None,
     )
     crawl.create_snapshots_from_urls()
+    if not crawl.snapshot_set.exists():
+        crawl.sm.seal()
     return crawl
 
 
@@ -134,6 +137,50 @@ def get_crawl(request: HttpRequest, crawl_id: str, as_rss: bool = False, with_sn
         return redirect(f"/api/v1/core/snapshots.rss?{query.urlencode()}")
 
     return crawl
+
+
+def crawl_file(request: HttpRequest, crawl_id: str, path: str):
+    user = getattr(request, "user", None)
+    is_superuser = bool(
+        getattr(user, "is_authenticated", False) and getattr(user, "is_active", False) and getattr(user, "is_superuser", False),
+    )
+    if not is_superuser:
+        token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key")
+        auth_header = request.headers.get("Authorization", "")
+        if not token and auth_header.lower().startswith("bearer "):
+            token = auth_header.split(None, 1)[1].strip()
+        token_user = auth_using_token(token=token, request=request) if token else None
+        is_superuser = bool(token_user and token_user.is_active and token_user.is_superuser)
+    if not is_superuser:
+        raise HttpError(403, "Permission denied")
+
+    crawl = Crawl.objects.get(id__icontains=crawl_id)
+    crawl_root = Path(crawl.output_dir).resolve()
+    file_path = (crawl_root / path).resolve()
+    if not file_path.is_file() or crawl_root not in file_path.parents:
+        raise HttpError(404, "Crawl file not found")
+
+    response = FileResponse(file_path.open("rb"))
+    response["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@router.get("/crawl/{crawl_id}/files/{filename}", auth=None, url_name="crawl_file_root")
+def crawl_file_root(request: HttpRequest, crawl_id: str, filename: str):
+    return crawl_file(request, crawl_id, filename)
+
+
+@router.get("/crawl/{crawl_id}/files/{folder}/{filename}", auth=None, url_name="crawl_file_nested_1")
+def crawl_file_nested_1(request: HttpRequest, crawl_id: str, folder: str, filename: str):
+    return crawl_file(request, crawl_id, f"{folder}/{filename}")
+
+
+@router.get("/crawl/{crawl_id}/files/{folder}/{subfolder}/{filename}", auth=None, url_name="crawl_file_nested_2")
+def crawl_file_nested_2(request: HttpRequest, crawl_id: str, folder: str, subfolder: str, filename: str):
+    return crawl_file(request, crawl_id, f"{folder}/{subfolder}/{filename}")
 
 
 @router.patch("/crawl/{crawl_id}", response=CrawlSchema, url_name="patch_crawl")

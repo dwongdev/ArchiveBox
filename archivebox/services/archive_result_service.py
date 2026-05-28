@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from collections.abc import Iterable
@@ -209,6 +210,8 @@ class ArchiveResultService(BaseService):
     EMITS = []
 
     def __init__(self, bus):
+        self._completed_process_event_ids: set[str] = set()
+        self._save_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         super().__init__(bus)
         self.bus.on(ArchiveResultEvent, self.on_ArchiveResultEvent__save_to_db)
         self.bus.on(ProcessCompletedEvent, self.on_ProcessCompletedEvent__save_to_db)
@@ -259,12 +262,15 @@ class ArchiveResultService(BaseService):
         if event.error:
             defaults["notes"] = event.error
 
-        result, _created = await ArchiveResult.objects.aupdate_or_create(
-            snapshot=snapshot,
-            plugin=event.plugin,
-            hook_name=event.hook_name,
-            defaults=defaults,
-        )
+        key = (str(snapshot.id), event.plugin, event.hook_name)
+        lock = self._save_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            result, _created = await ArchiveResult.objects.aupdate_or_create(
+                snapshot=snapshot,
+                plugin=event.plugin,
+                hook_name=event.hook_name,
+                defaults=defaults,
+            )
 
         if result.status in (ArchiveResult.StatusChoices.SUCCEEDED, ArchiveResult.StatusChoices.NORESULTS):
             next_title = _extract_snapshot_title(str(snapshot.output_dir), event.plugin, result.output_str, snapshot_url=snapshot.url)
@@ -273,6 +279,10 @@ class ArchiveResultService(BaseService):
                 await snapshot.asave(update_fields=["title", "modified_at"])
 
     async def on_ProcessCompletedEvent__save_to_db(self, event: ProcessCompletedEvent) -> None:
+        if event.event_id in self._completed_process_event_ids:
+            return
+        self._completed_process_event_ids.add(event.event_id)
+
         if not event.hook_name.startswith("on_Snapshot"):
             return
         snapshot_event = await self.bus.find(
@@ -286,6 +296,10 @@ class ArchiveResultService(BaseService):
 
         records = _iter_archiveresult_records(event.stdout)
         if records:
+            if len(records) > 1:
+                raise RuntimeError(
+                    f"Hook {event.plugin_name}:{event.hook_name} emitted {len(records)} ArchiveResult records; expected exactly one",
+                )
             for record in records:
                 record_status = _normalize_status(record.get("status") or "")
                 record_failed = record_status == "failed" or (not record_status and event.exit_code not in (0, PROCESS_EXIT_SKIPPED))

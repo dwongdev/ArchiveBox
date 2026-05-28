@@ -133,6 +133,7 @@ commit_push_publish() {
     local branch="$2"
     local package="$3"
     local version="$4"
+    local tag="v${version}"
 
     (
         cd "$repo"
@@ -146,6 +147,15 @@ commit_push_publish() {
             echo "[*] No staged changes in ${package}; reusing existing commit."
         fi
         git push origin "$branch"
+        if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            if [[ "$(git rev-list -n1 "${tag}")" != "$(git rev-parse HEAD)" ]]; then
+                echo "[X] Tag ${tag} already exists but does not point at HEAD in ${package}" >&2
+                exit 1
+            fi
+        else
+            git tag -a "${tag}" -m "release: ${package} ${version}"
+        fi
+        git push origin "refs/tags/${tag}"
         uv --no-cache publish --username="${PYPI_USERNAME}" dist/*
     )
 }

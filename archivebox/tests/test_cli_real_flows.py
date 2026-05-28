@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
@@ -145,6 +146,24 @@ def _wait_for_pid_to_disappear(pid: int, *, timeout: float = 20.0) -> None:
     raise AssertionError(f"PID {pid} is still running")
 
 
+def _wait_for_process(predicate, *, timeout: float = 20.0):
+    deadline = time.time() + timeout
+    last_seen = []
+    while time.time() < deadline:
+        last_seen = []
+        for proc in psutil.process_iter(["pid", "ppid", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                command = " ".join(cmdline)
+                last_seen.append(f"{proc.info.get('pid')} {proc.info.get('ppid')} {command}")
+                if predicate(proc, command):
+                    return proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        time.sleep(0.2)
+    raise AssertionError("No matching live process found. Last seen:\n" + "\n".join(last_seen[-50:]))
+
+
 def _supervisor_pid_from_log(log_path: Path) -> int:
     content = log_path.read_text(encoding="utf-8", errors="replace")
     matches = re.findall(r"Supervisord connected \(pid=(\d+)\)", content)
@@ -161,7 +180,37 @@ def _worker_pid_from_log(log_path: Path, worker_name: str) -> int:
 
 def _pgrep_data_dir(data_dir) -> list[str]:
     result = subprocess.run(["pgrep", "-af", str(data_dir)], capture_output=True, text=True, timeout=5)
-    return [line for line in result.stdout.splitlines() if "pgrep -af" not in line]
+    lines = [line for line in result.stdout.splitlines() if "pgrep -af" not in line]
+
+    # A foreground ArchiveBox process can be killed with SIGKILL before Python
+    # cleanup runs. Supervisord's command line only points at its generated
+    # config file, so catch orphaned supervisors by resolving pidfiles whose
+    # configs still reference this real test DATA_DIR.
+    for runtime_root in (Path("/tmp/archivebox"), Path(data_dir) / "tmp"):
+        for config_path in runtime_root.glob("*/supervisord.conf"):
+            try:
+                config_text = config_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if str(data_dir) not in config_text:
+                continue
+            pid_path = config_path.with_name("supervisord.pid")
+            try:
+                pid = int(pid_path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                continue
+            if not _pid_is_alive(pid):
+                continue
+            ps_line = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "pid=,ppid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+            if ps_line:
+                lines.append(ps_line)
+
+    return sorted(set(lines))
 
 
 def _assert_no_processes_for_data_dir(data_dir, *, timeout: float = 10.0) -> None:
@@ -499,8 +548,47 @@ def test_live_server_signal_exit_and_resume_uses_existing_supervisor_state(tmp_p
         _kill_processes_for_data_dir(tmp_path)
 
 
+@pytest.mark.timeout(180)
+def test_live_daemonized_server_keeps_supervisord_owned_by_archivebox_parent(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    env = _live_exit_env(tmp_path)
+    port = _free_port()
+    bind_url = f"http://127.0.0.1:{port}"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "archivebox", "server", "--daemonize", f"127.0.0.1:{port}"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        _wait_for_port("127.0.0.1", port, timeout=30)
+
+        server_process = _wait_for_process(
+            lambda _proc, command: "archivebox" in command and " server " in f" {command} " and bind_url.replace("http://", "") in command,
+        )
+        supervisord = _wait_for_process(
+            lambda proc, command: proc.ppid() == server_process.pid and "supervisord" in command,
+        )
+        _wait_for_process(
+            lambda proc, command: proc.ppid() == supervisord.pid and "supervisord_watchdog" in command,
+        )
+
+        os.kill(server_process.pid, signal.SIGKILL)
+        _wait_for_pid_to_disappear(server_process.pid, timeout=10)
+        _wait_for_pid_to_disappear(supervisord.pid, timeout=20)
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+    finally:
+        _kill_processes_for_data_dir(tmp_path)
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+
+
 @pytest.mark.timeout(240)
-def test_live_second_server_takes_over_existing_server_parent(tmp_path, process):
+def test_live_second_server_takes_over_existing_server_process(tmp_path, process):
     os.chdir(tmp_path)
     assert process.returncode == 0, process.stderr
 
@@ -515,8 +603,8 @@ def test_live_second_server_takes_over_existing_server_parent(tmp_path, process)
         assert first.poll() is None
         first_text = first_log.read_text(encoding="utf-8", errors="replace")
         second_text = second_log.read_text(encoding="utf-8", errors="replace")
-        assert "Newer ArchiveBox server parent took over; standing by." in first_text
-        assert "is now running the orchestrator and server" in second_text
+        assert "A newer archivebox process took over the runtime stack" in first_text
+        assert "Starting orchestrator, server" in second_text
 
         status = subprocess.run(
             [sys.executable, "-m", "archivebox", "status"],
@@ -528,10 +616,10 @@ def test_live_second_server_takes_over_existing_server_parent(tmp_path, process)
         )
         assert status.returncode == 0, status.stderr or status.stdout
 
-        first_takeovers = first_log.read_text(encoding="utf-8", errors="replace").count("is now running the orchestrator and server")
+        first_resumes = first_log.read_text(encoding="utf-8", errors="replace").count("Other newer archivebox process")
         _stop_process(second, signal.SIGTERM)
         second = None
-        _wait_for_log_count(first_log, "is now running the orchestrator and server", first_takeovers + 1, timeout=35)
+        _wait_for_log_count(first_log, "Other newer archivebox process", first_resumes + 1, timeout=35)
         assert first.poll() is None
     finally:
         if second is not None and second.poll() is None:
@@ -567,8 +655,8 @@ def test_live_repeated_server_startups_take_over_cleanly(tmp_path, process):
                 current_log = log_path.read_text(encoding="utf-8", errors="replace")
                 assert previous_server.poll() is None
                 assert _pid_is_alive(server_pids[index - 1])
-                assert "Newer ArchiveBox server parent took over; standing by." in previous_log
-                assert "is now running the orchestrator and server" in current_log
+                assert "A newer archivebox process took over the runtime stack" in previous_log
+                assert "Starting orchestrator, server" in current_log
                 _wait_for_pid_to_disappear(daphne_pids[index - 1], timeout=15)
                 _wait_for_pid_to_disappear(runner_pids[index - 1], timeout=15)
 
@@ -596,10 +684,10 @@ def test_live_repeated_server_startups_take_over_cleanly(tmp_path, process):
 
         previous_log_path = tmp_path / "server-chaos-3.log"
         previous_takeovers = previous_log_path.read_text(encoding="utf-8", errors="replace").count(
-            "is now running the orchestrator and server",
+            "Other newer archivebox process",
         )
         _stop_process(servers[-1], signal.SIGTERM)
-        _wait_for_log_count(previous_log_path, "is now running the orchestrator and server", previous_takeovers + 1, timeout=35)
+        _wait_for_log_count(previous_log_path, "Other newer archivebox process", previous_takeovers + 1, timeout=35)
         assert servers[3].poll() is None
     finally:
         for server in reversed(servers):

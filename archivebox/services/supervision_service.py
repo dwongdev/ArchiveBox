@@ -51,7 +51,7 @@ def command_is_newest(command, *, process_type: str, data_dir: str | Path, url: 
     return bool(leader and leader.id == command.id)
 
 
-def runtime_stack_owner(*, data_dir: str | Path):
+def runtime_stack_owner(*, data_dir: str | Path, exclude_id=None):
     from archivebox.machine.models import Machine, Process
 
     base_qs = Process.objects.filter(
@@ -60,6 +60,8 @@ def runtime_stack_owner(*, data_dir: str | Path):
         pwd=str(data_dir),
         process_type__in=runtime_stack_owner_types(),
     )
+    if exclude_id is not None:
+        base_qs = base_qs.exclude(id=exclude_id)
     for process_types in (
         (Process.TypeChoices.UPDATE,),
         (Process.TypeChoices.SERVER, Process.TypeChoices.ADD),
@@ -141,28 +143,31 @@ def standby_until_leader_needed(command, *, process_type: str, data_dir: str | P
         if not announced:
             leader = newest_live_process(process_type=process_type, data_dir=data_dir, url=url)
             leader_pid = leader.pid if leader else "unknown"
-            rprint(f"[yellow][*] Standing by; newer ArchiveBox parent pid={leader_pid} is running the orchestrator and server.[/yellow]")
+            rprint(f"[yellow][*] Standing by; newer ArchiveBox process pid={leader_pid} is running the orchestrator and server.[/yellow]")
             announced = True
         time.sleep(interval)
     command.modified_at = timezone.now()
     command.save(update_fields=["modified_at"])
 
 
-def standby_until_runtime_stack_needed(command, *, data_dir: str | Path, interval: float = 2.0) -> None:
+def standby_until_runtime_stack_needed(command, *, data_dir: str | Path, interval: float = 2.0) -> dict[str, object]:
     from archivebox.workers.supervisord_util import reap_foreground_supervisord_process
 
     announced = False
+    previous_owner_pid = None
     while not command_owns_runtime_stack(command, data_dir=data_dir):
         reap_foreground_supervisord_process()
         if not announced:
             owner = runtime_stack_owner(data_dir=data_dir)
             owner_pid = owner.pid if owner else "unknown"
+            previous_owner_pid = owner_pid
             rprint(
-                "[yellow][*] A newer archivebox process took over the runner "
-                f"(pid={owner_pid}). Work will continue there, and will continue here if the other process is stopped and work still remains.[/yellow]",
+                "[yellow][*] A newer archivebox process took over the runtime stack "
+                f"(pid={owner_pid}). Work will continue there, and will resume here if that process exits and work still remains.[/yellow]",
                 file=sys.stderr,
             )
             announced = True
         time.sleep(interval)
     command.modified_at = timezone.now()
     command.save(update_fields=["modified_at"])
+    return {"resumed": announced, "previous_owner_pid": previous_owner_pid}

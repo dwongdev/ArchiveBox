@@ -263,9 +263,15 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
         rprint(f"[green][*] Existing ArchiveBox orchestrator pid={existing_pid} is already running.[/green]", file=sys.stderr)
         return 0
     current.mark_running(process_type=Process.TypeChoices.ORCHESTRATOR, pwd=str(CONSTANTS.DATA_DIR), timeout=0)
+    interactive_interrupts = current.root.process_type == Process.TypeChoices.ADD
     try:
         with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
-            run_pending_crawls(daemon=daemon, crawl_id=crawl_id, maintenance_only=maintenance_only)
+            run_pending_crawls(
+                daemon=daemon,
+                crawl_id=crawl_id,
+                maintenance_only=maintenance_only,
+                interactive_interrupts=interactive_interrupts,
+            )
         return 0
     except (KeyboardInterrupt, asyncio.CancelledError):
         return 0

@@ -98,6 +98,8 @@ def kill_remaining_processes(processes: list[psutil.Process], *, timeout: float 
 @contextmanager
 def foreground_shutdown_signals(
     handled_signals: tuple[signal.Signals, ...] = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM),
+    *,
+    first_signal_message: str | None = "\n[🛑] Got {signal_name}, stopping gracefully...\n",
 ) -> Iterator[ShutdownSignalState]:
     """Install foreground signal handlers that print an immediate exit notice.
 
@@ -115,7 +117,8 @@ def foreground_shutdown_signals(
     def raise_keyboard_interrupt(signum, _frame):
         if state.signal_name is None:
             state.signal_name = signal.Signals(signum).name
-            os.write(sys.stdout.fileno(), f"\n[🛑] Got {state.signal_name}, stopping gracefully...\n".encode())
+            if first_signal_message is not None:
+                os.write(sys.stdout.fileno(), first_signal_message.format(signal_name=state.signal_name).encode())
         raise KeyboardInterrupt
 
     try:

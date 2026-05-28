@@ -25,7 +25,7 @@ class Command(BaseCommand):
         from archivebox.machine.models import Machine, Process
         from archivebox.workers.supervisord_util import (
             RUNNER_WORKER,
-            get_existing_supervisord_process,
+            SupervisordConnectionCache,
             get_worker,
             start_worker,
             stop_worker,
@@ -43,6 +43,7 @@ class Command(BaseCommand):
 
         interval = max(0.2, float(kwargs.get("interval", 1.0)))
         last_runserver_id = None
+        supervisor_cache = SupervisordConnectionCache()
 
         def stop_duplicate_watchers() -> None:
             machine = Machine.current()
@@ -58,7 +59,7 @@ class Command(BaseCommand):
                     proc.terminate(graceful_timeout=2.0)
 
         def get_supervisor():
-            supervisor = get_existing_supervisord_process()
+            supervisor = supervisor_cache.get()
             if supervisor is None:
                 raise RuntimeError("runner_watch requires a running supervisord process")
             return supervisor
@@ -114,6 +115,7 @@ class Command(BaseCommand):
                     restart_runner()
                 current.heartbeat()
             except Exception:
+                supervisor_cache.clear()
                 pass
 
             time.sleep(interval)

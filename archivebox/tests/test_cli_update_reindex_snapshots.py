@@ -291,6 +291,62 @@ def test_reconcile_with_index_json_imports_legacy_archive_results_and_process(tm
 
 
 @pytest.mark.django_db
+def test_reconcile_with_index_json_merges_retried_archive_results(tmp_path):
+    from archivebox.base_models.models import get_or_create_system_user_pk
+    from archivebox.core.models import ArchiveResult, Snapshot
+    from archivebox.crawls.models import Crawl
+
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by_id=get_or_create_system_user_pk(),
+    )
+    snapshot = Snapshot.objects.create(
+        url="https://example.com",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+    )
+    output_dir = snapshot.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "index.json").write_text(
+        json.dumps(
+            {
+                "url": snapshot.url,
+                "timestamp": snapshot.timestamp,
+                "title": "Example Domain",
+                "archive_results": [
+                    {
+                        "plugin": "dom",
+                        "hook_name": "on_Snapshot__12_dom.js",
+                        "status": "failed",
+                        "output": "first attempt failed",
+                        "start_ts": "2024-01-01T00:00:00+00:00",
+                        "end_ts": "2024-01-01T00:00:01+00:00",
+                    },
+                    {
+                        "plugin": "dom",
+                        "hook_name": "on_Snapshot__12_dom.js",
+                        "status": "succeeded",
+                        "output": "dom/output.html",
+                        "output_files": {"output.html": {"size": 42}},
+                        "output_size": 42,
+                        "start_ts": "2024-01-01T00:01:00+00:00",
+                        "end_ts": "2024-01-01T00:01:01+00:00",
+                    },
+                ],
+            },
+        ),
+    )
+
+    snapshot.reconcile_with_index_json()
+
+    result = ArchiveResult.objects.get(snapshot=snapshot, plugin="dom", hook_name="on_Snapshot__12_dom.js")
+    assert ArchiveResult.objects.filter(snapshot=snapshot, plugin="dom", hook_name="on_Snapshot__12_dom.js").count() == 1
+    assert result.status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result.output_str == "dom/output.html"
+    assert result.output_size == 42
+
+
+@pytest.mark.django_db
 def test_reconcile_with_index_json_trusts_legacy_archive_results(tmp_path):
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.core.models import ArchiveResult, Snapshot

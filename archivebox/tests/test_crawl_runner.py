@@ -420,38 +420,29 @@ def test_crawl_runner_empty_plugin_selection_emits_lifecycle_and_seals_crawl(tmp
     )
     runner = CrawlRunner(crawl)
 
+    seen_events = {
+        CrawlEvent: [],
+        CrawlSetupEvent: [],
+        CrawlStartEvent: [],
+        SnapshotEvent: [],
+        SnapshotCompletedEvent: [],
+        CrawlCleanupEvent: [],
+        CrawlCompletedEvent: [],
+        MachineEvent: [],
+    }
+    for event_type, events in seen_events.items():
+        runner.bus.on(event_type, lambda event, events=events: events.append(event))
+
     asyncio.run(runner.run())
 
-    async def collect_events():
-        crawl_events = await runner.bus.filter(CrawlEvent, past=True)
-        setup_events = await runner.bus.filter(CrawlSetupEvent, past=True)
-        start_events = await runner.bus.filter(CrawlStartEvent, past=True)
-        snapshot_events = await runner.bus.filter(SnapshotEvent, past=True)
-        snapshot_completed_events = await runner.bus.filter(SnapshotCompletedEvent, past=True)
-        cleanup_events = await runner.bus.filter(CrawlCleanupEvent, past=True)
-        completed_events = await runner.bus.filter(CrawlCompletedEvent, past=True)
-        machine_events = await runner.bus.filter(MachineEvent, past=True)
-        return (
-            crawl_events,
-            setup_events,
-            start_events,
-            snapshot_events,
-            snapshot_completed_events,
-            cleanup_events,
-            completed_events,
-            machine_events,
-        )
-
-    (
-        crawl_events,
-        setup_events,
-        start_events,
-        snapshot_events,
-        snapshot_completed_events,
-        cleanup_events,
-        completed_events,
-        machine_events,
-    ) = asyncio.run(collect_events())
+    crawl_events = seen_events[CrawlEvent]
+    setup_events = seen_events[CrawlSetupEvent]
+    start_events = seen_events[CrawlStartEvent]
+    snapshot_events = seen_events[SnapshotEvent]
+    snapshot_completed_events = seen_events[SnapshotCompletedEvent]
+    cleanup_events = seen_events[CrawlCleanupEvent]
+    completed_events = seen_events[CrawlCompletedEvent]
+    machine_events = seen_events[MachineEvent]
 
     assert len(crawl_events) == 1
     assert len(setup_events) == 1
@@ -474,6 +465,7 @@ def test_crawl_runner_empty_plugin_selection_emits_lifecycle_and_seals_crawl(tmp
     assert crawl.retry_at is None
     assert snapshot.status == Snapshot.StatusChoices.SEALED
     assert snapshot.retry_at is None
+    assert snapshot.archiveresult_set.count() == 0
 
 
 @pytest.mark.django_db(transaction=True)
@@ -789,6 +781,7 @@ def test_create_crawl_api_queues_crawl_without_spawning_runner():
     assert str(crawl.id)
     assert crawl.status == "queued"
     assert crawl.retry_at is not None
+    assert crawl.snapshot_set.filter(url="https://example.com").count() == 1
 
 
 def test_wait_for_snapshot_tasks_surfaces_already_failed_task():

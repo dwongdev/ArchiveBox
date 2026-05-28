@@ -221,6 +221,31 @@ else:
 PY
 }
 
+github_release_enabled() {
+    local version="$1"
+    if [[ "${version}" == *rc* && "${CREATE_GITHUB_RC_RELEASES:-0}" != "1" ]]; then
+        return 1
+    fi
+    if [[ "${CREATE_GITHUB_RELEASES:-1}" == "0" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+create_git_tag() {
+    local version="$1"
+    local tag="${TAG_PREFIX}${version}"
+    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+        if [[ "$(git rev-list -n1 "${tag}")" != "$(git rev-parse HEAD)" ]]; then
+            echo "Tag ${tag} already exists but does not point at HEAD" >&2
+            return 1
+        fi
+    else
+        git tag -a "${tag}" -m "release: ${tag}"
+    fi
+    git push origin "refs/tags/${tag}"
+}
+
 wait_for_runs() {
     local slug="$1"
     local event="$2"
@@ -337,6 +362,10 @@ create_release() {
     local slug="$1"
     local version="$2"
     local prerelease_args=()
+    if ! github_release_enabled "${version}"; then
+        echo "Skipping GitHub release object for ${TAG_PREFIX}${version}; git tag will still be pushed."
+        return 0
+    fi
     if [[ "${version}" == *rc* ]]; then
         prerelease_args+=(--prerelease)
     fi
@@ -437,9 +466,10 @@ main() {
     fi
 
     publish_artifacts "${version}"
+    create_git_tag "${version}"
     create_release "${slug}" "${version}"
 
-    if ! gh release view "${TAG_PREFIX}${version}" --repo "${slug}" >/dev/null 2>&1; then
+    if github_release_enabled "${version}" && ! gh release view "${TAG_PREFIX}${version}" --repo "${slug}" >/dev/null 2>&1; then
         echo "GitHub release ${TAG_PREFIX}${version} was not found after creation" >&2
         return 1
     fi

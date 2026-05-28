@@ -70,6 +70,81 @@ def test_process_completed_projects_inline_archiveresult():
     _cleanup_machine_process_rows()
 
 
+def test_archiveresult_event_retry_updates_existing_hook_row():
+    from archivebox.core.models import ArchiveResult
+    from archivebox.services.archive_result_service import ArchiveResultService
+    import asyncio
+
+    snapshot = _create_snapshot()
+    plugin_dir = Path(snapshot.output_dir) / "wget"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "index.html").write_text("<html>ok</html>")
+
+    service = ArchiveResultService(create_bus(name="test_archiveresult_retry_updates_existing_hook_row"))
+    first_event = ArchiveResultEvent(
+        snapshot_id=str(snapshot.id),
+        plugin="wget",
+        hook_name="on_Snapshot__06_wget.finite.bg",
+        status="failed",
+        output_str="timed out",
+        start_ts="2026-03-22T12:00:00+00:00",
+        end_ts="2026-03-22T12:00:01+00:00",
+    )
+    retry_event = ArchiveResultEvent(
+        snapshot_id=str(snapshot.id),
+        plugin="wget",
+        hook_name="on_Snapshot__06_wget.finite.bg",
+        status="succeeded",
+        output_str="wget/index.html",
+        output_files=[OutputFile(path="index.html", extension="html", mimetype="text/html", size=15)],
+        start_ts="2026-03-22T12:01:00+00:00",
+        end_ts="2026-03-22T12:01:01+00:00",
+    )
+
+    async def emit_events() -> None:
+        await service.on_ArchiveResultEvent__save_to_db(first_event)
+        first_result_id = await ArchiveResult.objects.values_list("id", flat=True).aget(
+            snapshot=snapshot,
+            plugin="wget",
+            hook_name="on_Snapshot__06_wget.finite.bg",
+        )
+        await service.on_ArchiveResultEvent__save_to_db(retry_event)
+        retry_result = await ArchiveResult.objects.aget(
+            snapshot=snapshot,
+            plugin="wget",
+            hook_name="on_Snapshot__06_wget.finite.bg",
+        )
+        assert retry_result.id == first_result_id
+        assert retry_result.status == ArchiveResult.StatusChoices.SUCCEEDED
+        assert retry_result.output_str == "wget/index.html"
+
+    asyncio.run(emit_events())
+
+    assert ArchiveResult.objects.filter(snapshot=snapshot, plugin="wget", hook_name="on_Snapshot__06_wget.finite.bg").count() == 1
+    _cleanup_machine_process_rows()
+
+
+def test_archiveresult_duplicate_hook_rows_are_rejected():
+    from django.db import IntegrityError, transaction
+    from archivebox.core.models import ArchiveResult
+
+    snapshot = _create_snapshot()
+    ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="wget",
+        hook_name="on_Snapshot__06_wget.finite.bg",
+        status=ArchiveResult.StatusChoices.FAILED,
+    )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="wget",
+            hook_name="on_Snapshot__06_wget.finite.bg",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+        )
+
+
 def test_process_completed_projects_synthetic_failed_archiveresult():
     from archivebox.core.models import ArchiveResult
     from archivebox.services.archive_result_service import ArchiveResultService

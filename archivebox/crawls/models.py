@@ -887,7 +887,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                         snapshot.save(update_fields=["depth", "title", "timestamp", "status", "retry_at", "url", "crawl", "modified_at"])
                     else:
                         snapshot = Snapshot(id=snapshot_id, url=url, crawl=self, **defaults)
-                        snapshot.save(force_insert=True)
+                        snapshot.save()
                         created = True
                 else:
                     snapshot = Snapshot.objects.filter(url=url, crawl=self).first()
@@ -896,7 +896,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                     else:
                         try:
                             snapshot = Snapshot(url=url, crawl=self, **defaults)
-                            snapshot.save(force_insert=True)
+                            snapshot.save()
                             created = True
                         except IntegrityError:
                             snapshot = Snapshot.objects.get(url=url, crawl=self)
@@ -1052,10 +1052,19 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         for snapshot in snapshots:
             snapshot.set_delete_at_from_config(config.DELETE_AFTER)
 
-        try:
-            created_snapshots = list(Snapshot.objects.bulk_create(snapshots))
-        except ValidationError as err:
-            print(f"[yellow][!] Skipping blocked discovered snapshots: {err}[/yellow]")
+        created_snapshots = []
+        for snapshot in snapshots:
+            try:
+                # Snapshot.save() owns URL validation and filesystem/index side
+                # effects. Do not use bulk_create() here; it bypasses save().
+                snapshot.save()
+            except IntegrityError:
+                continue
+            except ValidationError as err:
+                print(f"[yellow][!] Skipping blocked discovered snapshot URL: {snapshot.url} ({err})[/yellow]")
+                continue
+            created_snapshots.append(snapshot)
+        if not created_snapshots:
             return []
 
         crawl_urls = {url for _raw_line, url in self._iter_url_lines() if url}
@@ -1072,8 +1081,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             }
             if tag_names:
                 tag_names_by_url[snapshot.url] = tag_names
-            # Same transaction rule as create_snapshots_from_urls(): bulk_create()
-            # only writes DB rows; symlink creation waits until after commit.
+            # Snapshot.save() handles model-level validation. The crawl symlink
+            # can still wait until after commit so SQLite does not hold a write
+            # lock while touching the filesystem.
             transaction.on_commit(lambda snapshot=snapshot: snapshot.ensure_crawl_symlink())
 
         tag_names = {tag for tags in tag_names_by_url.values() for tag in tags}
@@ -1469,8 +1479,10 @@ class CrawlMachine(BaseStateMachine):
         | paused.to.itself()
     )
 
-    # Manual event (triggered by last Snapshot sealing)
-    seal = started.to(sealed)
+    # Manual event (triggered by last Snapshot sealing, or by direct
+    # index-only/bg creation when every requested URL is rejected before any
+    # Snapshot rows exist).
+    seal = queued.to(sealed) | started.to(sealed)
     pause_requested = queued.to(paused) | started.to(paused)
     resume_requested = paused.to(queued)
 

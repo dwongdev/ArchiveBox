@@ -4,6 +4,9 @@ __package__ = "archivebox.cli"
 
 import sys
 import os
+import socket
+import subprocess
+import time
 from collections.abc import Iterable
 
 import rich_click as click
@@ -22,7 +25,7 @@ def server(
     nothreading: bool = False,
 ) -> None:
     """Run the ArchiveBox HTTP server"""
-    from archivebox.config.common import get_config, rprint
+    from archivebox.config.common import get_config
 
     config = get_config()
     runserver_args = list(runserver_args or (config.BIND_ADDR,))
@@ -62,12 +65,53 @@ def server(
     except IndexError:
         pass
 
+    if daemonize and os.environ.get("ARCHIVEBOX_SERVER_DAEMON_CHILD") != "1":
+        from archivebox.config import CONSTANTS
+
+        log_path = CONSTANTS.LOGS_DIR / "server.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        daemon_env = os.environ.copy()
+        daemon_env["ARCHIVEBOX_SERVER_DAEMON_CHILD"] = "1"
+        daemon_cmd = [sys.executable, "-m", "archivebox", "server"]
+        if debug:
+            daemon_cmd.append("--debug")
+        if reload:
+            daemon_cmd.append("--reload")
+        if nothreading:
+            daemon_cmd.append("--nothreading")
+        daemon_cmd.extend(runserver_args)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                daemon_cmd,
+                cwd=os.getcwd(),
+                env=daemon_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                print(f"[red][X] ArchiveBox daemon server exited early with code {proc.returncode}. See {log_path}[/red]")
+                sys.exit(proc.returncode or 1)
+            try:
+                with socket.create_connection((host, int(port)), timeout=0.25):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            print(f"[yellow][!] ArchiveBox daemon server pid={proc.pid} is still starting. See {log_path}[/yellow]")
+        return
+
     os.environ["BIND_ADDR"] = f"{host}:{port}"
     from archivebox.core.host_utils import build_admin_url
 
     admin_url = build_admin_url("/admin/")
 
     from archivebox.workers.supervisord_util import (
+        active_supervisord_runtime_components,
+        format_runtime_components,
         start_server_workers,
         stop_existing_supervisord_process,
         is_port_in_use,
@@ -105,11 +149,16 @@ def server(
             connections.close_all()
 
     try:
-        with foreground_shutdown_signals(), foreground_parent_watchdog():
+        with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=os.environ.get("ARCHIVEBOX_SERVER_DAEMON_CHILD") != "1"):
             while True:
-                standby_until_runtime_stack_needed(command, data_dir=config.DATA_DIR)
-                sys.stdout.write(f"[*] ArchiveBox server parent pid={os.getpid()} is now running the orchestrator and server...\n")
-                sys.stdout.flush()
+                standby_result = standby_until_runtime_stack_needed(command, data_dir=config.DATA_DIR)
+                older_owner = runtime_stack_owner(data_dir=config.DATA_DIR, exclude_id=command.id)
+                takeover_components = active_supervisord_runtime_components(config=config)
+                if older_owner and takeover_components:
+                    print(
+                        "[yellow][*] Taking over "
+                        f"{format_runtime_components(takeover_components)} from older existing archivebox process (pid={older_owner.pid}).[/yellow]",
+                    )
                 stop_existing_supervisord_process()
                 if is_port_in_use(host, int(port)):
                     print(f"[red][X] Error: Port {port} is already in use[/red]")
@@ -119,23 +168,17 @@ def server(
                 result = start_server_workers(
                     host=host,
                     port=port,
-                    daemonize=daemonize,
+                    daemonize=False,
                     debug=run_in_debug,
                     reload=reload,
                     nothreading=nothreading,
                     keep_running=still_owns_runtime_stack,
                     should_stop_supervisord=still_owns_runtime_stack,
+                    resumed_from_pid=standby_result.get("previous_owner_pid") if standby_result.get("resumed") else None,
                 )
                 if result == "interrupted":
                     break
                 if not still_owns_runtime_stack():
-                    owner = runtime_stack_owner(data_dir=config.DATA_DIR)
-                    owner_pid = owner.pid if owner else "unknown"
-                    rprint(
-                        "[yellow][*] A newer archivebox process took over the runner "
-                        f"(pid={owner_pid}). Work will continue there, and will continue here if the other process is stopped and work still remains.[/yellow]",
-                        file=sys.stderr,
-                    )
                     continue
                 if result == "exited":
                     print("[yellow][*] Runtime stack exited while this parent is still leader; restarting...[/yellow]")

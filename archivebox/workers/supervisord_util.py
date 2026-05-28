@@ -8,6 +8,7 @@ import psutil
 import shutil
 import subprocess
 import shlex
+import signal
 
 from typing import cast
 from pathlib import Path
@@ -37,6 +38,8 @@ WORKERS_DIR_NAME = "workers"
 # Global reference to supervisord process for cleanup
 _supervisord_proc = None
 _desired_supervisord_workers: dict[str, dict[str, str]] = {}
+_ACTIVE_WORKER_STATES = {"STARTING", "RUNNING", "BACKOFF"}
+_RUNTIME_COMPONENT_ORDER = ("orchestrator", "server", "sonic")
 
 
 def _shell_join(args: list[str]) -> str:
@@ -182,6 +185,27 @@ RUNNER_WATCH_WORKER = lambda bind_url: {
     "redirect_stderr": "true",
 }
 
+SUPERVISORD_PARENT_WATCHDOG_WORKER = lambda supervisord_process_id: {
+    "name": "worker_supervisord_parent_watchdog",
+    "command": _shell_join(
+        [
+            sys.executable,
+            "-m",
+            "archivebox",
+            "manage",
+            "supervisord_watchdog",
+            f"--supervisord-process-id={supervisord_process_id}",
+        ],
+    ),
+    "autostart": "false",
+    "autorestart": "false",
+    "stopasgroup": "true",
+    "killasgroup": "true",
+    "stopwaitsecs": "1",
+    "stdout_logfile": "logs/worker_supervisord_parent_watchdog.log",
+    "redirect_stderr": "true",
+}
+
 SERVER_WORKER = lambda host, port: {
     "name": "worker_daphne",
     "command": _shell_join(
@@ -191,7 +215,7 @@ SERVER_WORKER = lambda host, port: {
             "daphne",
             f"--bind={host}",
             f"--port={port}",
-            "--application-close-timeout=15",
+            "--application-close-timeout=0",
             "archivebox.core.asgi:application",
         ],
     ),
@@ -199,7 +223,7 @@ SERVER_WORKER = lambda host, port: {
     "autorestart": "true",
     "stopasgroup": "true",
     "killasgroup": "true",
-    "stopwaitsecs": "20",
+    "stopwaitsecs": "1",
     "stdout_logfile": "logs/worker_daphne.log",
     "redirect_stderr": "true",
 }
@@ -227,6 +251,9 @@ def RUNSERVER_WORKER(host: str, port: str, *, reload: bool, nothreading: bool = 
         "environment": ",".join(environment),
         "autostart": "false",
         "autorestart": "true",
+        "stopasgroup": "true",
+        "killasgroup": "true",
+        "stopwaitsecs": "1",
         "stdout_logfile": "logs/worker_runserver.log",
         "redirect_stderr": "true",
     }
@@ -316,6 +343,29 @@ def create_worker_config(daemon):
     worker_conf.write_text(worker_str)
 
 
+def _current_foreground_supervisord_process_id():
+    if not _supervisord_proc or _supervisord_proc.poll() is not None:
+        return None
+
+    try:
+        from archivebox.machine.models import Machine, Process
+
+        current = Process.current()
+        for process in Process.objects.filter(
+            machine=Machine.current(),
+            process_type=Process.TypeChoices.SUPERVISORD,
+            status=Process.StatusChoices.RUNNING,
+            pwd=str(CONSTANTS.DATA_DIR),
+            pid=_supervisord_proc.pid,
+            parent=current,
+        ).iterator(chunk_size=10):
+            if process.is_running:
+                return process.id
+    except Exception:
+        return None
+    return None
+
+
 def sync_supervisord_workers(supervisor, workers: list[tuple[dict[str, str], bool]], *, prune: bool = True):
     """Project desired workers into supervisord from ArchiveBox-owned state.
 
@@ -330,6 +380,12 @@ def sync_supervisord_workers(supervisor, workers: list[tuple[dict[str, str], boo
     Path.mkdir(WORKERS_DIR, exist_ok=True, parents=True)
 
     global _desired_supervisord_workers
+
+    supervisord_process_id = _current_foreground_supervisord_process_id()
+    if supervisord_process_id is not None:
+        watchdog = SUPERVISORD_PARENT_WATCHDOG_WORKER(supervisord_process_id)
+        if all(worker["name"] != watchdog["name"] for worker, _lazy in workers):
+            workers = [*workers, (watchdog, False)]
 
     desired = {worker["name"]: (worker, lazy) for worker, lazy in workers}
     if prune:
@@ -416,11 +472,62 @@ def get_existing_supervisord_process(*, quiet: bool = False):
         return None
 
 
+class SupervisordConnectionCache:
+    """Reuse one XML-RPC proxy until it fails, avoiding hot-loop reconnects."""
+
+    def __init__(self, *, quiet: bool = False):
+        self.quiet = quiet
+        self.supervisor = None
+
+    def clear(self) -> None:
+        self.supervisor = None
+
+    def get(self):
+        if self.supervisor is not None:
+            try:
+                self.supervisor.getPID()
+                return self.supervisor
+            except Exception:
+                self.supervisor = None
+
+        supervisor = get_existing_supervisord_process(quiet=self.quiet)
+        if supervisor is None:
+            return None
+
+        self.supervisor = supervisor
+        return supervisor
+
+
 def stop_existing_supervisord_process():
     global _supervisord_proc
     SOCK_FILE = get_sock_file()
     PID_FILE = SOCK_FILE.parent / PID_FILE_NAME
     stop_grace_seconds = configured_stopwaitsecs(tuple(_desired_supervisord_workers.values()))
+    live_supervisord = _live_supervisord_processes_from_db()
+
+    for process, _proc in live_supervisord:
+        if process is None or process.parent_id is None:
+            continue
+        owner = process.parent
+        if owner.pid == os.getpid() or not owner.is_running:
+            continue
+        owner_proc = owner.proc
+        if owner_proc is None:
+            owner.mark_exited(exit_code=0)
+            continue
+        try:
+            print(f"[🦸‍♂️] Stopping older ArchiveBox runtime owner (pid={owner_proc.pid})...")
+            owner_proc.terminate()
+            try:
+                owner_proc.wait(timeout=min(stop_grace_seconds, 5))
+            except psutil.TimeoutExpired:
+                owner_proc.kill()
+                owner_proc.wait(timeout=2)
+            owner.mark_exited(exit_code=0)
+        except psutil.NoSuchProcess:
+            owner.mark_exited(exit_code=0)
+        except (BrokenPipeError, OSError, psutil.TimeoutExpired):
+            pass
 
     supervisor = get_existing_supervisord_process(quiet=True)
     supervisor_pid = None
@@ -691,7 +798,7 @@ def start_worker(supervisor, daemon, lazy=False):
     return sync_supervisord_workers(supervisor, [(daemon, lazy)], prune=False).get(daemon["name"])
 
 
-def run_runner_worker(args: list[str], *, name: str = "worker_runner_once") -> int:
+def run_runner_worker(args: list[str], *, name: str = "worker_runner_once", interactive_interrupts: bool = False) -> int:
     supervisor = get_or_create_supervisord_process(daemonize=False)
     worker = RUNNER_ONCE_WORKER(args, name=name)
     log_path = Path(worker["stdout_logfile"])
@@ -703,26 +810,38 @@ def run_runner_worker(args: list[str], *, name: str = "worker_runner_once") -> i
     log_handle.seek(0, 2)
     sync_supervisord_workers(supervisor, [(worker, False)], prune=False)
     final_states = {"STOPPED", "EXITED", "FATAL", "UNKNOWN"}
+    forwarded_interrupt = False
     try:
         while True:
-            while True:
-                line = log_handle.readline()
-                if not line:
-                    break
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            proc = get_worker(supervisor, name)
-            if proc is None:
-                return 1
-            if proc["statename"] in final_states:
+            try:
                 while True:
                     line = log_handle.readline()
                     if not line:
                         break
                     sys.stdout.write(line)
                     sys.stdout.flush()
-                return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
-            time.sleep(0.5)
+                proc = get_worker(supervisor, name)
+                if proc is None:
+                    return 1
+                if proc["statename"] in final_states:
+                    while True:
+                        line = log_handle.readline()
+                        if not line:
+                            break
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                    return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
+                time.sleep(0.5)
+            except KeyboardInterrupt:
+                if not interactive_interrupts or forwarded_interrupt:
+                    raise
+                forwarded_interrupt = True
+                proc = get_worker(supervisor, name)
+                pid = int(proc.get("pid") or 0) if proc else 0
+                if pid <= 0:
+                    raise
+                print("[yellow][*] Forwarding Ctrl+C to the active crawl hook...[/yellow]")
+                os.kill(pid, signal.SIGINT)
     finally:
         log_handle.close()
 
@@ -733,6 +852,82 @@ def get_worker(supervisor, daemon_name):
     except Exception:
         pass
     return None
+
+
+def format_runtime_components(components: list[str] | tuple[str, ...]) -> str:
+    return ", ".join(component for component in components if component)
+
+
+def worker_runtime_component(worker_name: str, *, config=None) -> str | None:
+    if worker_name in {RUNNER_WORKER["name"], RUNNER_WATCH_WORKER("")["name"]}:
+        return "orchestrator"
+    if worker_name in {SERVER_WORKER("", "")["name"], RUNSERVER_WORKER("", "", reload=False)["name"]}:
+        return "server"
+    if config is not None:
+        sonic_worker = get_sonic_supervisord_worker_from_plugin(config)
+        if sonic_worker and worker_name == sonic_worker.get("name"):
+            return "sonic"
+    return None
+
+
+def runtime_components_for_worker_names(worker_names: set[str] | list[str] | tuple[str, ...], *, config=None) -> list[str]:
+    components = {worker_runtime_component(worker_name, config=config) for worker_name in worker_names}
+    return [component for component in _RUNTIME_COMPONENT_ORDER if component in components]
+
+
+def active_supervisord_runtime_components(*, config=None, supervisor=None) -> list[str]:
+    supervisor = supervisor or get_existing_supervisord_process(quiet=True)
+    if supervisor is None:
+        return []
+    try:
+        worker_names = {proc.get("name") for proc in supervisor.getAllProcessInfo() if proc.get("statename") in _ACTIVE_WORKER_STATES}
+    except Exception:
+        return []
+    return runtime_components_for_worker_names({str(name) for name in worker_names if name}, config=config)
+
+
+def build_server_worker_plan(*, config, host: str, port: str, debug: bool, reload: bool, nothreading: bool, supervisor=None):
+    bind_url = f"http://{host}:{port}"
+
+    if debug:
+        server_worker = RUNSERVER_WORKER(host=host, port=port, reload=reload, nothreading=nothreading)
+        bg_workers: list[tuple[dict[str, str], bool]] = (
+            [(RUNNER_WORKER, True), (RUNNER_WATCH_WORKER(bind_url), False)] if reload else [(RUNNER_WORKER, False)]
+        )
+        log_files = ["logs/worker_runserver.log", "logs/worker_runner.log"]
+        if reload:
+            log_files.insert(1, "logs/worker_runner_watch.log")
+    else:
+        server_worker = SERVER_WORKER(host=host, port=port)
+        bg_workers = [(RUNNER_WORKER, False)]
+        log_files = ["logs/worker_daphne.log", "logs/worker_runner.log"]
+
+    sonic_worker = get_sonic_supervisord_worker_from_plugin(config)
+    if sonic_worker is not None:
+        try:
+            current_sonic = get_worker(supervisor, sonic_worker["name"]) if supervisor is not None else None
+            supervisor_pid = supervisor.getPID() if supervisor is not None else None
+        except Exception:
+            current_sonic = None
+            supervisor_pid = None
+        sonic_host = str(getattr(config, "SEARCH_BACKEND_SONIC_HOST_NAME", "127.0.0.1") or "127.0.0.1")
+        if sonic_host.strip().lower() == "localhost":
+            sonic_host = "127.0.0.1"
+        sonic_port = int(getattr(config, "SEARCH_BACKEND_SONIC_PORT"))
+        if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")):
+            stop_stale_sonic_processes(sonic_worker, supervisor_pid=supervisor_pid, host=sonic_host, port=sonic_port)
+        if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")) and is_port_in_use(
+            sonic_host,
+            sonic_port,
+        ):
+            print(f"[yellow][*] Sonic is already listening on {sonic_host}:{sonic_port}; not starting a duplicate worker.[/yellow]")
+        else:
+            bg_workers.insert(0, (sonic_worker, False))
+            log_files.append(str(sonic_worker["stdout_logfile"]))
+
+    workers = [(server_worker, False), *bg_workers]
+    components = runtime_components_for_worker_names([worker["name"] for worker, _lazy in workers], config=config)
+    return workers, log_files, components
 
 
 def stop_worker(supervisor, daemon_name):
@@ -806,7 +1001,7 @@ def tail_multiple_worker_logs(log_files: list[str], follow=True, proc=None, keep
     try:
         while follow:
             if keep_running is not None and not keep_running():
-                print("\n[newer ArchiveBox parent is now running the orchestrator and server]")
+                print("\n[newer ArchiveBox process is now running the orchestrator and server]")
                 return "transferred"
 
             # Check if the monitored process has exited
@@ -857,11 +1052,87 @@ def get_sonic_supervisord_worker_from_plugin(config) -> dict[str, str] | None:
     return cast(dict[str, str] | None, worker)
 
 
-def stop_stale_sonic_processes(sonic_worker: dict[str, str], *, supervisor_pid: int | None) -> None:
+def _proc_cmdline(proc: psutil.Process) -> list[str]:
+    try:
+        return proc.cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return []
+
+
+def _is_sonic_process(proc: psutil.Process) -> bool:
+    cmdline = _proc_cmdline(proc)
+    return bool(cmdline and Path(cmdline[0]).name == "sonic")
+
+
+def _is_supervisord_process(proc: psutil.Process | None) -> bool:
+    if proc is None:
+        return False
+    cmdline = _proc_cmdline(proc)
+    return any(Path(part).name == "supervisord" for part in cmdline)
+
+
+def _has_live_archivebox_parent(proc: psutil.Process | None) -> bool:
+    try:
+        parent = proc.parent() if proc else None
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    if parent is None or parent.pid <= 1:
+        return False
+    cmdline = _proc_cmdline(parent)
+    return any("archivebox" in part for part in cmdline)
+
+
+def _terminate_process_tree(root: psutil.Process, *, timeout: float = 2.0) -> None:
+    try:
+        children = root.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return
+    try:
+        root.terminate()
+    except psutil.NoSuchProcess:
+        return
+    for child in children:
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _gone, alive = psutil.wait_procs([root, *children], timeout=timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(alive, timeout=timeout)
+
+
+def _sonic_listeners(host: str, port: int) -> list[psutil.Process]:
+    listeners = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        if not _is_sonic_process(proc):
+            continue
+        try:
+            connections = proc.net_connections(kind="tcp")
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        for conn in connections:
+            if conn.status != psutil.CONN_LISTEN or not conn.laddr or conn.laddr.port != port:
+                continue
+            addr = str(conn.laddr.ip)
+            if host in {"0.0.0.0", "::", addr} or addr in {"0.0.0.0", "::"}:
+                listeners.append(proc)
+                break
+    return listeners
+
+
+def stop_stale_sonic_processes(
+    sonic_worker: dict[str, str],
+    *,
+    supervisor_pid: int | None,
+    host: str | None = None,
+    port: int | None = None,
+) -> None:
     command = shlex.split(sonic_worker.get("command") or "")
     config_path = Path(command[command.index("-c") + 1]).resolve() if "-c" in command and command.index("-c") + 1 < len(command) else None
-    if config_path is None:
-        return
 
     stale = []
     for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
@@ -869,28 +1140,37 @@ def stop_stale_sonic_processes(sonic_worker: dict[str, str], *, supervisor_pid: 
             cmdline = proc.info.get("cmdline") or []
             if proc.info["pid"] == os.getpid() or proc.info["ppid"] == supervisor_pid:
                 continue
-            if Path(cmdline[0]).name != "sonic" or str(config_path) not in cmdline:
+            if config_path is None or Path(cmdline[0]).name != "sonic" or str(config_path) not in cmdline:
                 continue
             stale.append(proc)
         except (IndexError, psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+    if host is not None and port is not None:
+        for proc in _sonic_listeners(host, port):
+            try:
+                proc_ppid = proc.ppid()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if proc.pid == os.getpid() or proc_ppid == supervisor_pid:
+                continue
+            try:
+                supervisor = proc.parent()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                supervisor = None
+            if _is_supervisord_process(supervisor) and not _has_live_archivebox_parent(supervisor):
+                stale.append(supervisor)
+            elif proc_ppid <= 1:
+                stale.append(proc)
+
     if not stale:
         return
 
-    print(f"[yellow][*] Taking over stale Sonic daemon(s) using {pretty_path(config_path)}...[/yellow]")
-    for proc in stale:
-        try:
-            proc.terminate()
-        except psutil.NoSuchProcess:
-            pass
-    _gone, alive = psutil.wait_procs(stale, timeout=2.0)
-    for proc in alive:
-        try:
-            proc.kill()
-        except psutil.NoSuchProcess:
-            pass
-    psutil.wait_procs(alive, timeout=2.0)
+    unique_stale = {proc.pid: proc for proc in stale}.values()
+    target = f"{host}:{port}" if host and port else pretty_path(config_path) if config_path else "unknown Sonic target"
+    print(f"[yellow][*] Taking over stale Sonic daemon(s) using {target}...[/yellow]")
+    for proc in unique_stale:
+        _terminate_process_tree(proc)
 
 
 def start_server_workers(
@@ -902,6 +1182,7 @@ def start_server_workers(
     nothreading=False,
     keep_running=None,
     should_stop_supervisord=None,
+    resumed_from_pid=None,
 ):
     from archivebox.config.common import get_config
 
@@ -910,46 +1191,26 @@ def start_server_workers(
     tail_result = "stopped"
     try:
         supervisor = get_or_create_supervisord_process(daemonize=daemonize)
-        bind_url = f"http://{host}:{port}"
-
-        if debug:
-            server_worker = RUNSERVER_WORKER(host=host, port=port, reload=reload, nothreading=nothreading)
-            bg_workers: list[tuple[dict[str, str], bool]] = (
-                [(RUNNER_WORKER, True), (RUNNER_WATCH_WORKER(bind_url), False)] if reload else [(RUNNER_WORKER, False)]
+        workers, log_files, components = build_server_worker_plan(
+            config=config,
+            host=host,
+            port=port,
+            debug=debug,
+            reload=reload,
+            nothreading=nothreading,
+            supervisor=supervisor,
+        )
+        component_list = format_runtime_components(components)
+        if resumed_from_pid:
+            print(
+                "[yellow][*] Other newer archivebox process "
+                f"(pid={resumed_from_pid}) exited, taking over {component_list} in this process again...[/yellow]",
             )
-            log_files = ["logs/worker_runserver.log", "logs/worker_runner.log"]
-            if reload:
-                log_files.insert(1, "logs/worker_runner_watch.log")
         else:
-            server_worker = SERVER_WORKER(host=host, port=port)
-            bg_workers = [(RUNNER_WORKER, False)]
-            log_files = ["logs/worker_daphne.log", "logs/worker_runner.log"]
-
-        sonic_worker = get_sonic_supervisord_worker_from_plugin(config)
-        if sonic_worker is not None:
-            try:
-                current_sonic = get_worker(supervisor, sonic_worker["name"])
-                supervisor_pid = supervisor.getPID()
-            except Exception:
-                current_sonic = None
-                supervisor_pid = None
-            if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")):
-                stop_stale_sonic_processes(sonic_worker, supervisor_pid=supervisor_pid)
-            sonic_host = str(getattr(config, "SEARCH_BACKEND_SONIC_HOST_NAME", "127.0.0.1") or "127.0.0.1")
-            if sonic_host.strip().lower() == "localhost":
-                sonic_host = "127.0.0.1"
-            sonic_port = int(getattr(config, "SEARCH_BACKEND_SONIC_PORT"))
-            if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")) and is_port_in_use(
-                sonic_host,
-                sonic_port,
-            ):
-                print(f"[yellow][*] Sonic is already listening on {sonic_host}:{sonic_port}; not starting a duplicate worker.[/yellow]")
-            else:
-                bg_workers.insert(0, (sonic_worker, False))
-                log_files.append(str(sonic_worker["stdout_logfile"]))
+            print(f"[*] Starting {component_list} in this process (pid={os.getpid()})...")
 
         print()
-        sync_supervisord_workers(supervisor, [(server_worker, False), *bg_workers], prune=True)
+        sync_supervisord_workers(supervisor, workers, prune=True)
         print()
 
         if daemonize:
@@ -987,7 +1248,7 @@ def start_server_workers(
             # Ensure supervisord and all children are stopped only while this
             # foreground parent is still the active server parent. Standby
             # parents must not tear down a newer leader's services.
-            stop_existing_supervisord_process()
+            stop_own_supervisord_process()
     return tail_result
 
 

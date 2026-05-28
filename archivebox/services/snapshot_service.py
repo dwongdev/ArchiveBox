@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import sys
+
 from asgiref.sync import sync_to_async
+from django.core.exceptions import ValidationError
 from django.utils import timezone
+from rich import print as rprint
 from abx_dl.events import SnapshotCompletedEvent, SnapshotEvent
 from abx_dl.limits import CrawlLimitState
 from abx_dl.services.base import BaseService
@@ -27,7 +31,21 @@ class SnapshotService(BaseService):
             if snapshot.is_paused:
                 return
             if snapshot.status == Snapshot.StatusChoices.QUEUED:
-                await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
+                try:
+                    await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
+                except ValidationError as err:
+                    if "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs." not in str(err):
+                        raise
+                    await Snapshot.objects.filter(id=snapshot.id).aupdate(
+                        status=Snapshot.StatusChoices.SEALED,
+                        retry_at=None,
+                        modified_at=timezone.now(),
+                    )
+                    rprint(
+                        f"[red][X] Refusing to archive ArchiveBox internal URL for security: {snapshot.url}[/red]",
+                        file=sys.stderr,
+                    )
+                    return
                 await sync_to_async(snapshot.refresh_from_db, thread_sensitive=True)()
             elif snapshot.status != Snapshot.StatusChoices.STARTED:
                 return

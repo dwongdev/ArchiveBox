@@ -8,7 +8,6 @@ from django.urls import path
 from django.views.generic.base import RedirectView
 
 from archivebox.core.host_utils import build_web_url
-
 from .v1_api import urls as v1_api_urls
 
 
