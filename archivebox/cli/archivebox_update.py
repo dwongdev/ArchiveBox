@@ -255,6 +255,7 @@ def update(
         ),
     )
     touched_snapshot_ids: set[str] = set()
+    exit_code = 0
 
     try:
         wait_for_turn()
@@ -395,6 +396,7 @@ def update(
                 time.sleep(60)
                 resume = None
     except (KeyboardInterrupt, asyncio.CancelledError) as err:
+        exit_code = 130
         exact_resume = getattr(err, "archivebox_resume", None)
         resume_cmd = ["archivebox", "update"]
         if migrate_only:
@@ -431,9 +433,15 @@ def update(
         print("\n[red][X] archivebox update interrupted.[/red]")
         print("[yellow]Hint: resume this idempotent update with:[/yellow]")
         print(f"    [green]{shlex.join(resume_cmd)}[/green]")
-        raise SystemExit(130)
+        raise SystemExit(exit_code)
+    except SystemExit as err:
+        if isinstance(err.code, int):
+            exit_code = err.code
+        elif err.code:
+            exit_code = 1
+        raise
     finally:
-        command.mark_exited()
+        command.mark_exited(exit_code=exit_code)
         if stop_daemon_stack:
             stop_own_supervisord_process()
 

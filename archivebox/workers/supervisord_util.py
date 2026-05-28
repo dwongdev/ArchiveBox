@@ -168,6 +168,7 @@ RUNNER_ONCE_WORKER = lambda args, name="worker_runner_once": {
     "name": name,
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", *args]),
     "autorestart": "false",
+    "stopwaitsecs": "1",
     "stdout_logfile": f"logs/{name}.log",
 }
 

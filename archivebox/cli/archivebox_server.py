@@ -78,7 +78,7 @@ def server(
         current_command,
         standby_until_runtime_stack_needed,
     )
-    from archivebox.core.shutdown_util import foreground_shutdown_signals
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
 
     if run_in_debug:
         print("[green][+] Starting ArchiveBox webserver in DEBUG mode...[/green]")
@@ -96,7 +96,7 @@ def server(
     command = current_command(Process.TypeChoices.SERVER, data_dir=config.DATA_DIR, url=bind_url)
 
     try:
-        with foreground_shutdown_signals():
+        with foreground_shutdown_signals(), foreground_parent_watchdog():
             while True:
                 standby_until_runtime_stack_needed(command, data_dir=config.DATA_DIR)
                 sys.stdout.write(f"[*] ArchiveBox server parent pid={os.getpid()} is now running the orchestrator and server...\n")
@@ -117,6 +117,8 @@ def server(
                     keep_running=lambda: command_owns_runtime_stack(command, data_dir=config.DATA_DIR),
                     should_stop_supervisord=lambda: command_owns_runtime_stack(command, data_dir=config.DATA_DIR),
                 )
+                if result == "interrupted":
+                    break
                 if not command_owns_runtime_stack(command, data_dir=config.DATA_DIR):
                     print("[yellow][*] Another ArchiveBox command took over the runtime stack; standing by.[/yellow]")
                     continue
