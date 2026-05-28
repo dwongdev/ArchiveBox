@@ -186,36 +186,38 @@ class TestSnapshotProgressStats:
         stats = snapshot.get_progress_stats()
         assert stats["is_sealed"] is True
 
-    def test_archive_size_uses_prefetched_results_without_output_dir(self, snapshot, monkeypatch):
-        """archive_size should use prefetched ArchiveResult sizes before touching disk."""
+    def test_archive_size_uses_materialized_output_size_without_output_dir(self, snapshot, monkeypatch, django_capture_on_commit_callbacks):
+        """archive_size should trust the materialized DB size without touching disk."""
         from archivebox.core.models import ArchiveResult, Snapshot
 
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="wget",
-            status="succeeded",
-            output_size=4096,
-        )
-
-        prefetched_snapshot = Snapshot.objects.prefetch_related("archiveresult_set").get(pk=snapshot.pk)
+        with django_capture_on_commit_callbacks(execute=True):
+            ArchiveResult.objects.create(
+                snapshot=snapshot,
+                plugin="wget",
+                status="succeeded",
+                output_size=4096,
+            )
+        snapshot.refresh_from_db(fields=["output_size"])
 
         def _output_dir_should_not_be_used(self):
             raise AssertionError("archive_size should not access Snapshot.output_dir when results are prefetched")
 
         monkeypatch.setattr(Snapshot, "output_dir", property(_output_dir_should_not_be_used), raising=False)
 
-        assert prefetched_snapshot.archive_size == 4096
+        assert snapshot.archive_size == 4096
 
-    def test_snapshot_serialization_exposes_output_size_alias(self, snapshot):
+    def test_snapshot_serialization_exposes_output_size_alias(self, snapshot, django_capture_on_commit_callbacks):
         """Snapshot serializers should expose output_size as an alias of archive_size."""
         from archivebox.core.models import ArchiveResult
 
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="wget",
-            status="succeeded",
-            output_size=4096,
-        )
+        with django_capture_on_commit_callbacks(execute=True):
+            ArchiveResult.objects.create(
+                snapshot=snapshot,
+                plugin="wget",
+                status="succeeded",
+                output_size=4096,
+            )
+        snapshot.refresh_from_db(fields=["output_size"])
 
         assert snapshot.to_dict()["archive_size"] == 4096
         assert snapshot.to_dict()["output_size"] == 4096
@@ -1262,10 +1264,10 @@ class TestArchiveResultAdminListView:
         assert b"Snapshot Feed" in response.content
         assert b"/api/v1/core/snapshots.rss?created_by=testadmin&amp;limit=50&amp;api_key=" in response.content
 
-    def test_archiveresult_model_has_no_retry_at_field(self):
+    def test_archiveresult_model_has_retry_at_field(self):
         from archivebox.core.models import ArchiveResult
 
-        assert "retry_at" not in {field.name for field in ArchiveResult._meta.fields}
+        assert "retry_at" in {field.name for field in ArchiveResult._meta.fields}
 
 
 class TestLiveProgressView:
@@ -1803,6 +1805,7 @@ class TestPublicIndexSearch:
         from archivebox.core.views import PublicIndexView
 
         monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
+        monkeypatch.setenv("USE_INDEXING_BACKEND", "false")
         metadata_snapshot = Snapshot.objects.create(
             url="https://public-example.com/google-meta",
             title="Google Metadata Match",

@@ -111,6 +111,7 @@ def add(
     from archivebox.personas.models import Persona
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
+    from archivebox.core.shutdown_util import foreground_parent_watchdog
     from archivebox.services.runner import run_crawl
     from django.utils import timezone
 
@@ -216,7 +217,8 @@ def add(
     else:
         # Foreground mode: run full crawl runner until all work is done
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")
-        run_crawl(str(crawl.id))
+        with foreground_parent_watchdog():
+            run_crawl(str(crawl.id))
 
         # Print summary for foreground runs
         try:

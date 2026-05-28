@@ -77,6 +77,7 @@ def process_stdin_records() -> int:
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.core.models import Snapshot, ArchiveResult
     from archivebox.crawls.models import Crawl
+    from archivebox.core.shutdown_util import foreground_parent_watchdog
     from archivebox.machine.models import Binary
     from archivebox.services.runner import run_binary, run_crawl
 
@@ -228,11 +229,12 @@ def process_stdin_records() -> int:
             if not crawl.claim_processing_lock(lock_seconds=10):
                 rprint(f"[yellow]Crawl {crawl_id} is already owned by another runner[/yellow]", file=sys.stderr)
                 return 1
-            run_crawl(
-                crawl_id,
-                snapshot_ids=None if crawl_id in full_crawl_ids else sorted(snapshot_ids_by_crawl[crawl_id]),
-                selected_plugins=None if crawl_id in run_all_plugins_for_crawl else sorted(plugin_names_by_crawl[crawl_id]),
-            )
+            with foreground_parent_watchdog():
+                run_crawl(
+                    crawl_id,
+                    snapshot_ids=None if crawl_id in full_crawl_ids else sorted(snapshot_ids_by_crawl[crawl_id]),
+                    selected_plugins=None if crawl_id in run_all_plugins_for_crawl else sorted(plugin_names_by_crawl[crawl_id]),
+                )
     return 0
 
 
@@ -246,6 +248,7 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
     Returns exit code (0 = success, 1 = error).
     """
     from archivebox.config import CONSTANTS
+    from archivebox.core.shutdown_util import foreground_parent_watchdog
     from archivebox.machine.models import Machine, Process
     from archivebox.services.supervision_service import healthy_orchestrator
     from archivebox.services.runner import recover_orchestrator_state, run_pending_crawls
@@ -260,7 +263,8 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
         return 0
     current.mark_running(process_type=Process.TypeChoices.ORCHESTRATOR, pwd=str(CONSTANTS.DATA_DIR), timeout=0)
     try:
-        run_pending_crawls(daemon=daemon, crawl_id=crawl_id)
+        with foreground_parent_watchdog(enabled=not daemon):
+            run_pending_crawls(daemon=daemon, crawl_id=crawl_id)
         return 0
     except KeyboardInterrupt:
         return 0
@@ -320,18 +324,30 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
 
 
 def run_snapshot_worker(snapshot_id: str) -> int:
+    from archivebox.core.shutdown_util import foreground_parent_watchdog
     from archivebox.core.models import Snapshot
     from archivebox.services.runner import run_due_snapshot
     from django.utils import timezone
 
+    snapshot = None
     try:
-        snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
-        if snapshot.retry_at is None:
-            Snapshot.objects.filter(pk=snapshot.pk).update(retry_at=timezone.now(), modified_at=timezone.now())
-            snapshot.refresh_from_db()
-        run_due_snapshot(snapshot, lock_seconds=60)
+        with foreground_parent_watchdog():
+            snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
+            if snapshot.retry_at is None:
+                Snapshot.objects.filter(pk=snapshot.pk).update(retry_at=timezone.now(), modified_at=timezone.now())
+                snapshot.refresh_from_db()
+            run_due_snapshot(snapshot, lock_seconds=60)
         return 0
     except KeyboardInterrupt:
+        try:
+            if snapshot is not None:
+                snapshot.refresh_from_db()
+            else:
+                snapshot = Snapshot.objects.filter(id=snapshot_id).first()
+            if snapshot is not None and snapshot.status != Snapshot.StatusChoices.SEALED:
+                snapshot.update_and_requeue(retry_at=timezone.now())
+        except Exception:
+            pass
         return 0
     except Exception as e:
         rprint(f"[red]Runner error: {type(e).__name__}: {e}[/red]", file=sys.stderr)

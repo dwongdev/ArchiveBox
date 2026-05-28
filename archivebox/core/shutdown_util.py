@@ -3,6 +3,8 @@ from __future__ import annotations
 import signal
 import subprocess
 import sys
+import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -110,3 +112,44 @@ def foreground_shutdown_signals(
     finally:
         for sig, previous_handler in previous_handlers.items():
             signal.signal(sig, previous_handler)
+
+
+@contextmanager
+def foreground_parent_watchdog(
+    *,
+    enabled: bool = True,
+    check_interval: float = 2.0,
+    shutdown_signal: signal.Signals = signal.SIGINT,
+) -> Iterator[None]:
+    """Ask a foreground command to exit if its launcher/wrapper disappears.
+
+    `uv run archivebox ...` and similar wrappers can be killed without
+    delivering a signal to the real Python child. If that child keeps crawling
+    as an orphan, it can hold SQLite write locks long after the user-facing
+    command timed out. This watchdog is only for foreground command lifetimes;
+    daemon/supervisord workers should not use it because their parent may
+    intentionally hand them off.
+    """
+
+    original_ppid = os.getppid()
+    if not enabled or original_ppid <= 1:
+        yield
+        return
+
+    stopped = threading.Event()
+
+    def watch_parent() -> None:
+        while not stopped.wait(check_interval):
+            if os.getppid() == original_ppid:
+                continue
+            sys.stderr.write("\n[🛑] ArchiveBox parent process exited; stopping foreground command gracefully...\n")
+            sys.stderr.flush()
+            os.kill(os.getpid(), shutdown_signal)
+            return
+
+    thread = threading.Thread(target=watch_parent, name="archivebox-parent-watchdog", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()

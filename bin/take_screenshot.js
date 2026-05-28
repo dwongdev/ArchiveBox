@@ -22,6 +22,7 @@ Environment:
   SCREENSHOT_HEIGHT          Viewport height, defaults to 1400
   SCREENSHOT_FULL_PAGE       Set to 1 to capture the full page, defaults to viewport only
   SCREENSHOT_SCROLL_SELECTOR Scroll this selector into view before capture
+  SCREENSHOT_WAIT_SELECTOR   Wait for this selector before capture
   SCREENSHOT_SNAPSHOT_VIEW   Set to list or grid before loading the page
   SCREENSHOT_RESET_FILTERS   Set to 1 to clear the admin filter collapsed preference
 `);
@@ -94,6 +95,9 @@ async function main() {
 
     await page.waitForSelector('body');
     await page.waitForSelector('#progress-monitor, #add-form', { timeout: 5000 }).catch(() => {});
+    if (process.env.SCREENSHOT_WAIT_SELECTOR) {
+      await page.waitForSelector(process.env.SCREENSHOT_WAIT_SELECTOR, { timeout: 45000 });
+    }
     if (process.env.SCREENSHOT_SCROLL_SELECTOR) {
       await page.waitForSelector(process.env.SCREENSHOT_SCROLL_SELECTOR, { timeout: 45000 }).catch(() => {});
       await page.evaluate((selector) => {
@@ -120,6 +124,15 @@ async function main() {
         : 'missing',
       progressCrawls: document.querySelectorAll('#progress-monitor .crawl-item').length,
       progressSnapshots: document.querySelectorAll('#progress-monitor .snapshot-item').length,
+      screencastVisible: Boolean(document.querySelector('#progress-monitor .screencast-panel.visible')),
+      screencastImageLoaded: (() => {
+        const img = document.querySelector('#progress-monitor .screencast-panel.visible img');
+        return Boolean(img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+      })(),
+      screencastImageSize: (() => {
+        const img = document.querySelector('#progress-monitor .screencast-panel.visible img');
+        return img ? `${img.naturalWidth}x${img.naturalHeight}` : '';
+      })(),
       snapshotEmbed: Boolean(document.querySelector('.crawl-snapshots-embed iframe')),
       addForm: Boolean(document.querySelector('#add-form')),
       limitFields: Array.from(document.querySelectorAll('.crawl-limit-field label')).map((el) => el.textContent.trim()),

@@ -201,6 +201,7 @@ def update(
 
     setup_django()
     from archivebox.machine.models import Process
+    from archivebox.core.shutdown_util import foreground_parent_watchdog
     from archivebox.services.supervision_service import current_command, ensure_daemon_stack
     from archivebox.workers.supervisord_util import stop_existing_supervisord_process
 
@@ -231,110 +232,111 @@ def update(
         if stop_daemon_stack:
             stop_existing_supervisord_process()
 
-        while True:
-            do_migrate = migrate_only or not index_only
-            do_index = index_only or not migrate_only
-            do_run_until_idle = do_migrate or do_index
+        with foreground_parent_watchdog():
+            while True:
+                do_migrate = migrate_only or not index_only
+                do_index = index_only or not migrate_only
+                do_run_until_idle = do_migrate or do_index
 
-            if do_migrate:
-                if (
-                    filter_patterns
-                    or status
-                    or url__icontains
-                    or url__istartswith
-                    or tag
-                    or crawl_id
-                    or limit
-                    or sort
-                    or search
-                    or before
-                    or after
-                ):
-                    print("[*] Processing filtered snapshots from database...")
-                    stats = process_filtered_snapshots(
-                        filter_patterns=filter_patterns,
-                        filter_type=filter_type,
-                        status=status,
-                        url__icontains=url__icontains,
-                        url__istartswith=url__istartswith,
-                        tag=tag,
-                        crawl_id=crawl_id,
-                        limit=limit,
-                        sort=sort,
-                        search=search,
-                        before=before,
-                        after=after,
-                        resume=resume,
-                        batch_size=batch_size,
-                        queue_for_archiving=do_run_until_idle,
-                    )
-                    print_stats(stats)
-                    touched_snapshot_ids.update(stats.get("snapshot_ids", []))
-                else:
-                    stats_combined = {"phase1": {}, "phase2": {}}
+                if do_migrate:
+                    if (
+                        filter_patterns
+                        or status
+                        or url__icontains
+                        or url__istartswith
+                        or tag
+                        or crawl_id
+                        or limit
+                        or sort
+                        or search
+                        or before
+                        or after
+                    ):
+                        print("[*] Processing filtered snapshots from database...")
+                        stats = process_filtered_snapshots(
+                            filter_patterns=filter_patterns,
+                            filter_type=filter_type,
+                            status=status,
+                            url__icontains=url__icontains,
+                            url__istartswith=url__istartswith,
+                            tag=tag,
+                            crawl_id=crawl_id,
+                            limit=limit,
+                            sort=sort,
+                            search=search,
+                            before=before,
+                            after=after,
+                            resume=resume,
+                            batch_size=batch_size,
+                            queue_for_archiving=do_run_until_idle,
+                        )
+                        print_stats(stats)
+                        touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                    else:
+                        stats_combined = {"phase1": {}, "phase2": {}}
 
-                    print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
-                    stats_combined["phase1"] = drain_old_archive_dirs(
-                        resume_from=resume,
-                        batch_size=batch_size,
-                    )
+                        print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
+                        stats_combined["phase1"] = drain_old_archive_dirs(
+                            resume_from=resume,
+                            batch_size=batch_size,
+                        )
 
-                    print("[*] Phase 2: Processing all database snapshots (most recent first)...")
-                    stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
-                    print_combined_stats(stats_combined)
+                        print("[*] Phase 2: Processing all database snapshots (most recent first)...")
+                        stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
+                        print_combined_stats(stats_combined)
 
-            if do_index:
-                ensure_daemon_stack(reason="search indexing")
-                search_plugins = _get_search_indexing_plugins()
-                if not search_plugins:
-                    print("[*] No search indexing plugins are available, nothing to backfill.")
-                else:
-                    snapshots = _build_filtered_snapshots_queryset(
-                        filter_patterns=filter_patterns,
-                        filter_type=filter_type,
-                        status=status,
-                        url__icontains=url__icontains,
-                        url__istartswith=url__istartswith,
-                        tag=tag,
-                        crawl_id=crawl_id,
-                        limit=limit,
-                        sort=sort,
-                        search=search,
-                        before=before,
-                        after=after,
-                        resume=resume,
-                    )
-                    stats = reindex_snapshots(
-                        snapshots,
-                        search_plugins=search_plugins,
-                        batch_size=batch_size,
-                        collect_ids=is_filtered_update,
-                    )
-                    print_index_stats(stats)
-                    touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                if do_index:
+                    ensure_daemon_stack(reason="search indexing")
+                    search_plugins = _get_search_indexing_plugins()
+                    if not search_plugins:
+                        print("[*] No search indexing plugins are available, nothing to backfill.")
+                    else:
+                        snapshots = _build_filtered_snapshots_queryset(
+                            filter_patterns=filter_patterns,
+                            filter_type=filter_type,
+                            status=status,
+                            url__icontains=url__icontains,
+                            url__istartswith=url__istartswith,
+                            tag=tag,
+                            crawl_id=crawl_id,
+                            limit=limit,
+                            sort=sort,
+                            search=search,
+                            before=before,
+                            after=after,
+                            resume=resume,
+                        )
+                        stats = reindex_snapshots(
+                            snapshots,
+                            search_plugins=search_plugins,
+                            batch_size=batch_size,
+                            collect_ids=is_filtered_update,
+                        )
+                        print_index_stats(stats)
+                        touched_snapshot_ids.update(stats.get("snapshot_ids", []))
 
-            if do_run_until_idle:
-                print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
-                from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
+                if do_run_until_idle:
+                    print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
+                    from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
 
-                if is_filtered_update:
-                    if not touched_snapshot_ids:
-                        print("[*] No matching snapshots queued work for the runner.")
-                    for snapshot_id in sorted(touched_snapshot_ids):
-                        exit_code = run_snapshot_worker(snapshot_id)
+                    if is_filtered_update:
+                        if not touched_snapshot_ids:
+                            print("[*] No matching snapshots queued work for the runner.")
+                        for snapshot_id in sorted(touched_snapshot_ids):
+                            exit_code = run_snapshot_worker(snapshot_id)
+                            if exit_code != 0:
+                                raise SystemExit(exit_code)
+                    else:
+                        exit_code = run_runner(daemon=False)
                         if exit_code != 0:
                             raise SystemExit(exit_code)
-                else:
-                    exit_code = run_runner(daemon=False)
-                    if exit_code != 0:
-                        raise SystemExit(exit_code)
 
-            if not continuous:
-                break
+                if not continuous:
+                    break
 
-            print("[yellow]Sleeping 60s before next pass...[/yellow]")
-            time.sleep(60)
-            resume = None
+                print("[yellow]Sleeping 60s before next pass...[/yellow]")
+                time.sleep(60)
+                resume = None
     except (KeyboardInterrupt, asyncio.CancelledError) as err:
         exact_resume = getattr(err, "archivebox_resume", None)
         resume_cmd = ["archivebox", "update"]

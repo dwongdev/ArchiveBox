@@ -501,12 +501,12 @@ def start_new_supervisord_process(daemonize=False):
         return wait_for_supervisord_ready()
 
 
-def wait_for_supervisord_ready(max_wait_sec: float = 5.0, interval_sec: float = 0.1):
+def wait_for_supervisord_ready(max_wait_sec: float = 5.0, interval_sec: float = 0.1, *, quiet: bool = False):
     """Poll for supervisord readiness without a fixed startup sleep."""
     deadline = time.monotonic() + max_wait_sec
     supervisor = None
     while time.monotonic() < deadline:
-        supervisor = get_existing_supervisord_process()
+        supervisor = get_existing_supervisord_process(quiet=quiet)
         if supervisor is not None:
             return supervisor
         time.sleep(interval_sec)
