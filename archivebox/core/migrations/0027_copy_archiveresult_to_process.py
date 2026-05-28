@@ -212,36 +212,42 @@ def create_process(cursor, machine_id, pwd, cmd, status, exit_code, started_at, 
     # Set retry_at to now for queued processes, NULL otherwise
     retry_at = now if status == "queued" else None
 
+    cursor.execute("PRAGMA table_info(machine_process)")
+    process_cols = {row[1] for row in cursor.fetchall()}
+    values_by_col = {
+        "id": process_id,
+        "created_at": now,
+        "modified_at": now,
+        "machine_id": machine_id,
+        "parent_id": None,
+        "process_type": "hook",
+        "worker_type": "",
+        "pwd": pwd,
+        "cmd": cmd_json,
+        "env": "{}",
+        "timeout": 120,
+        "pid": None,
+        "exit_code": exit_code,
+        "stdout": "",
+        "stderr": "",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "binary_id": binary_id,
+        "iface_id": None,
+        "url": None,
+        "status": status,
+        "retry_at": retry_at,
+        "num_uses_failed": 0,
+        "num_uses_succeeded": 0,
+    }
+    insert_cols = [col for col in values_by_col if col in process_cols]
+    placeholders = ", ".join(["?"] * len(insert_cols))
     cursor.execute(
-        """
-        INSERT INTO machine_process (
-            id, created_at, modified_at, machine_id, parent_id, process_type,
-            pwd, cmd, env, timeout,
-            pid, exit_code, stdout, stderr,
-            started_at, ended_at,
-            binary_id, iface_id, url,
-            status, retry_at
-        ) VALUES (?, ?, ?, ?, NULL, 'cli',
-                  ?, ?, '{}', 120,
-                  NULL, ?, '', '',
-                  ?, ?,
-                  ?, NULL, NULL,
-                  ?, ?)
-    """,
-        [
-            process_id,
-            now,
-            now,
-            machine_id,
-            pwd,
-            cmd_json,
-            exit_code,
-            started_at,
-            ended_at,
-            binary_id,
-            status,
-            retry_at,
-        ],
+        f"""
+        INSERT INTO machine_process ({", ".join(insert_cols)})
+        VALUES ({placeholders})
+        """,
+        [values_by_col[col] for col in insert_cols],
     )
 
     return process_id
