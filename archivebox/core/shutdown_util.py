@@ -19,6 +19,16 @@ class ShutdownSignalState:
     signal_name: str | None = None
 
 
+_active_shutdown_state: ShutdownSignalState | None = None
+
+
+def raise_if_shutdown_requested() -> None:
+    """Let long foreground loops honor a signal even if Python ignored it once."""
+
+    if _active_shutdown_state and _active_shutdown_state.signal_name:
+        raise KeyboardInterrupt
+
+
 def configured_stopwaitsecs(workers: list[dict[str, str]] | tuple[dict[str, str], ...], *, default: int = 5, buffer: int = 5) -> int:
     """Return a deterministic shutdown bound from generated worker definitions."""
 
@@ -96,7 +106,10 @@ def foreground_shutdown_signals(
     immediately, then raises KeyboardInterrupt to break out of the blocking read.
     """
 
+    global _active_shutdown_state
+
     state = ShutdownSignalState()
+    previous_active_state = _active_shutdown_state
     previous_handlers = {sig: signal.getsignal(sig) for sig in handled_signals}
 
     def raise_keyboard_interrupt(signum, _frame):
@@ -106,10 +119,12 @@ def foreground_shutdown_signals(
         raise KeyboardInterrupt
 
     try:
+        _active_shutdown_state = state
         for sig in handled_signals:
             signal.signal(sig, raise_keyboard_interrupt)
         yield state
     finally:
+        _active_shutdown_state = previous_active_state
         for sig, previous_handler in previous_handlers.items():
             signal.signal(sig, previous_handler)
 

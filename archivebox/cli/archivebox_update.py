@@ -215,7 +215,7 @@ def update(
     check_migrations(auto_apply=True)
 
     from archivebox.machine.models import Process
-    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals, raise_if_shutdown_requested
     from archivebox.services.supervision_service import (
         command_owns_runtime_stack,
         current_command,
@@ -227,7 +227,9 @@ def update(
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
 
     def wait_for_turn() -> None:
+        raise_if_shutdown_requested()
         standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+        raise_if_shutdown_requested()
 
     def run_scoped_runner(*args: str) -> None:
         while True:
