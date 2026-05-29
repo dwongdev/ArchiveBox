@@ -685,7 +685,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         ),
     )
     persona = forms.ModelChoiceField(
-        label="Persona (authentication profile)",
+        label="Persona (configuration profile)",
         required=False,
         queryset=Persona.objects.none(),
         empty_label=None,

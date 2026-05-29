@@ -766,6 +766,12 @@ select {
   box-shadow: none;
 }
 
+.persona-preset-btn {
+  color: #004882;
+  border-color: #b7d3ea;
+  background-color: #f5fbff;
+}
+
 /* Advanced section (collapsible) */
 .advanced-section {
   background-color: white;

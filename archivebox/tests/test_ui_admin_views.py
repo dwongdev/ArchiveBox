@@ -1259,7 +1259,7 @@ class TestArchiveResultAdminListView:
 
 class TestLiveProgressView:
     def test_live_progress_hides_finished_cancelled_crawl(self, client, admin_user, crawl, snapshot):
-        from archivebox.core.models import Snapshot
+        from archivebox.core.models import ArchiveResult, Snapshot
         from archivebox.crawls.models import Crawl
 
         now = timezone.now()
@@ -1274,12 +1274,20 @@ class TestLiveProgressView:
             downloaded_at=None,
             modified_at=now,
         )
+        ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="singlefile",
+            hook_name="on_Snapshot__50_singlefile",
+            status=ArchiveResult.StatusChoices.QUEUED,
+        )
 
         client.login(username="testadmin", password="testpassword")
         response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
 
         assert response.status_code == 200
-        assert response.json()["active_crawls"] == []
+        payload = response.json()
+        assert payload["active_crawls"] == []
+        assert payload["downloads_queued"] == 0
 
     def test_live_progress_reports_real_orchestrator_process_running(self, client, admin_user, db):
         import archivebox.machine.models as machine_models

@@ -100,9 +100,9 @@
                                 <div class="error">{{ form.persona.errors }}</div>
                             {% endif %}
                             <div class="help-text">
-                                Authentication profile (Chrome profile, cookies, etc.) to use when accessing URLs.
+                                Authentication + configuration settings to use when saving URLs (cookies, user agent, resolution, timeouts, etc.)
                                 {% if can_override_crawl_config %}
-                                <a href="/admin/personas/persona/add/" target="_blank">Create new persona / import from Chrome →</a>
+                                <a href="/admin/personas/persona/add/" target="_blank">Create new profile / import from Chrome -&gt;</a>
                                 {% endif %}
                             </div>
                         </div>
@@ -247,6 +247,9 @@
 
                     <div class="plugin-presets">
                         <span class="preset-label">Quick Select:</span>
+                        {% for persona in recent_personas %}
+                        <button type="button" class="preset-btn persona-preset-btn" data-persona="{{ persona.name }}" title="Use {{ persona.name }} persona">👤 {{ persona.name }}</button>
+                        {% endfor %}
                         <button type="button" class="preset-btn" data-preset="text-only">📄 Text Only</button>
                         <button type="button" class="preset-btn" data-preset="select-all">✓ Select All</button>
                         <button type="button" class="preset-btn" data-preset="clear-all">✗ Clear All</button>
@@ -1151,7 +1154,16 @@
                     'text-only': ['wget', 'readability', 'mercury', 'htmltotext', 'title', 'favicon']
                 };
 
-                document.querySelectorAll('.preset-btn').forEach(btn => {
+                document.querySelectorAll('.persona-preset-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        if (!personaSelect) return;
+                        personaSelect.value = this.dataset.persona || '';
+                        dispatchChange(personaSelect);
+                        saveFormState();
+                    });
+                });
+
+                document.querySelectorAll('.preset-btn[data-preset]').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const preset = this.dataset.preset;
                         const allCheckboxes = document.querySelectorAll('.plugin-section-toggle');

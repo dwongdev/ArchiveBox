@@ -152,7 +152,7 @@ def create_archiveresults(
             config = get_config(crawl=snapshot.crawl, snapshot=snapshot)
             hooks = discover_hooks("Snapshot", config=config)
             for hook_path in hooks:
-                hook_name = hook_path.name
+                hook_name = hook_path.stem
                 plugin_name = hook_path.parent.name
                 if not is_tty:
                     write_record(build_archiveresult_request(snapshot.id, plugin_name, hook_name=hook_name, status=status))

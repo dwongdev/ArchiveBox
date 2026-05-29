@@ -1132,6 +1132,7 @@ class AddView(UserPassesTestMixin, FormView):
                 "effective_config": effective_config_json,
                 "binary_urls": binary_urls,
             }
+        recent_personas = list(persona_queryset.order_by("-created_at", "name")[:5])
         plugin_dependency_map = {}
         if can_override_crawl_config:
             plugin_dependency_map = {
@@ -1153,6 +1154,7 @@ class AddView(UserPassesTestMixin, FormView):
             "required_search_plugin": required_search_plugin,
             "plugin_dependency_map_json": json.dumps(plugin_dependency_map, sort_keys=True),
             "persona_config_map_json": json.dumps(persona_config_map, sort_keys=True, default=str),
+            "recent_personas": recent_personas,
             "can_override_crawl_config": can_override_crawl_config,
             "stdout": "",
         }
@@ -1621,22 +1623,20 @@ def live_progress_view(request):
         snapshots_paused = snapshot_status_counts.get(Snapshot.StatusChoices.PAUSED, 0)
 
         download_plugin_names, indexing_plugin_names = _live_progress_plugin_names()
-        archiveresult_status_counts: dict[str, int] = {}
-        download_status_counts: dict[str, int] = {}
-        indexing_status_counts: dict[str, int] = {}
-        for status in (
+        result_statuses = (
             ArchiveResult.StatusChoices.QUEUED,
             ArchiveResult.StatusChoices.STARTED,
             ArchiveResult.StatusChoices.PAUSED,
-        ):
-            for row in archiveresult_scope.filter(status=status).values("plugin").annotate(count=Count("id")).order_by():
-                plugin = row["plugin"]
-                count = row["count"]
-                archiveresult_status_counts[status] = archiveresult_status_counts.get(status, 0) + count
-                if plugin in indexing_plugin_names:
-                    indexing_status_counts[status] = indexing_status_counts.get(status, 0) + count
-                elif plugin in download_plugin_names:
-                    download_status_counts[status] = download_status_counts.get(status, 0) + count
+        )
+        archiveresult_status_counts = count_statuses(archiveresult_scope, result_statuses)
+        download_scope = archiveresult_scope.filter(
+            plugin__in=download_plugin_names,
+            snapshot__status__in=(Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED),
+            snapshot__crawl__status__in=(Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED),
+        )
+        indexing_scope = archiveresult_scope.filter(plugin__in=indexing_plugin_names)
+        download_status_counts = count_statuses(download_scope, result_statuses)
+        indexing_status_counts = count_statuses(indexing_scope, result_statuses)
         archiveresults_pending = archiveresult_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
         archiveresults_started = archiveresult_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
         archiveresults_paused = archiveresult_status_counts.get(ArchiveResult.StatusChoices.PAUSED, 0)

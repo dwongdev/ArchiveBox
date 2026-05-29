@@ -13,6 +13,7 @@ import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import timedelta
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -1185,19 +1186,43 @@ def run_binary(binary_id: str) -> None:
     asyncio.run(_run_binary(binary_id))
 
 
+@lru_cache(maxsize=1)
+def _snapshot_hook_names_by_plugin() -> dict[str, frozenset[str]]:
+    return {plugin.name: frozenset(hook.name for hook in plugin.filter_hooks("Snapshot")) for plugin in discover_plugins().values()}
+
+
 def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
     from archivebox.core.models import ArchiveResult
 
-    queued_plugins = sorted(
-        set(
-            ArchiveResult.objects.filter(
-                snapshot_id=snapshot_id,
-                status=ArchiveResult.StatusChoices.QUEUED,
-            )
-            .exclude(plugin="")
-            .values_list("plugin", flat=True),
-        ),
+    queued_results = list(
+        ArchiveResult.objects.filter(
+            snapshot_id=snapshot_id,
+            status=ArchiveResult.StatusChoices.QUEUED,
+        )
+        .exclude(plugin="")
+        .only("id", "plugin", "hook_name"),
     )
+    hooks_by_plugin = _snapshot_hook_names_by_plugin()
+    obsolete_result_ids = [
+        result.id
+        for result in queued_results
+        if result.hook_name and result.hook_name not in hooks_by_plugin.get(result.plugin, frozenset())
+    ]
+    if obsolete_result_ids:
+        # Hook names are the scheduler identity for ArchiveResults. If an old
+        # queued row names a hook that the current plugin model cannot run, mark
+        # only that row final so the Snapshot scheduler can drain normally instead
+        # of re-running the whole plugin forever.
+        ArchiveResult.objects.filter(
+            id__in=obsolete_result_ids,
+            status=ArchiveResult.StatusChoices.QUEUED,
+        ).update(
+            status=ArchiveResult.StatusChoices.SKIPPED,
+            output_str="Hook no longer exists in the current plugin set.",
+            modified_at=timezone.now(),
+        )
+
+    queued_plugins = sorted({result.plugin for result in queued_results if result.id not in obsolete_result_ids})
     if queued_plugins:
         return queued_plugins
     return None

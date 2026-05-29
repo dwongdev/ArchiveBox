@@ -797,6 +797,32 @@ class TestRecoverOrchestratorState:
         assert snapshot.retry_at is None
         assert snapshot.downloaded_at is None
 
+    def test_create_pending_archiveresults_uses_canonical_hook_names(self):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import ArchiveResult, Snapshot
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            status=Crawl.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.QUEUED,
+            retry_at=timezone.now(),
+        )
+
+        snapshot.create_pending_archiveresults()
+
+        hook_names = list(ArchiveResult.objects.filter(snapshot=snapshot).values_list("hook_name", flat=True))
+        assert hook_names
+        assert all(not hook_name.endswith((".py", ".js", ".sh")) for hook_name in hook_names)
+
     def test_run_due_snapshot_pauses_child_when_parent_is_paused(self):
         from django.utils import timezone
 
@@ -1192,6 +1218,40 @@ class TestRecoverOrchestratorState:
         result.refresh_from_db()
         snapshot.refresh_from_db()
         assert result.status == ArchiveResult.StatusChoices.SUCCEEDED
+        assert snapshot.retry_at is None
+
+    def test_run_due_snapshot_skips_obsolete_queued_hook_name(self):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import ArchiveResult, Snapshot
+        from archivebox.services.runner import run_due_snapshot
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            status=Crawl.StatusChoices.SEALED,
+            retry_at=None,
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=timezone.now(),
+        )
+        result = ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="singlefile",
+            hook_name="on_Snapshot__50_singlefile.py",
+            status=ArchiveResult.StatusChoices.QUEUED,
+        )
+
+        assert run_due_snapshot(snapshot, lock_seconds=60) is True
+
+        result.refresh_from_db()
+        snapshot.refresh_from_db()
+        assert result.status == ArchiveResult.StatusChoices.SKIPPED
         assert snapshot.retry_at is None
 
     def test_recover_orchestrator_state_ignores_sealed_downloaded_snapshot_without_results(self):

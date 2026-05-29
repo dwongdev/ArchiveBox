@@ -2565,7 +2565,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         archiveresults = []
 
         for hook_path in hooks:
-            hook_name = hook_path.name  # e.g., 'on_Snapshot__50_wget.py'
+            hook_name = hook_path.stem  # e.g., 'on_Snapshot__50_wget'
             plugin = hook_path.parent.name  # e.g., 'wget'
 
             # ArchiveResult output is one filesystem directory per plugin hook, so
