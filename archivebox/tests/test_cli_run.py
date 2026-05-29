@@ -1220,7 +1220,7 @@ class TestRecoverOrchestratorState:
         assert result.status == ArchiveResult.StatusChoices.SUCCEEDED
         assert snapshot.retry_at is None
 
-    def test_run_due_snapshot_skips_obsolete_queued_hook_name(self):
+    def test_run_due_snapshot_fails_obsolete_queued_hook_name(self):
         from django.utils import timezone
 
         from archivebox.base_models.models import get_or_create_system_user_pk
@@ -1251,7 +1251,7 @@ class TestRecoverOrchestratorState:
 
         result.refresh_from_db()
         snapshot.refresh_from_db()
-        assert result.status == ArchiveResult.StatusChoices.SKIPPED
+        assert result.status == ArchiveResult.StatusChoices.FAILED
         assert snapshot.retry_at is None
 
     def test_recover_orchestrator_state_ignores_sealed_downloaded_snapshot_without_results(self):

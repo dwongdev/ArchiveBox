@@ -16,10 +16,6 @@
             radial-gradient(circle at top right, rgba(67, 97, 238, 0.10), transparent 32%),
             linear-gradient(135deg, #fff7ed 0%, #ffffff 45%, #ecfeff 100%);
         box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
-        display: grid;
-        gap: 18px;
-        grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
-        align-items: start;
     }
 
     .persona-import-hero h2 {
@@ -32,37 +28,14 @@
     .persona-import-hero p {
         margin: 0;
         color: #475569;
-        max-width: 70ch;
+        max-width: 92ch;
         font-size: 14px;
     }
 
-    .persona-import-hero__meta {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    }
-
-    .persona-import-hero__stat {
-        padding: 14px 16px;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.86);
-        border: 1px solid rgba(203, 213, 225, 0.85);
-    }
-
-    .persona-import-hero__stat span {
-        display: block;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-weight: 700;
-        color: #64748b;
-        margin-bottom: 8px;
-    }
-
-    .persona-import-hero__stat strong,
-    .persona-import-hero__stat code {
-        font-size: 18px;
+    .persona-import-copy {
+        cursor: pointer;
         color: #0f172a;
+        border-bottom: 1px dashed #64748b;
     }
 
     .field-import_mode ul,
@@ -194,12 +167,6 @@
         color: #991b1b;
     }
 
-    @media (max-width: 960px) {
-        .persona-import-hero {
-            grid-template-columns: 1fr;
-        }
-    }
-
     body.model-persona.change-form #content-main form fieldset.persona-card-primary {
         flex: 1 1 520px !important;
         max-width: calc(66.66% - 10px) !important;
@@ -260,6 +227,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const discoveredRow = document.querySelector('.form-row.field-import_discovered_profile');
     const sourceRow = document.querySelector('.form-row.field-import_source');
     const profileRow = document.querySelector('.form-row.field-import_profile_name');
+    const copyInspect = document.querySelector('[data-copy-text]');
 
     const updateVisibility = () => {
         const selected = modeInputs.find((input) => input.checked)?.value || 'none';
@@ -270,6 +238,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     modeInputs.forEach((input) => input.addEventListener('change', updateVisibility));
     updateVisibility();
+
+    if (copyInspect) {
+        copyInspect.addEventListener('click', function () {
+            navigator.clipboard?.writeText(this.dataset.copyText || this.textContent.trim());
+        });
+    }
 });
 </script>
 {% endblock %}
@@ -277,24 +251,12 @@ document.addEventListener('DOMContentLoaded', function () {
 {% block form_top %}
 <section class="persona-import-hero">
     <div>
-        <h2>Bootstrap a persona from a real browser session</h2>
+        <h2>Create a new Persona (Authentication + Configuration Profile)</h2>
         <p>
-            Pick a local Chromium profile, paste an absolute profile path, or attach to a live CDP endpoint.
-            The form saves the Persona normally, then imports profile files, cookies, and optional tab storage into
-            the Persona's own directories.
+            Import cookies and settings from any Chrome-based browser by pasting in the local path of a User Data Directory to import from,
+            or by pasting in your CDP url from
+            <code class="persona-import-copy" data-copy-text="chrome://inspect#remote-debugging" title="Copy chrome://inspect#remote-debugging">chrome://inspect#remote-debugging</code>.
         </p>
-    </div>
-    <div class="persona-import-hero__meta">
-        <div class="persona-import-hero__stat">
-            <span>Detected profiles</span>
-            <strong>{{ detected_profile_count }}</strong>
-        </div>
-        <div class="persona-import-hero__stat">
-            <span>Persona artifacts</span>
-            <code>chrome_profile</code>
-            <code>cookies.txt</code>
-            <code>auth.json</code>
-        </div>
     </div>
 </section>
 {{ block.super }}

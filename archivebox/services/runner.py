@@ -1210,14 +1210,14 @@ def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
     ]
     if obsolete_result_ids:
         # Hook names are the scheduler identity for ArchiveResults. If an old
-        # queued row names a hook that the current plugin model cannot run, mark
-        # only that row final so the Snapshot scheduler can drain normally instead
-        # of re-running the whole plugin forever.
+        # queued row names a hook that the current plugin model cannot run, hard
+        # fail only that row so the scheduler drains without hiding stale/broken
+        # plugin state as an intentional skip.
         ArchiveResult.objects.filter(
             id__in=obsolete_result_ids,
             status=ArchiveResult.StatusChoices.QUEUED,
         ).update(
-            status=ArchiveResult.StatusChoices.SKIPPED,
+            status=ArchiveResult.StatusChoices.FAILED,
             output_str="Hook no longer exists in the current plugin set.",
             modified_at=timezone.now(),
         )

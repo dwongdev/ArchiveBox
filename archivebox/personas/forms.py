@@ -30,7 +30,7 @@ class PersonaAdminForm(PluginConfigFormMixin, forms.ModelForm):
         label="Permissions",
         choices=PERMISSIONS_CHOICES,
         required=True,
-        help_text="Default visibility for crawls and snapshots that use this persona.",
+        help_text="Default visibility for crawls and snapshots created using this persona.",
     )
     import_mode = forms.ChoiceField(
         required=False,
