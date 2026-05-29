@@ -121,7 +121,22 @@ def test_crawl_pause_resume_api_cascades_archiveresults_and_leaves_finished_snap
         )
         assert crawl_response.status_code == 200, crawl_response.content.decode()
         crawl_id = _json_response(crawl_response)["id"]
-        active_snapshot = Snapshot.objects.get(crawl_id=crawl_id, url=recursive_test_site["root_url"])
+        from archivebox.services.runner import run_due_snapshot
+
+        active_response = _post_json(
+            client,
+            "/api/v1/core/snapshots",
+            api_token,
+            {
+                "url": recursive_test_site["root_url"],
+                "crawl_id": crawl_id,
+                "depth": 0,
+                "title": "Active child",
+                "status": "queued",
+            },
+        )
+        assert active_response.status_code == 200, active_response.content.decode()
+        active_snapshot = Snapshot.objects.get(id=_json_response(active_response)["id"])
 
         sealed_response = _post_json(
             client,
@@ -137,14 +152,17 @@ def test_crawl_pause_resume_api_cascades_archiveresults_and_leaves_finished_snap
         )
         assert sealed_response.status_code == 200, sealed_response.content.decode()
         sealed_snapshot_id = _json_response(sealed_response)["id"]
-        seal_response = _patch_json(
-            client,
-            f"/api/v1/core/snapshot/{sealed_snapshot_id}",
-            api_token,
-            {"status": "sealed"},
-        )
-        assert seal_response.status_code == 200, seal_response.content.decode()
         sealed_snapshot = Snapshot.objects.get(id=sealed_snapshot_id)
+        sealed_done = _seed_archiveresult(
+            sealed_snapshot,
+            plugin="sealedone",
+            hook_name="on_Snapshot__sealed_done",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_text="sealed snapshot result remains finished",
+            output_path="sealedone/final.txt",
+        )
+        sealed_snapshot.sm.seal()
+        sealed_snapshot.refresh_from_db()
         assert sealed_snapshot.status == Snapshot.StatusChoices.SEALED
         assert sealed_snapshot.retry_at is None
 
@@ -168,15 +186,6 @@ def test_crawl_pause_resume_api_cascades_archiveresults_and_leaves_finished_snap
             output_text="parent cascade should not rewrite finished rows",
             output_path="manualdone/cascade.txt",
         )
-        sealed_done = _seed_archiveresult(
-            sealed_snapshot,
-            plugin="sealedone",
-            hook_name="on_Snapshot__sealed_done",
-            status=ArchiveResult.StatusChoices.SUCCEEDED,
-            output_text="sealed snapshot result remains finished",
-            output_path="sealedone/final.txt",
-        )
-
         pause_response = _patch_json(
             client,
             f"/api/v1/crawls/crawl/{crawl_id}",
@@ -191,6 +200,15 @@ def test_crawl_pause_resume_api_cascades_archiveresults_and_leaves_finished_snap
         crawl = Crawl.objects.get(id=crawl_id)
         assert crawl.status == Crawl.StatusChoices.PAUSED
         assert crawl.retry_at == RETRY_AT_MAX
+        assert active_snapshot.status == Snapshot.StatusChoices.QUEUED
+        assert active_snapshot.retry_at is not None
+        assert active_snapshot.retry_at <= timezone.now()
+        assert ArchiveResult.objects.get(id=active_queued.id).status == ArchiveResult.StatusChoices.QUEUED
+        assert ArchiveResult.objects.get(id=active_started.id).status == ArchiveResult.StatusChoices.STARTED
+
+        assert run_due_snapshot(active_snapshot, lock_seconds=60) is True
+        active_snapshot.refresh_from_db()
+        sealed_snapshot.refresh_from_db()
         assert active_snapshot.status == Snapshot.StatusChoices.PAUSED
         assert active_snapshot.retry_at == RETRY_AT_MAX
         assert sealed_snapshot.status == Snapshot.StatusChoices.SEALED

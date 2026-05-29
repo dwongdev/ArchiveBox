@@ -430,10 +430,10 @@ def update_snapshots(
 
                 tag_obj, _ = Tag.objects.get_or_create(name=tag)
                 snapshot.tags.add(tag_obj)
-                snapshot.save(update_fields=["modified_at"])
+                snapshot.safe_update({"modified_at": timezone.now()}, refresh=False)
 
             if not status and not tag:
-                snapshot.save(update_fields=["modified_at"])
+                snapshot.safe_update({"modified_at": timezone.now()}, refresh=False)
             updated_count += 1
 
             if not is_tty:

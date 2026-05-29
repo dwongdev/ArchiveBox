@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 import time
-import os
 from collections.abc import Mapping
 from itertools import tee
 import re
@@ -17,15 +16,16 @@ def _is_locked_error(error: BaseException) -> bool:
     return isinstance(error, (sqlite3.OperationalError, OperationalError)) and "database is locked" in str(error).lower()
 
 
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return default
+def _sqlite_lock_retry_timeout() -> float:
+    from django.conf import settings
+
+    return settings.CONFIG.SQLITE_LOCK_RETRY_TIMEOUT
 
 
-SQLITE_LOCK_RETRY_TIMEOUT = _float_env("ARCHIVEBOX_SQLITE_LOCK_RETRY_TIMEOUT", 60.0)
-SQLITE_LOCK_RETRY_INTERVAL = _float_env("ARCHIVEBOX_SQLITE_LOCK_RETRY_INTERVAL", 5.0)
+def _sqlite_lock_retry_interval() -> float:
+    from django.conf import settings
+
+    return settings.CONFIG.SQLITE_LOCK_RETRY_INTERVAL
 
 
 def _format_sql(query: str, params=None) -> str:
@@ -48,13 +48,15 @@ def _format_sql(query: str, params=None) -> str:
     return compact[:260]
 
 
-def _log_locked_database(query: str, params=None, *, attempt: int, elapsed: float) -> None:
+def _log_locked_database(query: str, params=None, *, attempt: int, elapsed: float, retry_interval: float) -> None:
     from rich.console import Console
 
     from archivebox.misc.db import sqlite_lock_holders
 
     console = Console(stderr=True)
-    console.print(f"[yellow][*] SQLite database is locked for {elapsed:.0f}s; retrying in 5s... attempt={attempt}[/yellow]")
+    console.print(
+        f"[yellow][*] SQLite database is locked for {elapsed:.0f}s; retrying in {retry_interval:g}s... attempt={attempt}[/yellow]",
+    )
     console.print(f"[yellow]    Query: {_format_sql(query, params)}[/yellow]")
     holders = sqlite_lock_holders()
     if holders:
@@ -113,16 +115,18 @@ def _retry_locked_database(action, query: str, params=None, *, db_wrapper=None):
                 raise
             attempt += 1
             elapsed = time.monotonic() - started_at
-            _log_locked_database(query, params, attempt=attempt, elapsed=elapsed)
+            retry_timeout = _sqlite_lock_retry_timeout()
+            retry_interval = _sqlite_lock_retry_interval()
+            _log_locked_database(query, params, attempt=attempt, elapsed=elapsed, retry_interval=retry_interval)
             # If SQLite raised while Django is in autocommit mode, do not keep a
             # partially-open sqlite transaction around while waiting. Explicit
             # transaction.atomic() callers keep their normal transaction boundary.
             _recover_non_atomic_connection(db_wrapper, query)
             if _is_inside_atomic(db_wrapper):
                 raise
-            if SQLITE_LOCK_RETRY_TIMEOUT and elapsed >= SQLITE_LOCK_RETRY_TIMEOUT:
+            if retry_timeout and elapsed >= retry_timeout:
                 _abort_locked_database(query, params, elapsed=elapsed, db_wrapper=db_wrapper)
-            time.sleep(SQLITE_LOCK_RETRY_INTERVAL)
+            time.sleep(retry_interval)
 
 
 class SQLiteCursorWrapper(DjangoSQLiteCursorWrapper):

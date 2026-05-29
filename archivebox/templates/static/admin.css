@@ -826,14 +826,19 @@ body.change-list:not(.model-snapshot) #changelist #changelist-form > .results {
 
 body.model-snapshot.change-list #result_list col.snapshot-permissions-col,
 body.model-snapshot.change-list #result_list th.column-permissions_badge,
-body.model-snapshot.change-list #result_list td.field-permissions_badge {
+body.model-snapshot.change-list #result_list td.field-permissions_badge,
+body.model-crawl.change-list #result_list col.snapshot-permissions-col,
+body.model-crawl.change-list #result_list th.column-permissions_badge,
+body.model-crawl.change-list #result_list td.field-permissions_badge {
     width: 22px !important;
     min-width: 22px !important;
     max-width: 22px !important;
 }
 
 body.model-snapshot.change-list #result_list th.column-permissions_badge,
-body.model-snapshot.change-list #result_list td.field-permissions_badge {
+body.model-snapshot.change-list #result_list td.field-permissions_badge,
+body.model-crawl.change-list #result_list th.column-permissions_badge,
+body.model-crawl.change-list #result_list td.field-permissions_badge {
     padding-left: 0 !important;
     padding-right: 0 !important;
     text-align: center !important;
@@ -841,12 +846,37 @@ body.model-snapshot.change-list #result_list td.field-permissions_badge {
 }
 
 body.model-snapshot.change-list #result_list th.column-permissions_badge .text,
-body.model-snapshot.change-list #result_list th.column-permissions_badge .text span {
+body.model-snapshot.change-list #result_list th.column-permissions_badge .text span,
+body.model-crawl.change-list #result_list th.column-permissions_badge .text,
+body.model-crawl.change-list #result_list th.column-permissions_badge .text span {
     display: inline-flex !important;
     width: 22px !important;
     min-width: 22px !important;
     justify-content: center !important;
     padding: 0 !important;
+}
+
+body.model-crawl.change-list #result_list th.column-short_id,
+body.model-crawl.change-list #result_list td.field-short_id {
+    width: 70px !important;
+    min-width: 70px !important;
+    max-width: 70px !important;
+}
+
+body.model-crawl.change-list #result_list th.column-short_id,
+body.model-crawl.change-list #result_list td.field-short_id {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+}
+
+body.model-crawl.change-list #result_list td.field-short_id a {
+    display: inline-block;
+    max-width: 62px;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
 }
 
 .snapshot-permissions-quick {
@@ -3284,4 +3314,442 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
 .snapshot-changelist-widget.model-snapshot.change-list #toolbar .changelist-search-submit {
     grid-column: 2 !important;
     grid-row: 1 !important;
+}
+
+/* Crawl changelist: match the snapshot toolbar/action layout without the grid/list toggle. */
+.model-crawl.change-list #changelist .changelist-form-container > div {
+    display: grid !important;
+    grid-template-columns: minmax(420px, 1fr) auto;
+    grid-template-areas:
+        "toolbar actions"
+        "results results"
+        "footer footer";
+    gap: 10px 12px;
+    align-items: start;
+    min-width: 0;
+}
+
+.model-crawl.change-list #toolbar {
+    grid-area: toolbar;
+    width: auto;
+    min-width: 0;
+    margin: 0 !important;
+    position: relative;
+    z-index: 2;
+}
+
+.model-crawl.change-list #toolbar .changelist-toolbar-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 8px;
+    align-items: start;
+}
+
+.model-crawl.change-list #toolbar #changelist-search {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0;
+    position: relative;
+    z-index: 2;
+    pointer-events: auto;
+}
+
+.model-crawl.change-list #content #changelist #toolbar #changelist-search > div,
+.model-crawl.change-list #toolbar #changelist-search > div {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "search submit"
+        "count count";
+    gap: 8px;
+    align-items: center;
+    width: 100% !important;
+    min-width: 0;
+    flex-wrap: nowrap !important;
+}
+
+.model-crawl.change-list #toolbar .search-input-wrap {
+    grid-area: search;
+    position: relative;
+    z-index: 3;
+    display: grid !important;
+    grid-template-columns: 46px minmax(0, 1fr);
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow: hidden;
+    box-sizing: border-box;
+    pointer-events: auto;
+}
+
+.model-crawl.change-list #toolbar .search-input-addon {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    bottom: auto !important;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    grid-column: 1;
+    grid-row: 1;
+    width: 46px !important;
+    min-width: 46px !important;
+    max-width: 46px !important;
+    height: 100%;
+    padding: 0 !important;
+    border-right: 1px solid #e2e8f0;
+    border-radius: 0;
+    background: #f8fafc;
+    box-sizing: border-box;
+}
+
+.model-crawl.change-list #toolbar .search-input-addon label {
+    position: static !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px !important;
+    min-width: 17px !important;
+    height: 17px !important;
+    margin: 0 !important;
+    transform: none !important;
+    opacity: 0.72;
+    pointer-events: none;
+}
+
+.model-crawl.change-list #toolbar .search-input-addon img {
+    display: block;
+    width: 17px;
+    height: 17px;
+}
+
+.model-crawl.change-list #toolbar .search-input-wrap #searchbar,
+.model-crawl.change-list #content #changelist #toolbar .search-input-wrap #searchbar {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100% !important;
+    min-width: 0;
+    height: 100%;
+    margin: 0 !important;
+    padding: 0 12px !important;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #ffffff;
+    color: #111827;
+    font-size: 14px;
+    font-weight: 400;
+    box-sizing: border-box;
+    position: relative;
+    z-index: 4;
+    pointer-events: auto;
+}
+
+.model-crawl.change-list #toolbar .changelist-search-submit,
+.model-crawl.change-list #toolbar .filter-pane-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    margin: 0;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.model-crawl.change-list #toolbar .changelist-search-submit {
+    grid-area: submit;
+    min-width: 86px;
+    padding: 0 16px;
+}
+
+.model-crawl.change-list #content #changelist #toolbar .small.quiet {
+    grid-area: count;
+    margin: -2px 0 0;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.2;
+}
+
+.model-crawl.change-list #toolbar .filter-pane-toggle {
+    width: 96px;
+    min-width: 96px;
+    padding: 0 10px;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top {
+    grid-area: actions;
+    justify-self: end;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin: 0 !important;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    overflow: visible;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .actions-left {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+    white-space: nowrap;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons {
+    display: grid !important;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(74px, auto);
+    gap: 6px;
+    align-items: center;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    min-width: 0;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 0;
+    box-shadow: none;
+    font-size: 14px !important;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+    justify-content: center;
+}
+
+.model-crawl.change-list #content .object-tools {
+    display: none !important;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button::before {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    min-width: 14px;
+    font-size: 13px;
+    line-height: 1;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="pause_selected_crawls"]::before {
+    content: "⏸";
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="resume_selected_crawls"]::before {
+    content: "▶";
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="seal_selected_crawls"]::before {
+    content: "✓";
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="delete_selected_batched"]::before {
+    content: "🗑";
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_crawl_permissions"]::before {
+    content: "👁";
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .crawl-add-action::before {
+    content: "+";
+    font-size: 17px;
+    font-weight: 800;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="pause_selected_crawls"] {
+    background: #4fb5ad;
+    color: #082f2c;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="resume_selected_crawls"] {
+    background: #a8df57;
+    color: #17310b;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="seal_selected_crawls"] {
+    background: #f7ad43;
+    color: #3b2405;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="delete_selected_batched"] {
+    background: #e43d79;
+    color: #fff7fb;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_crawl_permissions"] {
+    background: #f6e46f;
+    color: #1f2937;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .crawl-add-action {
+    background: #f6e46f;
+    color: #1f2937;
+    text-decoration: none;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-permissions-wrapper {
+    display: inline-flex;
+    min-width: 130px;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-permissions-wrapper > .button {
+    width: 100%;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    min-height: 40px;
+    padding: 0 4px;
+    margin-left: 2px;
+    color: #475569;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: visible;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-summary .action-selected-count {
+    display: inline-flex;
+    align-items: center;
+    height: 40px;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+}
+
+.model-crawl.change-list #result_list .crawl-status-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+}
+
+.model-crawl.change-list #result_list .crawl-status,
+.model-crawl.change-list #result_list .crawl-status-reason {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.model-crawl.change-list #result_list .crawl-status {
+    text-transform: uppercase;
+}
+
+.model-crawl.change-list #result_list .crawl-status--queued {
+    background: #fef9c3;
+    color: #854d0e;
+}
+
+.model-crawl.change-list #result_list .crawl-status--started {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.model-crawl.change-list #result_list .crawl-status--paused {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.model-crawl.change-list #result_list .crawl-status--sealed {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.model-crawl.change-list #result_list .crawl-status-reason {
+    background: #f1f5f9;
+    color: #475569;
+    min-height: 18px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.model-crawl.change-list #result_list .crawl-status-reason--crawl_max_urls,
+.model-crawl.change-list #result_list .crawl-status-reason--crawl_max_size,
+.model-crawl.change-list #result_list .crawl-status-reason--snapshot_max_size {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.model-crawl.change-list #result_list .crawl-status-reason--crawl_timeout {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .results,
+.model-crawl.change-list #changelist #changelist-form > .changelist-footer,
+.model-crawl.change-list #changelist #changelist-form > .actions-bottom,
+.model-crawl.change-list #changelist .xfull {
+    grid-area: auto;
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: 100%;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .results {
+    grid-area: results;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.model-crawl.change-list #changelist #changelist-form > .changelist-footer {
+    grid-area: footer;
+}
+
+@media (max-width: 1180px) {
+    .model-crawl.change-list #changelist .changelist-form-container > div {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "toolbar"
+            "actions"
+            "results"
+            "footer";
+    }
+
+    .model-crawl.change-list #changelist #changelist-form > .actions-top {
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .model-crawl.change-list #changelist #changelist-form > .actions-top .actions-left {
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+}
+
+@media (max-width: 720px) {
+    .model-crawl.change-list #toolbar .changelist-toolbar-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .model-crawl.change-list #toolbar .filter-pane-toggle {
+        width: 100%;
+        min-width: 0;
+    }
 }

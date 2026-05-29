@@ -89,9 +89,10 @@ def _runner_label(value: str, *, reserve: int) -> str:
     return f"{value[: max(0, width - 3)]}..."
 
 
-def _runner_console_line(*, crawl, snapshot=None, status: str = "STARTED") -> None:
+def _runner_console_line(*, crawl=None, crawl_id=None, snapshot=None, status: str = "STARTED") -> None:
+    crawl_id = crawl.id if crawl is not None else crawl_id
     line = Text()
-    line.append(f"[Crawl#{_runner_short_id(crawl.id)}]", style="cyan bold")
+    line.append(f"[Crawl#{_runner_short_id(crawl_id)}]", style="cyan bold")
     line.append(" ")
     if snapshot is not None:
         line.append(f"[Snapshot#{_runner_short_id(snapshot.id)}]", style="magenta bold")
@@ -109,7 +110,7 @@ def _runner_console_line(*, crawl, snapshot=None, status: str = "STARTED") -> No
     else:
         label = (getattr(crawl, "label", "") or "").strip()
         if not label:
-            label = (getattr(crawl, "urls", "") or "").partition("\n")[0].strip() or str(crawl.id)
+            label = (getattr(crawl, "urls", "") or "").partition("\n")[0].strip() or str(crawl_id)
     line.append(_runner_label(label, reserve=prefix_width))
     Console(highlight=False).print(line)
 
@@ -813,8 +814,8 @@ class CrawlRunner:
             crawl_cleanup_enabled=True,
             crawl_completed_enabled=False,
             crawl_setup_phase_timeout=crawl_setup_phase_timeout,
-            snapshot_phase_timeout=0.0,
-            snapshot_cleanup_phase_timeout=0.0,
+            snapshot_phase_timeout=crawl_setup_phase_timeout,
+            snapshot_cleanup_phase_timeout=crawl_setup_phase_timeout,
             crawl_cleanup_phase_timeout=crawl_setup_phase_timeout,
             persist_derived=False,
             auto_install=True,
@@ -973,10 +974,7 @@ class CrawlRunner:
                 return
             snapshot_selected_plugins = self.selected_plugins
             if snapshot["status"] == "started":
-                _reset_count, running_count = await sync_to_async(
-                    lambda: reset_abandoned_snapshot_results(snapshot["_snapshot"]),
-                    thread_sensitive=True,
-                )()
+                _reset_count, running_count = await sync_to_async(snapshot["_snapshot"].reset_abandoned_results, thread_sensitive=True)()
                 if running_count:
                     await sync_to_async(
                         lambda: snapshot["_snapshot"].update_and_requeue(
@@ -1205,27 +1203,10 @@ def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
     return None
 
 
-def reset_abandoned_snapshot_results(snapshot) -> tuple[int, int]:
-    from archivebox.core.models import ArchiveResult
-
-    reset_count = 0
-    running_count = 0
-    for result in snapshot.archiveresult_set.filter(
-        status__in=[ArchiveResult.StatusChoices.STARTED, ArchiveResult.StatusChoices.BACKOFF],
-    ).select_related("process"):
-        process = result.process
-        if process is not None and process.is_running:
-            running_count += 1
-            continue
-        result.reset_for_retry()
-        reset_count += 1
-    return reset_count, running_count
-
-
 def run_snapshot_maintenance(snapshot_id: str) -> bool:
     from archivebox.core.models import ArchiveResult, Snapshot
 
-    snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_id).first()
+    snapshot = Snapshot.objects.filter(id=snapshot_id).first()
     if snapshot is None:
         return False
 
@@ -1248,6 +1229,11 @@ def run_snapshot_maintenance(snapshot_id: str) -> bool:
 
 
 def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = False) -> bool:
+    try:
+        crawl.refresh_from_db(fields=["status", "retry_at", "modified_at"])
+    except type(crawl).DoesNotExist:
+        return False
+
     if crawl.is_paused:
         _runner_console_line(crawl=crawl, status="PAUSED")
         return True
@@ -1261,10 +1247,10 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
             retry_at__lte=now,
         ).exists()
         if snapshot_count and due_active_snapshots:
-            # Child Snapshot rows own the active work. Keep the parent visible
-            # for a near-future finalization tick, but yield this scheduler
-            # pass so run_pending_crawls() can process the due child row next.
-            crawl.update_and_requeue(status=crawl.StatusChoices.STARTED, retry_at=now + timedelta(seconds=2))
+            # Child Snapshot rows own active work. Do not rewrite the parent
+            # row here: a user cancellation may have sealed it after the runner
+            # selected this stale object, and recursive discovery is driven by
+            # queued Snapshot rows, not parent crawl requeue churn.
             return True
         if snapshot_count and not due_active_snapshots:
             if crawl.is_finished():
@@ -1317,31 +1303,34 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
         return True
 
     if crawl.status == crawl.StatusChoices.SEALED:
+        if not type(crawl).claim_for_worker(crawl, lock_seconds=lock_seconds):
+            return False
         _runner_console_line(crawl=crawl, status="SEALED")
-        crawl.retry_at = None
-        crawl.save(update_fields=["retry_at", "modified_at"])
+        crawl.cleanup()
+        crawl.update_and_requeue(retry_at=None)
         return True
 
-    crawl.retry_at = None
-    crawl.save(update_fields=["retry_at", "modified_at"])
+    crawl.update_and_requeue(retry_at=None)
     return True
 
 
 def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: bool = False, runtime_config=None) -> bool:
     from archivebox.core.models import Snapshot
 
+    try:
+        snapshot = Snapshot.objects.get(pk=snapshot.pk)
+    except Snapshot.DoesNotExist:
+        return False
     if runtime_config is not None:
         snapshot._runtime_config = runtime_config
-    if snapshot.crawl.status == snapshot.crawl.StatusChoices.SEALED and snapshot.status != Snapshot.StatusChoices.SEALED:
-        if not snapshot.claim_processing_lock(lock_seconds=lock_seconds):
-            return False
-        snapshot.sm.seal()
-        return True
+    parent_reconciled = snapshot.reconcile_parent_lifecycle(lock_seconds=lock_seconds)
+    if parent_reconciled is not None:
+        return parent_reconciled
 
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             run_snapshot_maintenance(str(snapshot.id))
             if not selected_plugins:
                 # No targeted plugin rows remain, so put paused snapshots back
@@ -1362,7 +1351,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         if not Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
             return False
         try:
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             # Explicit maintenance, e.g. `archivebox update --index-only`, may
             # need to run search/index hooks for a paused snapshot. That should
             # not resume the crawl or make unrelated queued work runnable, so
@@ -1385,16 +1374,17 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         if not Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
             return False
         snapshot.refresh_from_db()
+        snapshot.finalize_completed_upload_results()
         if snapshot.fs_migration_needed:
             # Final snapshots can still need maintenance after an old data-dir
             # migration. Run the filesystem/json save path before queued search
             # backfill rows so both maintenance streams stay ordered without
             # changing Snapshot.status away from SEALED.
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             return run_snapshot_maintenance(str(snapshot.id))
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             run_crawl(
                 str(snapshot.crawl_id),
                 snapshot_ids=[str(snapshot.id)],
@@ -1406,7 +1396,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         return run_snapshot_maintenance(str(snapshot.id))
 
     if snapshot.status == Snapshot.StatusChoices.STARTED:
-        _reset_count, running_count = reset_abandoned_snapshot_results(snapshot)
+        _reset_count, running_count = snapshot.reset_abandoned_results()
         if running_count:
             snapshot.update_and_requeue(retry_at=timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS))
             return True
@@ -1415,18 +1405,23 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         return False
     snapshot.refresh_from_db()
     if snapshot.status == Snapshot.StatusChoices.QUEUED:
+        # The runner owns queued Snapshot setup. Create missing enabled hook
+        # rows before ticking so maintenance-only final rows, e.g. search
+        # backfill on a paused snapshot, cannot make queued -> sealed skip the
+        # real extraction work after resume.
+        snapshot.create_pending_archiveresults()
         snapshot.sm.tick()
         snapshot.refresh_from_db()
         if snapshot.status == Snapshot.StatusChoices.SEALED:
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot, status="SEALED")
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot, status="SEALED")
             return True
     if snapshot.status == Snapshot.StatusChoices.STARTED and snapshot.archiveresult_set.exists() and snapshot.is_finished_processing():
         snapshot.sm.tick()
         snapshot.refresh_from_db()
         if snapshot.status == Snapshot.StatusChoices.SEALED:
-            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot, status="SEALED")
+            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot, status="SEALED")
             return True
-    _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
+    _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
     run_crawl(
         str(snapshot.crawl_id),
         snapshot_ids=[str(snapshot.id)],
@@ -1558,6 +1553,109 @@ def run_install(*, plugin_names: list[str] | None = None) -> None:
     asyncio.run(_run_install(plugin_names=plugin_names))
 
 
+def _first_due_id(queryset):
+    return queryset.order_by("retry_at", "created_at").values_list("id", flat=True).first()
+
+
+def _run_due_crawl_status(status: str, *, crawl_id: str | None, lock_seconds: int, interactive_interrupts: bool) -> bool:
+    from archivebox.crawls.models import Crawl
+
+    due_crawls = Crawl.objects.filter(
+        retry_at__lte=timezone.now(),
+        status=status,
+    )
+    if crawl_id:
+        due_crawls = due_crawls.filter(id=crawl_id)
+    due_crawl_id = _first_due_id(due_crawls)
+    if due_crawl_id is None:
+        return False
+    due_crawl = Crawl.objects.filter(id=due_crawl_id).first()
+    if due_crawl is None:
+        return True
+    run_due_crawl(
+        due_crawl,
+        lock_seconds=lock_seconds,
+        interactive_interrupts=interactive_interrupts,
+    )
+    return True
+
+
+def _run_due_snapshot_query(queryset, *, lock_seconds: int, interactive_interrupts: bool, runtime_config) -> bool:
+    due_snapshot_id = _first_due_id(queryset)
+    return _run_due_snapshot_id(
+        due_snapshot_id,
+        lock_seconds=lock_seconds,
+        interactive_interrupts=interactive_interrupts,
+        runtime_config=runtime_config,
+    )
+
+
+def _run_due_snapshot_id(snapshot_id, *, lock_seconds: int, interactive_interrupts: bool, runtime_config) -> bool:
+    from archivebox.core.models import Snapshot
+
+    due_snapshot_id = snapshot_id
+    if due_snapshot_id is None:
+        return False
+    due_snapshot = Snapshot.objects.filter(id=due_snapshot_id).first()
+    if due_snapshot is None:
+        return True
+    run_due_snapshot(
+        due_snapshot,
+        lock_seconds=lock_seconds,
+        interactive_interrupts=interactive_interrupts,
+        runtime_config=runtime_config,
+    )
+    return True
+
+
+def _run_due_queued_download_result(
+    download_plugin_names: frozenset[str],
+    *,
+    crawl_id: str | None,
+    lock_seconds: int,
+    interactive_interrupts: bool,
+    runtime_config,
+) -> bool:
+    from archivebox.core.models import ArchiveResult, Snapshot
+
+    if not download_plugin_names:
+        return False
+    queued_results = ArchiveResult.objects.filter(
+        status=ArchiveResult.StatusChoices.QUEUED,
+        plugin__in=download_plugin_names,
+        snapshot__status=Snapshot.StatusChoices.SEALED,
+        snapshot__retry_at__lte=timezone.now(),
+    )
+    if crawl_id:
+        queued_results = queued_results.filter(snapshot__crawl_id=crawl_id)
+    due_snapshot_id = queued_results.order_by("snapshot__retry_at", "snapshot__created_at").values_list("snapshot_id", flat=True).first()
+    return _run_due_snapshot_id(
+        due_snapshot_id,
+        lock_seconds=lock_seconds,
+        interactive_interrupts=interactive_interrupts,
+        runtime_config=runtime_config,
+    )
+
+
+def _run_due_binary() -> bool:
+    from archivebox.machine.models import Binary
+
+    due_binary_id = (
+        Binary.objects.filter(retry_at__lte=timezone.now())
+        .exclude(status=Binary.StatusChoices.INSTALLED)
+        .order_by("retry_at", "created_at")
+        .values_list("id", flat=True)
+        .first()
+    )
+    if due_binary_id is None:
+        return False
+    due_binary = Binary.objects.filter(id=due_binary_id).first()
+    if due_binary is None:
+        return True
+    run_due_binary(due_binary, lock_seconds=60)
+    return True
+
+
 def run_pending_crawls(
     *,
     daemon: bool = False,
@@ -1568,11 +1666,17 @@ def run_pending_crawls(
     from archivebox.config.common import get_config
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
-    from archivebox.machine.models import Binary, Process
-    from django.db.models import Q
+    from archivebox.hooks import discover_plugin_configs
+    from archivebox.machine.models import Process
 
     crawl_claim_lock_seconds = 10
     runtime_config = get_config()
+    plugin_configs = discover_plugin_configs()
+    download_plugin_names = frozenset(
+        plugin_name
+        for plugin_name, plugin_config in plugin_configs.items()
+        if plugin_config.get("output_mimetypes") and not plugin_name.startswith("search_backend_")
+    )
     last_recovery_at = 0.0
     last_retention_at = 0.0
     while True:
@@ -1592,65 +1696,135 @@ def run_pending_crawls(
                 if schedule.is_due(now):
                     schedule.enqueue(queued_at=now)
 
-        if not maintenance_only:
-            due_crawls = Crawl.objects.filter(retry_at__lte=timezone.now()).exclude(status=Crawl.StatusChoices.STARTED)
-            if crawl_id:
-                due_crawls = due_crawls.filter(id=crawl_id)
-            due_crawl = due_crawls.order_by("retry_at", "created_at").first()
-            if due_crawl is not None:
-                if not run_due_crawl(
-                    due_crawl,
-                    lock_seconds=crawl_claim_lock_seconds,
-                    interactive_interrupts=interactive_interrupts,
-                ):
-                    continue
-                continue
+        # Final-state download rows are always first: they have no parent crawl
+        # scheduler of their own, and leaving them behind makes the global
+        # counters report stale queued work while new crawls continue.
+        if _run_due_queued_download_result(
+            download_plugin_names,
+            crawl_id=crawl_id,
+            lock_seconds=60,
+            interactive_interrupts=interactive_interrupts,
+            runtime_config=runtime_config,
+        ):
+            continue
 
-        due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now()).select_related("crawl__created_by")
-        if not maintenance_only:
-            due_snapshots = due_snapshots.filter(Q(crawl__status=Crawl.StatusChoices.SEALED) | ~Q(status=Snapshot.StatusChoices.PAUSED))
-        if maintenance_only:
-            due_snapshots = due_snapshots.filter(status__in=[Snapshot.StatusChoices.PAUSED, Snapshot.StatusChoices.SEALED])
+        # Other final-state snapshot work comes next: search backfills,
+        # filesystem/json maintenance, and upload finalization should drain
+        # before starting or resuming regular crawl work.
+        sealed_snapshots = Snapshot.objects.filter(
+            retry_at__lte=timezone.now(),
+            status=Snapshot.StatusChoices.SEALED,
+        )
         if crawl_id:
-            due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
-        due_snapshot = due_snapshots.order_by("retry_at", "created_at").first()
-        if due_snapshot is not None:
-            if not run_due_snapshot(
-                due_snapshot,
+            sealed_snapshots = sealed_snapshots.filter(crawl_id=crawl_id)
+        if _run_due_snapshot_query(
+            sealed_snapshots,
+            lock_seconds=60,
+            interactive_interrupts=interactive_interrupts,
+            runtime_config=runtime_config,
+        ):
+            continue
+
+        if not maintenance_only:
+            active_snapshots = Snapshot.objects.filter(
+                retry_at__lte=timezone.now(),
+                crawl__status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
+                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            )
+            if crawl_id:
+                active_snapshots = active_snapshots.filter(crawl_id=crawl_id)
+            if _run_due_snapshot_query(
+                active_snapshots,
                 lock_seconds=60,
                 interactive_interrupts=interactive_interrupts,
                 runtime_config=runtime_config,
             ):
                 continue
+
+        if not maintenance_only:
+            if _run_due_crawl_status(
+                Crawl.StatusChoices.QUEUED,
+                crawl_id=crawl_id,
+                lock_seconds=crawl_claim_lock_seconds,
+                interactive_interrupts=interactive_interrupts,
+            ):
+                continue
+
+        if not maintenance_only:
+            if _run_due_crawl_status(
+                Crawl.StatusChoices.STARTED,
+                crawl_id=crawl_id,
+                lock_seconds=crawl_claim_lock_seconds,
+                interactive_interrupts=interactive_interrupts,
+            ):
+                continue
+
+        if not maintenance_only:
+            # Canceled-crawl child sealing is important cleanup, but it must
+            # not starve live crawl work when a large bulk cancel leaves many
+            # children due at once.
+            cancelling_snapshots = Snapshot.objects.filter(
+                retry_at__lte=timezone.now(),
+                crawl__status=Crawl.StatusChoices.SEALED,
+                status=Snapshot.StatusChoices.STARTED,
+            )
+            if crawl_id:
+                cancelling_snapshots = cancelling_snapshots.filter(crawl_id=crawl_id)
+            if _run_due_snapshot_query(
+                cancelling_snapshots,
+                lock_seconds=60,
+                interactive_interrupts=interactive_interrupts,
+                runtime_config=runtime_config,
+            ):
+                continue
+
+        if not maintenance_only:
+            pausing_snapshots = Snapshot.objects.filter(
+                retry_at__lte=timezone.now(),
+                crawl__status=Crawl.StatusChoices.PAUSED,
+                status__in=[
+                    Snapshot.StatusChoices.QUEUED,
+                    Snapshot.StatusChoices.STARTED,
+                ],
+            )
+            if crawl_id:
+                pausing_snapshots = pausing_snapshots.filter(crawl_id=crawl_id)
+            if _run_due_snapshot_query(
+                pausing_snapshots,
+                lock_seconds=60,
+                interactive_interrupts=interactive_interrupts,
+                runtime_config=runtime_config,
+            ):
+                continue
+
+        # Final fallback uses only the retry_at scheduler index and selects an
+        # id first. The active/paused/sealed parent-specific branches above get
+        # first priority, so this stays broad without hydrating wide rows or
+        # forcing SQLite into a slow status/join plan.
+        due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now())
+        if maintenance_only:
+            due_snapshots = due_snapshots.filter(status=Snapshot.StatusChoices.PAUSED)
+        if crawl_id:
+            due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
+        if _run_due_snapshot_query(
+            due_snapshots,
+            lock_seconds=60,
+            interactive_interrupts=interactive_interrupts,
+            runtime_config=runtime_config,
+        ):
             continue
 
         if not maintenance_only:
-            due_started_crawl = Crawl.objects.filter(
-                retry_at__lte=timezone.now(),
-                status=Crawl.StatusChoices.STARTED,
-            )
-            if crawl_id:
-                due_started_crawl = due_started_crawl.filter(id=crawl_id)
-            due_crawl = due_started_crawl.order_by("retry_at", "created_at").first()
-            if due_crawl is not None:
-                if not run_due_crawl(
-                    due_crawl,
-                    lock_seconds=crawl_claim_lock_seconds,
-                    interactive_interrupts=interactive_interrupts,
-                ):
-                    continue
+            if _run_due_crawl_status(
+                Crawl.StatusChoices.SEALED,
+                crawl_id=crawl_id,
+                lock_seconds=crawl_claim_lock_seconds,
+                interactive_interrupts=interactive_interrupts,
+            ):
                 continue
 
         if crawl_id is None and not maintenance_only:
-            due_binary = (
-                Binary.objects.filter(retry_at__lte=timezone.now())
-                .exclude(status=Binary.StatusChoices.INSTALLED)
-                .order_by("retry_at", "created_at")
-                .first()
-            )
-            if due_binary is not None:
-                if not run_due_binary(due_binary, lock_seconds=60):
-                    continue
+            if _run_due_binary():
                 continue
 
         if daemon:

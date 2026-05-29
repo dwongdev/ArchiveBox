@@ -197,8 +197,8 @@ def test_failed_title_archiveresult_does_not_overwrite_snapshot_title():
         plugin="title",
         hook_name="on_Snapshot__54_title.js",
         status="failed",
-        output_str="Missing puppeteer dependency (need puppeteer-core or puppeteer)",
-        error="Missing puppeteer dependency (need puppeteer-core or puppeteer)",
+        output_str="No Chrome session found (chrome plugin must run first)",
+        error="No Chrome session found (chrome plugin must run first)",
         start_ts="2026-03-22T12:00:00+00:00",
         end_ts="2026-03-22T12:00:01+00:00",
     )
@@ -210,9 +210,51 @@ def test_failed_title_archiveresult_does_not_overwrite_snapshot_title():
 
     result = ArchiveResult.objects.get(snapshot=snapshot, plugin="title", hook_name="on_Snapshot__54_title.js")
     assert result.status == ArchiveResult.StatusChoices.FAILED
-    assert result.output_str == "Missing puppeteer dependency (need puppeteer-core or puppeteer)"
+    assert result.output_str == "No Chrome session found (chrome plugin must run first)"
     snapshot.refresh_from_db()
     assert snapshot.title in (None, "")
+    assert snapshot.resolved_title == ""
+    _cleanup_machine_process_rows()
+
+
+def test_snapshot_resolved_title_ignores_failed_title_output_str():
+    from archivebox.core.models import ArchiveResult
+
+    snapshot = _create_snapshot()
+    ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="title",
+        hook_name="on_Snapshot__54_title.js",
+        status=ArchiveResult.StatusChoices.FAILED,
+        output_str="No Chrome session found (chrome plugin must run first)",
+    )
+
+    snapshot.refresh_from_db()
+    assert snapshot.title in (None, "")
+    assert snapshot.resolved_title == ""
+    _cleanup_machine_process_rows()
+
+
+def test_snapshot_save_normalizes_url_title_to_none():
+    from archivebox.core.models import Snapshot
+
+    snapshot = _create_snapshot()
+    snapshot.title = snapshot.url
+    snapshot.save(update_fields=["title", "modified_at"])
+
+    snapshot.refresh_from_db()
+    assert snapshot.title is None
+    assert snapshot.resolved_title == ""
+
+    created = Snapshot.objects.create(
+        url="https://example.com/title-normalize-create",
+        title="https://example.com/title-normalize-create",
+        crawl=snapshot.crawl,
+    )
+
+    created.refresh_from_db()
+    assert created.title is None
+    assert created.resolved_title == ""
     _cleanup_machine_process_rows()
 
 

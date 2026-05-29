@@ -41,7 +41,7 @@ ASGI_APPLICATION = "archivebox.core.asgi.application"
 ROOT_URLCONF = "archivebox.core.urls"
 
 LOGIN_URL = "/accounts/login/"
-LOGOUT_REDIRECT_URL = os.environ.get("LOGOUT_REDIRECT_URL", "/")
+LOGOUT_REDIRECT_URL = CONFIG.LOGOUT_REDIRECT_URL
 
 PASSWORD_RESET_URL = "/accounts/password_reset/"
 APPEND_SLASH = True
@@ -224,9 +224,9 @@ TEMPLATES = [
 # CACHE_DB_PATH = CONSTANTS.CACHE_DIR / CACHE_DB_FILENAME
 # CACHE_DB_TABLE = 'django_cache'
 
-DATABASE_NAME = os.environ.get("ARCHIVEBOX_DATABASE_NAME", str(CONSTANTS.DATABASE_FILE))
-SQLITE_JOURNAL_MODE = os.environ.get("ARCHIVEBOX_SQLITE_JOURNAL_MODE", "WAL")
-SQLITE_MMAP_SIZE = os.environ.get("ARCHIVEBOX_SQLITE_MMAP_SIZE", "0" if CONSTANTS.IN_DOCKER else "134217728")
+DATABASE_NAME = CONFIG.DATABASE_NAME
+SQLITE_JOURNAL_MODE = CONFIG.SQLITE_JOURNAL_MODE
+SQLITE_MMAP_SIZE = CONFIG.SQLITE_MMAP_SIZE
 
 SQLITE_CONNECTION_OPTIONS = {
     "ENGINE": "archivebox.core.sqlite_backend",
@@ -235,7 +235,7 @@ SQLITE_CONNECTION_OPTIONS = {
         # https://gcollazo.com/optimal-sqlite-settings-for-django/
         # https://litestream.io/tips/#busy-timeout
         # https://docs.djangoproject.com/en/5.1/ref/databases/#setting-pragma-options
-        "timeout": 30,
+        "timeout": CONFIG.SQLITE_TIMEOUT,
         "check_same_thread": False,
         # Keep SQLite on Django's default deferred transaction mode. BEGIN
         # IMMEDIATE grabs the write lock as soon as atomic() opens, which is
@@ -246,7 +246,7 @@ SQLITE_CONNECTION_OPTIONS = {
         "transaction_mode": None,
         "init_command": (
             "PRAGMA foreign_keys=ON;"
-            "PRAGMA busy_timeout = 30000;"
+            f"PRAGMA busy_timeout = {CONFIG.SQLITE_BUSY_TIMEOUT};"
             f"PRAGMA journal_mode = {SQLITE_JOURNAL_MODE};"
             "PRAGMA synchronous = NORMAL;"
             "PRAGMA temp_store = MEMORY;"

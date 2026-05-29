@@ -23,6 +23,7 @@ from django.db.models.fields.json import KT
 from django.conf import settings
 from django.utils import timezone
 
+from archivebox.core.permissions import PERMISSIONS_VALUES, normalize_permissions
 from archivebox.base_models.models import ModelWithConfig, get_or_create_system_user_pk
 from archivebox.uuid_compat import uuid7
 
@@ -94,6 +95,19 @@ class Persona(ModelWithConfig):
 
     class Meta(ModelWithConfig.Meta):
         app_label = "personas"
+
+    def save(self, *args, **kwargs):
+        config = dict(self.config or {})
+        if str(config.get("PERMISSIONS") or "").strip().lower() not in PERMISSIONS_VALUES:
+            from archivebox.config.common import get_config
+
+            user = self.created_by if self.created_by_id else None
+            config["PERMISSIONS"] = normalize_permissions(get_config(user=user, include_machine=True).PERMISSIONS)
+            self.config = config
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "config"]))
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return self.name

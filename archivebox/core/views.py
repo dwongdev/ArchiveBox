@@ -8,6 +8,7 @@ from django.utils import timezone
 import inspect
 from typing import cast
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -34,6 +35,7 @@ from abx_dl.events import PROCESS_EXIT_SKIPPED
 from archivebox.config import CONSTANTS, CONSTANTS_CONFIG, VERSION
 from archivebox.config.common import get_config, get_all_configs
 from archivebox.config.configset import BaseConfigSet
+from archivebox.misc.paginators import CountlessPaginator
 from archivebox.misc.util import base_url, htmlencode, ts_to_date_str, urldecode, without_fragment
 from archivebox.misc.serve_static import serve_static_with_byterange_support
 from archivebox.misc.logging_util import printable_filesize
@@ -78,6 +80,18 @@ from archivebox.hooks import (
 
 ABX_PLUGINS_GITHUB_BASE_URL = "https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/"
 LIVE_PLUGIN_BASE_URL = "/admin/environment/plugins/"
+
+
+@lru_cache(maxsize=1)
+def _live_progress_plugin_names() -> tuple[frozenset[str], frozenset[str]]:
+    plugin_configs = discover_plugin_configs()
+    download_plugin_names = frozenset(
+        plugin_name
+        for plugin_name, plugin_config in plugin_configs.items()
+        if plugin_config.get("output_mimetypes") and not plugin_name.startswith("search_backend_")
+    )
+    indexing_plugin_names = frozenset(plugin_name for plugin_name in plugin_configs if plugin_name.startswith("search_backend_"))
+    return download_plugin_names, indexing_plugin_names
 
 
 def _get_request_config(request: HttpRequest, *, resolve_plugins: bool = False):
@@ -949,6 +963,7 @@ class PublicIndexView(ListView):
     template_name = "public_index.html"
     model = Snapshot
     ordering = ["-bookmarked_at", "-created_at"]
+    paginator_class = CountlessPaginator
 
     def get_paginate_by(self, queryset):
         runtime_config = getattr(self, "runtime_config", None)
@@ -989,7 +1004,6 @@ class PublicIndexView(ListView):
 
     def get_queryset(self, **kwargs):
         qs = public_snapshots_queryset(super().get_queryset(**kwargs)).prefetch_related(
-            Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
             "tags",
             Prefetch(
                 "archiveresult_set",
@@ -1095,6 +1109,7 @@ class AddView(UserPassesTestMixin, FormView):
         public_persona_config_keys = {
             "CRAWL_MAX_CONCURRENT_SNAPSHOTS",
             "DELETE_AFTER",
+            "ONLY_NEW",
             "PERMISSIONS",
             "TIMEOUT",
         }
@@ -1202,13 +1217,12 @@ class AddView(UserPassesTestMixin, FormView):
             config["INDEX_ONLY"] = True
         if plugins:
             config["PLUGINS"] = plugins
-        effective_config = get_config(persona=persona) if persona else get_config()
+        effective_config = get_config(persona=persona, user=self.request.user) if persona else get_config(user=self.request.user)
         if crawl_max_concurrent_snapshots != int(effective_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS):
             config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
         if delete_after != str(effective_config.DELETE_AFTER):
             config["DELETE_AFTER"] = delete_after
-        if permissions != str(effective_config.PERMISSIONS):
-            config["PERMISSIONS"] = permissions
+        config["PERMISSIONS"] = permissions
         if max_urls:
             config["CRAWL_MAX_URLS"] = max_urls
         if crawl_max_size:
@@ -1223,6 +1237,8 @@ class AddView(UserPassesTestMixin, FormView):
         # Merge custom config overrides
         config.update(plugin_config)
         config.update(custom_config)
+        if bool(url_filters.get("only_new")) != bool(effective_config.ONLY_NEW):
+            config["ONLY_NEW"] = bool(url_filters.get("only_new"))
         if url_filters.get("allowlist"):
             config["URL_ALLOWLIST"] = url_filters["allowlist"]
         if url_filters.get("denylist"):
@@ -1593,7 +1609,7 @@ def live_progress_view(request):
         from datetime import timedelta
 
         one_day_ago = now - timedelta(days=1)
-        recently_cancelled_after = now - timedelta(minutes=10)
+        paused_crawl_cutoff = now - timedelta(hours=12)
         crawls_recent = crawl_scope.filter(created_at__gte=one_day_ago).count()
 
         snapshot_status_counts = count_statuses(
@@ -1604,23 +1620,39 @@ def live_progress_view(request):
         snapshots_started = snapshot_status_counts.get(Snapshot.StatusChoices.STARTED, 0)
         snapshots_paused = snapshot_status_counts.get(Snapshot.StatusChoices.PAUSED, 0)
 
-        archiveresult_status_counts = count_statuses(
-            archiveresult_scope,
-            (
-                ArchiveResult.StatusChoices.QUEUED,
-                ArchiveResult.StatusChoices.STARTED,
-                ArchiveResult.StatusChoices.PAUSED,
-            ),
-        )
+        download_plugin_names, indexing_plugin_names = _live_progress_plugin_names()
+        archiveresult_status_counts: dict[str, int] = {}
+        download_status_counts: dict[str, int] = {}
+        indexing_status_counts: dict[str, int] = {}
+        for status in (
+            ArchiveResult.StatusChoices.QUEUED,
+            ArchiveResult.StatusChoices.STARTED,
+            ArchiveResult.StatusChoices.PAUSED,
+        ):
+            for row in archiveresult_scope.filter(status=status).values("plugin").annotate(count=Count("id")).order_by():
+                plugin = row["plugin"]
+                count = row["count"]
+                archiveresult_status_counts[status] = archiveresult_status_counts.get(status, 0) + count
+                if plugin in indexing_plugin_names:
+                    indexing_status_counts[status] = indexing_status_counts.get(status, 0) + count
+                elif plugin in download_plugin_names:
+                    download_status_counts[status] = download_status_counts.get(status, 0) + count
         archiveresults_pending = archiveresult_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
         archiveresults_started = archiveresult_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
         archiveresults_paused = archiveresult_status_counts.get(ArchiveResult.StatusChoices.PAUSED, 0)
         archiveresults_succeeded = 0
         archiveresults_failed = 0
 
+        downloads_pending = download_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
+        downloads_started = download_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
+        indexing_pending = indexing_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
+        indexing_started = indexing_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
+
         # Build hierarchical active crawls with nested snapshots and archive results
-        max_progress_crawls = 3
-        max_progress_snapshots = 50
+        max_active_crawls = 10
+        max_queued_crawls = 10
+        max_started_snapshots_per_crawl = 50
+        max_queued_snapshots_per_crawl = 50
 
         active_crawl_fields = (
             "id",
@@ -1638,27 +1670,21 @@ def live_progress_view(request):
             "created_by__id",
             "created_by__username",
         )
-        active_crawl_candidates = []
-        for status in (Crawl.StatusChoices.STARTED, Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED):
-            status_qs = crawl_scope.filter(status=status)
-            if status == Crawl.StatusChoices.SEALED:
-                status_qs = status_qs.filter(modified_at__gte=recently_cancelled_after)
-            active_crawl_candidates.extend(
-                status_qs.values(*active_crawl_fields).order_by("-modified_at")[:max_progress_crawls],
-            )
-        crawl_status_priority = {
-            Crawl.StatusChoices.STARTED: 0,
-            Crawl.StatusChoices.QUEUED: 1,
-            Crawl.StatusChoices.PAUSED: 2,
-            Crawl.StatusChoices.SEALED: 3,
-        }
-        active_crawls_list = sorted(
-            {str(crawl["id"]): crawl for crawl in active_crawl_candidates}.values(),
-            key=lambda crawl: (
-                crawl_status_priority.get(crawl["status"], 9),
-                -(crawl["modified_at"].timestamp() if crawl["modified_at"] else 0),
-            ),
-        )[:max_progress_crawls]
+        started_crawls = list(
+            crawl_scope.filter(status=Crawl.StatusChoices.STARTED)
+            .values(*active_crawl_fields)
+            .order_by("-modified_at")[:max_active_crawls],
+        )
+        paused_crawls = list(
+            crawl_scope.filter(status=Crawl.StatusChoices.PAUSED, created_at__gte=paused_crawl_cutoff)
+            .values(*active_crawl_fields)
+            .order_by("-modified_at")[:max_active_crawls],
+        )
+        queued_crawls = list(
+            crawl_scope.filter(status=Crawl.StatusChoices.QUEUED).values(*active_crawl_fields).order_by("-modified_at")[:max_queued_crawls],
+        )
+        queued_crawls_hidden = max(crawls_pending - len(queued_crawls), 0)
+        active_crawls_list = started_crawls + paused_crawls + queued_crawls
         for crawl in active_crawls_list:
             crawl["id"] = str(crawl["id"])
             if crawl["persona_id"]:
@@ -1692,6 +1718,7 @@ def live_progress_view(request):
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
+        queued_snapshot_overflow_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         active_snapshot_scope = snapshot_scope.filter(crawl_id__in=active_crawl_ids)
         if active_crawl_ids:
             for row in active_snapshot_scope.values("crawl_id", "status").annotate(count=Count("id")):
@@ -1719,64 +1746,49 @@ def live_progress_view(request):
         process_records_by_crawl: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         process_records_by_snapshot: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         seen_process_records: set[str] = set()
-        recently_cancelled_snapshots_q = Q(
-            status=Snapshot.StatusChoices.SEALED,
-            downloaded_at__isnull=True,
-            modified_at__gte=recently_cancelled_after,
-        )
         crawls_by_id = {str(crawl["id"]): crawl for crawl in active_crawls_list}
-        snapshots = list(
-            active_snapshot_scope.filter(status=Snapshot.StatusChoices.STARTED)
-            .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
-            .values(
-                "id_str",
-                "created_at",
-                "modified_at",
-                "url",
-                "timestamp",
-                "bookmarked_at",
-                "crawl_id_str",
-                "title",
-                "downloaded_at",
-                "fs_version",
-                "status",
-            )
-            .order_by("crawl_id", "-modified_at")[:max_progress_snapshots],
+        started_snapshot_fields = (
+            "id_str",
+            "created_at",
+            "modified_at",
+            "url",
+            "timestamp",
+            "bookmarked_at",
+            "crawl_id_str",
+            "title",
+            "downloaded_at",
+            "fs_version",
+            "status",
         )
-        remaining_snapshot_slots = max_progress_snapshots - len(snapshots)
-        if remaining_snapshot_slots > 0:
+        queued_snapshot_fields = (
+            "id_str",
+            "url",
+            "crawl_id_str",
+            "title",
+            "status",
+        )
+        snapshots = []
+        for crawl_id in active_crawl_ids:
+            crawl_snapshot_scope = active_snapshot_scope.filter(crawl_id=crawl_id)
             snapshots.extend(
-                active_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
+                crawl_snapshot_scope.filter(status=Snapshot.StatusChoices.STARTED)
+                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
+                .values(*started_snapshot_fields)
+                .order_by("-modified_at")[:max_started_snapshots_per_crawl],
+            )
+            queued_snapshots = list(
+                crawl_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
                 .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
                 .values(
-                    "id_str",
-                    "url",
-                    "crawl_id_str",
-                    "title",
-                    "status",
+                    *queued_snapshot_fields,
                 )
-                .order_by("crawl_id", "modified_at")[:remaining_snapshot_slots],
+                .order_by("modified_at")[:max_queued_snapshots_per_crawl],
             )
-        remaining_snapshot_slots = max_progress_snapshots - len(snapshots)
-        if remaining_snapshot_slots > 0:
-            snapshots.extend(
-                active_snapshot_scope.filter(recently_cancelled_snapshots_q)
-                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
-                .values(
-                    "id_str",
-                    "created_at",
-                    "modified_at",
-                    "url",
-                    "timestamp",
-                    "bookmarked_at",
-                    "crawl_id_str",
-                    "title",
-                    "downloaded_at",
-                    "fs_version",
-                    "status",
-                )
-                .order_by("crawl_id", "-modified_at")[:remaining_snapshot_slots],
+            queued_snapshot_overflow_by_crawl[str(crawl_id)] = max(
+                snapshot_counts_by_crawl.get(str(crawl_id), {}).get(Snapshot.StatusChoices.QUEUED, 0) - len(queued_snapshots),
+                0,
             )
+            snapshots.extend(queued_snapshots)
 
         def dashed_uuid(value: str) -> str:
             value = str(value)
@@ -1996,7 +2008,7 @@ def live_progress_view(request):
                 snapshot_fallback_urls: list[str] = []
                 result_by_plugin = {result.plugin: result for result in snapshot_results}
                 title_result = result_by_plugin.get("title")
-                if not snapshot_title and title_result is not None:
+                if not snapshot_title and title_result is not None and title_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
                     snapshot_title = Snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot["url"])
                 favicon_result = result_by_plugin.get("favicon")
                 if favicon_result is not None and favicon_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
@@ -2099,8 +2111,6 @@ def live_progress_view(request):
 
                 snapshot_progress = int(sum(plugin_progress_values) / len(plugin_progress_values)) if plugin_progress_values else 0
                 worker_state = "running" if snapshot_process_pids.get(str(snapshot["id"])) else "waiting"
-                if snapshot["status"] == Snapshot.StatusChoices.SEALED and not snapshot["downloaded_at"]:
-                    worker_state = "cancelled"
                 if (
                     snapshot["status"] == Snapshot.StatusChoices.STARTED
                     and worker_state == "waiting"
@@ -2108,7 +2118,7 @@ def live_progress_view(request):
                     and snapshot["modified_at"]
                     and (now - snapshot["modified_at"]).total_seconds() > 30
                 ):
-                    worker_state = "stalled" if orchestrator_running else "crashed"
+                    worker_state = "waiting" if orchestrator_running else "crashed"
 
                 if snapshot["status"] == Snapshot.StatusChoices.QUEUED and not snapshot_process_pids.get(str(snapshot["id"])):
                     compact_snapshot = [
@@ -2196,14 +2206,12 @@ def live_progress_view(request):
             )
             if is_paused:
                 crawl_worker_state = "paused"
-            elif crawl["status"] == Crawl.StatusChoices.SEALED and cancelled_snapshots:
-                crawl_worker_state = "cancelled"
             elif (
                 crawl["status"] == Crawl.StatusChoices.STARTED
                 and crawl_worker_state == "waiting"
                 and (started_snapshots or pending_snapshots)
             ):
-                crawl_worker_state = "stalled" if orchestrator_running else "crashed"
+                crawl_worker_state = "waiting" if orchestrator_running else "crashed"
 
             active_crawls.append(
                 {
@@ -2244,6 +2252,7 @@ def live_progress_view(request):
                     "screencast_url": crawl_screencast_url,
                     "screencast_link": crawl_screencast_link,
                     "active_snapshots": active_snapshots_for_crawl,
+                    "queued_snapshots_hidden": queued_snapshot_overflow_by_crawl.get(crawl_id, 0),
                     "can_start": can_start,
                     "urls_preview": urls_preview,
                     "retry_at_future": retry_at_future,
@@ -2259,17 +2268,30 @@ def live_progress_view(request):
             "total_workers": total_workers,
             "crawls_pending": crawls_pending,
             "crawls_started": crawls_started,
+            "crawls_active": crawls_started,
+            "crawls_queued": crawls_pending,
             "crawls_paused": crawls_paused,
             "crawls_recent": crawls_recent,
             "snapshots_pending": snapshots_pending,
             "snapshots_started": snapshots_started,
+            "snapshots_active": snapshots_started,
+            "snapshots_queued": snapshots_pending,
             "snapshots_paused": snapshots_paused,
             "archiveresults_pending": archiveresults_pending,
             "archiveresults_started": archiveresults_started,
             "archiveresults_paused": archiveresults_paused,
             "archiveresults_succeeded": archiveresults_succeeded,
             "archiveresults_failed": archiveresults_failed,
+            "downloads_pending": downloads_pending,
+            "downloads_started": downloads_started,
+            "downloads_active": downloads_started,
+            "downloads_queued": downloads_pending,
+            "indexing_pending": indexing_pending,
+            "indexing_started": indexing_started,
+            "indexing_active": indexing_started,
+            "indexing_queued": indexing_pending,
             "active_crawls": active_crawls,
+            "queued_crawls_hidden": queued_crawls_hidden,
             "recent_thumbnails": [],
             "server_time": timezone.now().isoformat(),
         }
@@ -2290,16 +2312,28 @@ def live_progress_view(request):
                 "total_workers": 0,
                 "crawls_pending": 0,
                 "crawls_started": 0,
+                "crawls_active": 0,
+                "crawls_queued": 0,
                 "crawls_paused": 0,
                 "crawls_recent": 0,
                 "snapshots_pending": 0,
                 "snapshots_started": 0,
+                "snapshots_active": 0,
+                "snapshots_queued": 0,
                 "snapshots_paused": 0,
                 "archiveresults_pending": 0,
                 "archiveresults_started": 0,
                 "archiveresults_paused": 0,
                 "archiveresults_succeeded": 0,
                 "archiveresults_failed": 0,
+                "downloads_pending": 0,
+                "downloads_started": 0,
+                "downloads_active": 0,
+                "downloads_queued": 0,
+                "indexing_pending": 0,
+                "indexing_started": 0,
+                "indexing_active": 0,
+                "indexing_queued": 0,
                 "active_crawls": [],
                 "recent_thumbnails": [],
                 "server_time": timezone.now().isoformat(),

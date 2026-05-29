@@ -113,9 +113,11 @@ def add(
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
+    from django.contrib.auth import get_user_model
     from django.utils import timezone
 
     created_by_id = created_by_id or get_or_create_system_user_pk()
+    created_by = get_user_model().objects.filter(pk=created_by_id).first()
     started_at = timezone.now()
     if update is None:
         update = not config.ONLY_NEW
@@ -151,10 +153,11 @@ def add(
     plugins = plugins or ""
     persona_obj, _ = Persona.objects.get_or_create(name=persona_name)
     persona_obj.ensure_dirs()
-    effective_persona_config = get_config(persona=persona_obj)
+    effective_persona_config = get_config(persona=persona_obj, user=created_by)
 
     crawl_config = {
-        **({"ONLY_NEW": not update} if not update else {}),
+        "PERMISSIONS": str(effective_persona_config.PERMISSIONS),
+        **({"ONLY_NEW": not update} if bool(not update) != bool(effective_persona_config.ONLY_NEW) else {}),
         **({"INDEX_ONLY": True} if index_only else {}),
         **({"OVERWRITE": True} if overwrite else {}),
         **({"PLUGINS": plugins} if plugins else {}),

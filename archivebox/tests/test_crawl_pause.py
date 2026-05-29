@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 import requests
@@ -18,6 +19,17 @@ from .conftest import (
 )
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def wait_for_crawl_snapshot_rows(cwd, crawl_id, timeout=45):
+    deadline = time.time() + timeout
+    latest_state = None
+    while time.time() < deadline:
+        latest_state = get_crawl_runtime_state(cwd, crawl_id)
+        if latest_state["snapshots"]:
+            return latest_state
+        time.sleep(0.2)
+    raise AssertionError(f"timed out waiting for runner to create snapshots for crawl {crawl_id}: {latest_state}")
 
 
 @pytest.mark.timeout(240)
@@ -50,6 +62,7 @@ def test_crawl_pause_resume_api_survives_server_restart_and_processes_after_resu
         )
         assert crawl_response.status_code == 200, crawl_response.text
         crawl_id = crawl_response.json()["id"]
+        wait_for_crawl_snapshot_rows(tmp_path, crawl_id)
 
         pause_response = requests.patch(
             f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",
@@ -130,6 +143,7 @@ def test_update_index_only_runs_paused_search_rows_and_resume_later_runs_crawl(t
         )
         assert crawl_response.status_code == 200, crawl_response.text
         crawl_id = crawl_response.json()["id"]
+        wait_for_crawl_snapshot_rows(tmp_path, crawl_id)
 
         pause_response = requests.patch(
             f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",

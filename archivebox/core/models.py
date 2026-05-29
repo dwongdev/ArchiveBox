@@ -550,13 +550,87 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         rows. After that maintenance pass, the lifecycle must remain PAUSED and
         retry_at must go back to MAX until a real resume transition happens.
         """
-        self.safe_update(
-            {
-                "retry_at": RETRY_AT_MAX,
-                "modified_at": timezone.now(),
-            },
-            extra_filter={"status": self.StatusChoices.PAUSED},
+        type(self).objects.filter(
+            pk=self.pk,
+            status=self.StatusChoices.PAUSED,
+        ).update(
+            retry_at=RETRY_AT_MAX,
+            modified_at=timezone.now(),
         )
+        self.status = self.StatusChoices.PAUSED
+        self.retry_at = RETRY_AT_MAX
+
+    def reconcile_parent_lifecycle(self, *, lock_seconds: int = 60) -> bool | None:
+        """
+        Follow parent Crawl pause/seal state before any Snapshot work runs.
+
+        Crawl.pause()/cancel() only wake child rows. The runner claims each due
+        Snapshot and lets this method perform the actual child transition, so
+        cancellation stays fast and Snapshot cleanup still runs from the normal
+        state-machine owner.
+        """
+        parent_status = Crawl.objects.filter(id=self.crawl_id).values_list("status", flat=True).first()
+        if parent_status == Crawl.StatusChoices.SEALED and self.status != self.StatusChoices.SEALED:
+            if not self.claim_processing_lock(lock_seconds=lock_seconds):
+                return False
+            self.refresh_from_db()
+            parent_status = Crawl.objects.filter(id=self.crawl_id).values_list("status", flat=True).first()
+            if parent_status == Crawl.StatusChoices.SEALED and self.status != self.StatusChoices.SEALED:
+                self.sm.seal()
+            return True
+
+        if parent_status == Crawl.StatusChoices.PAUSED and self.status not in (self.StatusChoices.PAUSED, self.StatusChoices.SEALED):
+            if not self.claim_processing_lock(lock_seconds=lock_seconds):
+                return False
+            self.refresh_from_db()
+            parent_status = Crawl.objects.filter(id=self.crawl_id).values_list("status", flat=True).first()
+            if parent_status == Crawl.StatusChoices.PAUSED and self.status not in (
+                self.StatusChoices.PAUSED,
+                self.StatusChoices.SEALED,
+            ):
+                self.pause()
+            return True
+
+        return None
+
+    def finalize_completed_upload_results(self) -> int:
+        now = timezone.now()
+        result_ids = []
+        upload_results = (
+            self.archiveresult_set.filter(
+                status=ArchiveResult.StatusChoices.QUEUED,
+                hook_name="on_Snapshot__archivebox_browser_extension_upload",
+                output_size__gt=0,
+            )
+            .exclude(output_files={})
+            .only("id", "output_files")
+        )
+        for result in upload_results:
+            if ArchiveResult.output_files_upload_complete(result.output_files or {}):
+                result_ids.append(result.id)
+        if not result_ids:
+            return 0
+        # Browser-extension uploads are already-finished external writes. If the
+        # PATCH request saved files but omitted status, finalize only this
+        # Snapshot's complete uploads without scanning ArchiveResult globally.
+        return ArchiveResult.objects.filter(id__in=result_ids, status=ArchiveResult.StatusChoices.QUEUED).update(
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            modified_at=now,
+        )
+
+    def reset_abandoned_results(self) -> tuple[int, int]:
+        reset_count = 0
+        running_count = 0
+        for result in self.archiveresult_set.filter(
+            status__in=[ArchiveResult.StatusChoices.STARTED, ArchiveResult.StatusChoices.BACKOFF],
+        ).select_related("process"):
+            process = result.process
+            if process is not None and process.is_running:
+                running_count += 1
+                continue
+            result.reset_for_retry()
+            reset_count += 1
+        return reset_count, running_count
 
     def cancel(self) -> None:
         if self.status != self.StatusChoices.SEALED:
@@ -663,6 +737,9 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if not self.timestamp:
             self.timestamp = str(self.bookmarked_at.timestamp())
 
+        if self._state.adding or update_fields is None or "title" in update_fields:
+            self.title = self._normalize_title_candidate(self.title, snapshot_url=self.url or "") or None
+
         # Migrate filesystem if needed (happens automatically on save)
         if self.pk and self.fs_migration_needed:
             self.migrate_filesystem_to_current_version()
@@ -682,10 +759,12 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         def finish_snapshot_save():
             self.ensure_legacy_archive_symlink()
             self.ensure_crawl_symlink()
-            existing_urls = {url for _raw_line, url in self.crawl._iter_url_lines() if url}
-            if self.crawl.url_passes_filters(self.url, snapshot=self) and self.url not in existing_urls:
-                self.crawl.urls += f"\n{self.url}"
-                self.crawl.save()
+            crawl = self.crawl
+            existing_urls = {url for _raw_line, url in crawl._iter_url_lines() if url}
+            if crawl.url_passes_filters(self.url, snapshot=self) and self.url not in existing_urls:
+                urls = f"{crawl.urls}\n{self.url}"
+                crawl.safe_update({"urls": urls, "modified_at": timezone.now()}, refresh=False)
+                crawl.urls = urls
 
         # get_or_create/update_or_create wrap save() in atomic(); defer filesystem
         # work and crawl maintenance so SQLite commits before touching the disk.
@@ -1310,7 +1389,12 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         self._merge_archive_results_from_index(index_data, update_existing=update_existing_archive_results)
         if not self._normalize_title_candidate(self.title, snapshot_url=self.url):
             title_results = (
-                self.archiveresult_set.filter(plugin="title").exclude(output_str="").order_by("-start_ts", "-end_ts", "-created_at")
+                self.archiveresult_set.filter(
+                    plugin="title",
+                    status=ArchiveResult.StatusChoices.SUCCEEDED,
+                )
+                .exclude(output_str="")
+                .order_by("-start_ts", "-end_ts", "-created_at")
             )
             for title_result in title_results.only("output_str"):
                 result_title = self._normalize_title_candidate(title_result.output_str, snapshot_url=self.url)
@@ -1336,7 +1420,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             if self.title != best_title:
                 self.title = best_title
         elif self.title:
-            self.title = ""
+            self.title = None
 
     def _merge_tags_from_index(self, index_data: dict):
         """Merge tags - union of both sources."""
@@ -1947,7 +2031,14 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if stored_title:
             return stored_title
 
-        title_results = self.archiveresult_set.filter(plugin="title").exclude(output_str="").order_by("-start_ts", "-end_ts", "-created_at")
+        title_results = (
+            self.archiveresult_set.filter(
+                plugin="title",
+                status=ArchiveResult.StatusChoices.SUCCEEDED,
+            )
+            .exclude(output_str="")
+            .order_by("-start_ts", "-end_ts", "-created_at")
+        )
         for title_result in title_results.only("output_str"):
             result_title = self._normalize_title_candidate(title_result.output_str, snapshot_url=self.url)
             if result_title:
@@ -3190,18 +3281,63 @@ class SnapshotMachine(BaseStateMachine):
     @started.enter
     def enter_started(self):
         """Just mark as started. The shared runner creates ArchiveResults and runs hooks."""
+        owned_retry_at = self.snapshot.retry_at
+        now = timezone.now()
+        lease_until = now + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
+        # The runner owns queued Snapshot startup through retry_at. Creating
+        # pending ArchiveResult rows immediately before tick() can touch
+        # Snapshot.modified_at, so using modified_at CAS here would reject the
+        # legitimate owner. Keep the write to the scheduler columns only.
+        updated = Snapshot.objects.filter(
+            pk=self.snapshot.pk,
+            retry_at=owned_retry_at,
+            status=Snapshot.StatusChoices.QUEUED,
+        ).update(
+            status=Snapshot.StatusChoices.STARTED,
+            retry_at=lease_until,
+            modified_at=now,
+        )
+        if updated != 1:
+            self.snapshot.refresh_from_db()
+            return
         self.snapshot.status = Snapshot.StatusChoices.STARTED
-        self.snapshot.retry_at = timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
-        self.snapshot.save(update_fields=["status", "retry_at", "modified_at"])
+        self.snapshot.retry_at = lease_until
+        self.snapshot.modified_at = now
 
     @sealed.enter
     def enter_sealed(self):
-        # Clean up background hooks
-        self.snapshot.cleanup()
+        now = timezone.now()
+        owned_retry_at = self.snapshot.retry_at
+        # The runner owns this row via retry_at. Commit the final lifecycle
+        # state before cleanup so late projectors can update metadata without
+        # tripping a modified_at CAS while the row still looks QUEUED/STARTED.
+        updated = (
+            type(self.snapshot)
+            .objects.filter(
+                pk=self.snapshot.pk,
+                retry_at=owned_retry_at,
+                status__in=[
+                    Snapshot.StatusChoices.QUEUED,
+                    Snapshot.StatusChoices.STARTED,
+                    Snapshot.StatusChoices.PAUSED,
+                ],
+            )
+            .update(
+                status=Snapshot.StatusChoices.SEALED,
+                retry_at=None,
+                modified_at=now,
+            )
+        )
+        if updated != 1:
+            self.snapshot.refresh_from_db()
+            return
 
         self.snapshot.status = Snapshot.StatusChoices.SEALED
         self.snapshot.retry_at = None
-        self.snapshot.save(update_fields=["status", "retry_at", "modified_at"])
+        self.snapshot.modified_at = now
+
+        # Clean up background hooks after the final state is visible in DB.
+        self.snapshot.cleanup()
 
         # Crawl finalization is handled by the runner/CrawlService cleanup
         # phase. Sealing the parent crawl here races recursive discovery:
@@ -3245,6 +3381,16 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             "paused": cls.StatusChoices.PAUSED,
             "backoff": cls.StatusChoices.BACKOFF,
         }.get(str(status or "").strip().lower(), cls.StatusChoices.FAILED)
+
+    @staticmethod
+    def output_files_upload_complete(output_files: dict[str, dict[str, Any]]) -> bool:
+        if not output_files:
+            return False
+        for metadata in output_files.values():
+            upload = metadata.get("upload") if isinstance(metadata, dict) else None
+            if isinstance(upload, dict) and upload.get("chunked") and not upload.get("complete"):
+                return False
+        return True
 
     @classmethod
     def get_plugin_choices(cls):

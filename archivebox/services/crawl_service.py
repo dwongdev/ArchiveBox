@@ -24,76 +24,84 @@ class CrawlService(BaseService):
     async def on_CrawlSetupEvent__save_to_db(self, event: CrawlSetupEvent) -> None:
         from archivebox.crawls.models import Crawl
 
-        crawl = await Crawl.objects.aget(id=self.crawl_id)
-        if crawl.is_paused:
-            return
-        if crawl.status == Crawl.StatusChoices.SEALED:
-            if crawl.retry_at is not None:
-                # Setup/start events can be emitted during targeted maintenance
-                # on sealed snapshots. The snapshot retry_at owns that work; the
-                # sealed parent crawl must stay invisible to crawl selection
-                # unless an explicit resume/requeue path changes its status first.
-                crawl.retry_at = None
-                await crawl.asave(update_fields=["retry_at", "modified_at"])
-            return
-        crawl.status = Crawl.StatusChoices.STARTED
-        crawl.retry_at = timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
-        await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
+        await (
+            Crawl.objects.filter(id=self.crawl_id)
+            .exclude(
+                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+            )
+            .aupdate(
+                status=Crawl.StatusChoices.STARTED,
+                retry_at=timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS),
+                modified_at=timezone.now(),
+            )
+        )
 
     async def on_CrawlStartEvent__save_to_db(self, event: CrawlStartEvent) -> None:
         from archivebox.crawls.models import Crawl
 
-        crawl = await Crawl.objects.aget(id=self.crawl_id)
-        if crawl.is_paused:
-            return
-        if crawl.status == Crawl.StatusChoices.SEALED:
-            if crawl.retry_at is not None:
-                # CrawlStart is also emitted by sealed-snapshot maintenance
-                # runs. Do not turn a sealed crawl back into schedulable work
-                # unless an explicit resume/requeue path changes its status first.
-                crawl.retry_at = None
-                await crawl.asave(update_fields=["retry_at", "modified_at"])
-            return
-        crawl.status = Crawl.StatusChoices.STARTED
-        crawl.retry_at = timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
-        await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
+        await (
+            Crawl.objects.filter(id=self.crawl_id)
+            .exclude(
+                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+            )
+            .aupdate(
+                status=Crawl.StatusChoices.STARTED,
+                retry_at=timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS),
+                modified_at=timezone.now(),
+            )
+        )
 
     async def on_CrawlCleanupEvent__save_to_db(self, event: CrawlCleanupEvent) -> None:
         from archivebox.crawls.models import Crawl
 
-        crawl = await Crawl.objects.aget(id=self.crawl_id)
-        if crawl.is_paused:
-            return
         # Cleanup is still inside the active crawl lifecycle. Snapshot hooks may
         # have just written discovery output that the runner consumes before the
         # completion phase, so only CrawlCompleted/finalize_run_state makes the
         # final sealed-vs-requeue decision.
-        if crawl.status != Crawl.StatusChoices.SEALED:
-            crawl.status = Crawl.StatusChoices.STARTED
-            crawl.retry_at = timezone.now()
-        else:
-            crawl.retry_at = None
-        await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
+        await (
+            Crawl.objects.filter(id=self.crawl_id)
+            .exclude(
+                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+            )
+            .aupdate(
+                status=Crawl.StatusChoices.STARTED,
+                retry_at=timezone.now(),
+                modified_at=timezone.now(),
+            )
+        )
 
     async def on_CrawlCompletedEvent__save_to_db(self, event: CrawlCompletedEvent) -> None:
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
 
         crawl = await Crawl.objects.aget(id=self.crawl_id)
-        if crawl.is_paused:
+        if crawl.is_paused or crawl.status == Crawl.StatusChoices.SEALED:
             return
         is_finished = not await crawl.snapshot_set.filter(
             status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED],
         ).aexists()
         if not is_finished:
-            if crawl.status != Crawl.StatusChoices.SEALED:
-                crawl.status = Crawl.StatusChoices.STARTED
-                crawl.retry_at = timezone.now()
-            else:
-                crawl.retry_at = None
-            await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
+            await (
+                Crawl.objects.filter(id=self.crawl_id)
+                .exclude(
+                    status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                )
+                .aupdate(
+                    status=Crawl.StatusChoices.STARTED,
+                    retry_at=timezone.now(),
+                    modified_at=timezone.now(),
+                )
+            )
             return
 
-        crawl.status = Crawl.StatusChoices.SEALED
-        crawl.retry_at = None
-        await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
+        await (
+            Crawl.objects.filter(id=self.crawl_id)
+            .exclude(
+                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+            )
+            .aupdate(
+                status=Crawl.StatusChoices.SEALED,
+                retry_at=None,
+                modified_at=timezone.now(),
+            )
+        )

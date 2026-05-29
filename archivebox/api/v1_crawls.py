@@ -14,6 +14,7 @@ from ninja import Router, Schema
 from ninja.errors import HttpError
 
 from archivebox.core.models import Snapshot
+from archivebox.config.common import get_config
 from archivebox.crawls.models import Crawl
 
 from .auth import API_AUTH_METHODS, auth_using_token
@@ -106,6 +107,7 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
 
     tags = normalize_tag_list(data.tags, data.tags_str)
     config = dict(data.config or {})
+    config.setdefault("PERMISSIONS", str(get_config(user=request.user).PERMISSIONS))
     crawl = Crawl.objects.create(
         urls="\n".join(urls),
         max_depth=data.max_depth,
@@ -209,19 +211,17 @@ def patch_crawl(request: HttpRequest, crawl_id: str, data: CrawlUpdateSchema):
     if "status" in payload:
         if payload["status"] not in Crawl.StatusChoices.values:
             raise HttpError(400, f"Invalid status: {payload['status']}")
+        if payload["status"] == Crawl.StatusChoices.SEALED:
+            crawl.cancel()
+            return crawl
         crawl.status = payload["status"]
-        if crawl.status == Crawl.StatusChoices.SEALED and "retry_at" not in payload:
-            crawl.retry_at = None
         update_fields.append("status")
 
     if "retry_at" in payload:
         crawl.retry_at = payload["retry_at"]
         update_fields.append("retry_at")
 
-    if payload.get("status") == Crawl.StatusChoices.SEALED:
-        crawl.cancel()
-    else:
-        crawl.save(update_fields=update_fields)
+    crawl.save(update_fields=update_fields)
     return crawl
 
 

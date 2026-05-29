@@ -6,6 +6,7 @@ from pathlib import Path
 
 from django.db import IntegrityError
 from django.utils import timezone
+from archivebox.config import CONSTANTS
 from archivebox.config.common import rprint
 
 RUNNER_ACTIVE_WORKER_TYPE = "worker_runner"
@@ -28,7 +29,7 @@ def current_command(process_type: str, *, data_dir: str | Path, url: str | None 
     from archivebox.machine.models import Process
 
     proc = Process.current()
-    proc.mark_running(process_type=process_type, pwd=str(data_dir), url=url, timeout=0)
+    proc.mark_running(process_type=process_type, pwd=str(data_dir), url=url, timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS)
     return proc
 
 
@@ -207,7 +208,7 @@ def enter_single_runner_gate(command, *, data_dir: str | Path, graceful_timeout:
         process_type=Process.TypeChoices.ORCHESTRATOR,
         worker_type=RUNNER_WAITING_WORKER_TYPE,
         pwd=str(data_dir),
-        timeout=0,
+        timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
     )
     while True:
         runners = live_runner_processes(data_dir=data_dir)
@@ -217,7 +218,7 @@ def enter_single_runner_gate(command, *, data_dir: str | Path, graceful_timeout:
                 process_type=Process.TypeChoices.ORCHESTRATOR,
                 worker_type=RUNNER_WAITING_WORKER_TYPE,
                 pwd=str(data_dir),
-                timeout=0,
+                timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
             )
             runners = live_runner_processes(data_dir=data_dir)
 
@@ -242,7 +243,7 @@ def enter_single_runner_gate(command, *, data_dir: str | Path, graceful_timeout:
                 process_type=Process.TypeChoices.ORCHESTRATOR,
                 worker_type=RUNNER_ACTIVE_WORKER_TYPE,
                 pwd=str(data_dir),
-                timeout=0,
+                timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
             )
             return True
         except IntegrityError:

@@ -146,6 +146,73 @@ body.model-crawl.change-form #content-main form fieldset.crawl-admin-config .kv-
     color: #94a3b8;
 }
 
+.crawl-status-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+}
+
+.crawl-status,
+.crawl-status-reason {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.crawl-status {
+    text-transform: uppercase;
+}
+
+.crawl-status--queued {
+    background: #fef9c3;
+    color: #854d0e;
+}
+
+.crawl-status--started {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.crawl-status--paused {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.crawl-status--sealed {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.crawl-status-reason {
+    background: #f1f5f9;
+    color: #475569;
+    min-height: 18px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.crawl-status-reason--crawl_max_urls,
+.crawl-status-reason--crawl_max_size,
+.crawl-status-reason--snapshot_max_size {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.crawl-status-reason--crawl_timeout {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
 .crawl-resume-row,
 .crawl-resume-submit,
 .crawl-pause-row,

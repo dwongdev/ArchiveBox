@@ -392,8 +392,12 @@ class URLFiltersWidget(forms.Widget):
         value = value if isinstance(value, dict) else {}
         widget_id_raw = attrs.get("id", name) if attrs else name
         widget_id = re.sub(r"[^A-Za-z0-9_]", "_", str(widget_id_raw)) or name
+        value = value or {}
         allowlist = escape(value.get("allowlist", "") or "")
         denylist = escape(value.get("denylist", "") or "")
+        same_domain_checked = " checked" if value.get("same_domain_only") else ""
+        subpaths_checked = " checked" if value.get("subpaths_only") else ""
+        only_new_checked = " checked" if value.get("only_new") else ""
 
         return mark_safe(f'''
         <div id="{widget_id}_container" class="url-filters-widget">
@@ -421,12 +425,17 @@ class URLFiltersWidget(forms.Widget):
                 </div>
             </div>
             <label class="url-filters-toggle" for="{widget_id}_same_domain_only">
-                <input type="checkbox" id="{widget_id}_same_domain_only" name="{name}_same_domain_only" value="1">
+                <input type="checkbox" id="{widget_id}_same_domain_only" name="{name}_same_domain_only" value="1"{same_domain_checked}>
                 <span>Same domain only</span>
             </label>
             <label class="url-filters-toggle" for="{widget_id}_subpaths_only">
-                <input type="checkbox" id="{widget_id}_subpaths_only" name="{name}_subpaths_only" value="1">
+                <input type="checkbox" id="{widget_id}_subpaths_only" name="{name}_subpaths_only" value="1"{subpaths_checked}>
                 <span>Subpaths only</span>
+            </label>
+            <label class="url-filters-toggle url-filters-toggle-with-help" for="{widget_id}_only_new">
+                <input type="checkbox" id="{widget_id}_only_new" name="{name}_only_new" value="1"{only_new_checked}>
+                <span>Only new URLs</span>
+                <small>skip URLs you've previously saved</small>
             </label>
             <div class="help-text">These values can be one regex pattern or domain per line. URL_DENYLIST takes precedence over URL_ALLOWLIST.</div>
             <script>
@@ -643,6 +652,7 @@ class URLFiltersWidget(forms.Widget):
             "denylist": data.get(f"{name}_denylist", ""),
             "same_domain_only": data.get(f"{name}_same_domain_only") in ("1", "on", "true"),
             "subpaths_only": data.get(f"{name}_subpaths_only") in ("1", "on", "true"),
+            "only_new": data.get(f"{name}_only_new") in ("1", "on", "true"),
         }
 
 

@@ -2137,7 +2137,7 @@ class Process(ModelWithDeleteAfter, models.Model):
             proc = self.proc
             if proc is not None:
                 try:
-                    proc.wait(timeout=0)
+                    proc.wait(timeout=0.001)
                 except Exception:
                     pass
             # Process exited - read output and copy to DB

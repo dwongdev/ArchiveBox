@@ -67,7 +67,7 @@ def _record_supervisord_process(proc: subprocess.Popen, config_file: Path) -> No
             pid=proc.pid,
             started_at=started_at,
             status=Process.StatusChoices.RUNNING,
-            timeout=0,
+            timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
         )
     except Exception:
         pass
@@ -158,7 +158,7 @@ RUNNER_WORKER = {
     "name": "worker_runner",
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", "--daemon"]),
     "autostart": "false",
-    "autorestart": "true",
+    "autorestart": "unexpected",
     "environment": 'PYTHONUNBUFFERED="1",COLUMNS="200"',
     "stopasgroup": "true",
     "killasgroup": "true",
@@ -662,7 +662,6 @@ def stop_own_supervisord_process():
     """Stop only the supervisord child started by this Python process."""
 
     global _supervisord_proc
-    stop_grace_seconds = configured_stopwaitsecs(tuple(_desired_supervisord_workers.values()))
 
     if not _supervisord_proc or _supervisord_proc.poll() is not None:
         reap_foreground_supervisord_process()
@@ -676,8 +675,20 @@ def stop_own_supervisord_process():
             children = psutil_proc.children(recursive=True)
         except psutil.NoSuchProcess:
             children = []
-        _supervisord_proc.terminate()
-        wait_popen_and_kill_children(_supervisord_proc, children, timeout=stop_grace_seconds)
+
+        # Foreground server shutdown should be fast and power-loss tolerant.
+        # ArchiveBox state is durable enough to recover interrupted crawls, so
+        # do not let supervisord spend worker stopwaitsecs draining the runner.
+        try:
+            os.killpg(stopped_pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            _supervisord_proc.terminate()
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        wait_popen_and_kill_children(_supervisord_proc, children, timeout=2.0, kill_timeout=1.0)
         try:
             from archivebox.machine.models import Machine, Process
 
@@ -711,12 +722,7 @@ def reap_foreground_supervisord_process() -> None:
 
     global _supervisord_proc
     if _supervisord_proc and _supervisord_proc.poll() is not None:
-        try:
-            _supervisord_proc.wait(timeout=0)
-        except subprocess.TimeoutExpired:
-            pass
-        finally:
-            _supervisord_proc = None
+        _supervisord_proc = None
 
 
 def start_new_supervisord_process(daemonize=False):

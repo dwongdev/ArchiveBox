@@ -33,7 +33,6 @@ def test_runtime_stack_owner_prefers_newer_server_over_older_update(tmp_path):
                 cmd=[],
                 pid=proc.pid,
                 status=Process.StatusChoices.RUNNING,
-                timeout=0,
             )
             time.sleep(0.05)
 
@@ -80,7 +79,6 @@ def test_runtime_stack_owner_keeps_server_over_newer_supervised_runner(tmp_path)
                 cmd=[],
                 pid=proc.pid,
                 status=Process.StatusChoices.RUNNING,
-                timeout=0,
             )
             time.sleep(0.05)
 
@@ -126,7 +124,6 @@ def test_runtime_stack_owner_reaps_dead_newer_parent_and_promotes_next_live_comm
                 cmd=[],
                 pid=proc.pid,
                 status=Process.StatusChoices.RUNNING,
-                timeout=0,
             )
             if process_type == Process.TypeChoices.UPDATE:
                 older_row = row
@@ -183,7 +180,6 @@ def test_runtime_stack_owner_ignores_supervised_orphan_runner(tmp_path):
             cmd=[],
             pid=procs[0].pid,
             status=Process.StatusChoices.RUNNING,
-            timeout=0,
         )
         Process.objects.create(
             machine=Machine.current(),
@@ -194,7 +190,6 @@ def test_runtime_stack_owner_ignores_supervised_orphan_runner(tmp_path):
             cmd=[],
             pid=procs[1].pid,
             status=Process.StatusChoices.RUNNING,
-            timeout=0,
         )
 
         assert runtime_stack_owner(data_dir=tmp_path) is None
@@ -230,7 +225,6 @@ def test_runtime_stack_owner_allows_top_level_runner_when_no_parent_command_exis
             cmd=[],
             pid=proc.pid,
             status=Process.StatusChoices.RUNNING,
-            timeout=0,
         )
 
         owner = runtime_stack_owner(data_dir=tmp_path)

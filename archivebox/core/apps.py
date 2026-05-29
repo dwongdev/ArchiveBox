@@ -41,5 +41,5 @@ class CoreConfig(AppConfig):
                 worker_type="worker_runserver",
                 pwd=str(CONSTANTS.DATA_DIR),
                 url=os.environ.get("ARCHIVEBOX_RUNSERVER_BIND_URL") or "",
-                timeout=0,
+                timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
             )

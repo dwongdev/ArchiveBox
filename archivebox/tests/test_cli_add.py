@@ -315,9 +315,9 @@ def test_add_duplicate_url_creates_separate_crawls(tmp_path, process, disable_ex
     )
     run_queued_crawls(tmp_path, disable_extractors_dict)
 
-    # Add same URL second time
+    # Add same URL second time with --update to opt out of ONLY_NEW.
     subprocess.run(
-        ["archivebox", "add", "--index-only", "--depth=0", "https://example.com"],
+        ["archivebox", "add", "--index-only", "--update", "--depth=0", "https://example.com"],
         capture_output=True,
         env=disable_extractors_dict,
     )

@@ -1201,6 +1201,47 @@
                 font-size: 14px;
             }
 
+            .action-permissions-wrapper {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+            }
+
+            .action-permissions-menu {
+                position: absolute;
+                top: calc(100% + 6px);
+                left: 0;
+                z-index: 40;
+                min-width: 138px;
+                padding: 4px;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                background: #ffffff;
+                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+            }
+
+            .action-permissions-menu-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                width: 100%;
+                height: 30px;
+                padding: 0 8px;
+                border: 0;
+                border-radius: 6px;
+                background: transparent;
+                color: #334155;
+                font-size: 12px;
+                font-weight: 600;
+                text-align: left;
+                cursor: pointer;
+            }
+
+            .action-permissions-menu-item:hover {
+                background: #eff6ff;
+                color: #1d4ed8;
+            }
+
             /* Object count */
             .actions .action-counter {
                 color: #64748b;
@@ -1789,6 +1830,56 @@
                 // for each action in the dropdown, turn it into a button instead
                 container.find('select[name=action] option:gt(0)').each(function () {
                     const action_type = this.value
+                    if (action_type === 'set_crawl_permissions') {
+                        const wrapper = $('<span></span>')
+                            .addClass('action-permissions-wrapper')
+                            .appendTo(buttons)
+                        $('<button>')
+                            .attr('type', 'button')
+                            .attr('name', action_type)
+                            .addClass('button')
+                            .text(this.text)
+                            .click(function (e) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                wrapper.toggleClass('is-open')
+                                wrapper.find('.action-permissions-menu').prop('hidden', !wrapper.hasClass('is-open'))
+                                return false
+                            })
+                            .appendTo(wrapper)
+                        const menu = $('<span></span>')
+                            .addClass('action-permissions-menu')
+                            .attr('hidden', true)
+                            .appendTo(wrapper)
+                        ;[
+                            ['public', '👥', 'Public'],
+                            ['unlisted', '🔗', 'Unlisted'],
+                            ['private', '🔒', 'Private'],
+                        ].forEach(function (choice) {
+                            $('<button>')
+                                .attr('type', 'button')
+                                .addClass('action-permissions-menu-item')
+                                .attr('data-permissions', choice[0])
+                                .html('<span aria-hidden="true">' + choice[1] + '</span><span>' + choice[2] + '</span>')
+                                .click(function (e) {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    let permissionsInput = container.find('input[name=permissions]')
+                                    if (!permissionsInput.length) {
+                                        permissionsInput = $('<input type="hidden" name="permissions">').appendTo(container)
+                                    }
+                                    permissionsInput.val(choice[0])
+                                    container.find('select[name=action]')
+                                        .val(action_type)
+                                        .trigger('change')
+                                    $('#changelist-form button[name="index"]').click()
+                                    document.querySelector('#logo').outerHTML = '<div class="loader"></div>'
+                                    return false
+                                })
+                                .appendTo(menu)
+                        })
+                        return
+                    }
                     $('<button>')
                         .attr('type', 'button')
                         .attr('name', action_type)
@@ -1835,6 +1926,15 @@
                         .appendTo(buttons)
                 })
                 console.log('Converted', buttons.children().length, 'admin actions from dropdown to buttons')
+                const crawlAddLink = document.querySelector('.model-crawl.change-list .object-tools a.addlink')
+                const crawlActionButtons = document.querySelector('.model-crawl.change-list .actions-top .action-buttons')
+                if (crawlAddLink && crawlActionButtons && !crawlActionButtons.querySelector('.crawl-add-action')) {
+                    const addButton = crawlAddLink.cloneNode(true)
+                    addButton.classList.add('button', 'crawl-add-action')
+                    addButton.classList.remove('addlink')
+                    addButton.textContent = 'Add Crawl'
+                    crawlActionButtons.appendChild(addButton)
+                }
                 const tagContainer = document.querySelector('.actions-tags')
                 if (tagContainer) {
                     const tagButtons = buttons.find('button[name="add_tags"], button[name="remove_tags"]')
@@ -1843,6 +1943,15 @@
                         tagButtons.appendTo(tagContainer)
                     }
                 }
+                document.addEventListener('click', function(event) {
+                    document.querySelectorAll('.action-permissions-wrapper.is-open').forEach(function(wrapper) {
+                        if (!wrapper.contains(event.target)) {
+                            wrapper.classList.remove('is-open')
+                            const menu = wrapper.querySelector('.action-permissions-menu')
+                            if (menu) menu.hidden = true
+                        }
+                    })
+                })
                 if (window.jQuery && window.jQuery.fn.select2) {
                     window.jQuery('select[multiple]').select2();
                 }

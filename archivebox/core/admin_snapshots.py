@@ -38,24 +38,18 @@ from archivebox.core.models import Tag, Snapshot, ArchiveResult
 from archivebox.core.admin_archiveresults import render_archiveresults_list
 from archivebox.core.permissions import (
     PERMISSIONS_CHOICES,
-    PERMISSIONS_PRIVATE,
-    PERMISSIONS_PUBLIC,
-    PERMISSIONS_UNLISTED,
+    PERMISSIONS_META,
     get_snapshot_permissions,
+    normalize_permissions,
 )
 from archivebox.core.widgets import TagEditorWidget, InlineTagEditorWidget
 from archivebox.crawls.models import Crawl
-from archivebox.personas.models import Persona
 
 
 # GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': [], 'CAN_UPGRADE': False}
 GLOBAL_CONTEXT = {}
 
-SNAPSHOT_PERMISSION_META = {
-    PERMISSIONS_PUBLIC: ("👥", "Public", "#047857", "#d1fae5"),
-    PERMISSIONS_UNLISTED: ("🔗", "Unlisted", "#1d4ed8", "#dbeafe"),
-    PERMISSIONS_PRIVATE: ("🔒", "Private", "#991b1b", "#fee2e2"),
-}
+SNAPSHOT_PERMISSION_META = PERMISSIONS_META
 
 
 @lru_cache(maxsize=1)
@@ -118,32 +112,10 @@ class SnapshotPermissionsListFilter(admin.SimpleListFilter):
     def queryset(self, request, queryset):
         value = self.value()
         if value:
-            global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-            has_overrides = (
-                Snapshot.objects.filter(permissions__gt="").exists()
-                or Crawl.objects.filter(permissions__gt="").exists()
-                or Persona.objects.filter(permissions__gt="").exists()
-            )
-            if not has_overrides:
-                return queryset if value == global_permissions else queryset.none()
-
-            persona_query = Q(crawl__persona_id__in=self.persona_ids_for_value())
-            if global_permissions == value:
-                valid_persona_ids = Persona.objects.values_list("id", flat=True)
-                persona_query |= Q(crawl__persona_id__isnull=True) | ~Q(crawl__persona_id__in=valid_persona_ids)
             return queryset.filter(
-                Q(permissions=value)
-                | (Q(permissions__isnull=True) & Q(crawl__permissions=value))
-                | (Q(permissions__isnull=True) & Q(crawl__permissions__isnull=True) & persona_query),
+                Q(permissions=value) | (Q(permissions__isnull=True) & Q(crawl__permissions=value)),
             )
         return queryset
-
-    def persona_ids_for_value(self):
-        global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-        query = Q(permissions=self.value())
-        if global_permissions == self.value():
-            query |= Q(permissions__isnull=True)
-        return Persona.objects.filter(query).values_list("id", flat=True)
 
 
 class SnapshotStatusListFilter(admin.SimpleListFilter):
@@ -408,9 +380,8 @@ class SnapshotAdminForm(forms.ModelForm):
     def save(self, commit=True):
         instance = super().save(commit=False)
         permissions = self.cleaned_data["permissions_config"]
-        inherited_permissions = str(get_config(crawl=instance.crawl, resolve_plugins=False).PERMISSIONS).strip().lower()
         config = dict(instance.config or {})
-        if permissions == inherited_permissions:
+        if permissions == instance.crawl.permissions:
             config.pop("PERMISSIONS", None)
         else:
             config["PERMISSIONS"] = permissions
@@ -808,8 +779,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
         snapshot = get_object_or_404(Snapshot.objects.select_related("crawl"), pk=object_id)
         config = dict(snapshot.config or {})
-        inherited_permissions = str(get_config(crawl=snapshot.crawl, resolve_plugins=False).PERMISSIONS).strip().lower()
-        if permissions == inherited_permissions:
+        if permissions == snapshot.crawl.permissions:
             config.pop("PERMISSIONS", None)
         else:
             config["PERMISSIONS"] = permissions
@@ -852,8 +822,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         needs_files_sort = "files" in ordering_fields
         needs_tags_sort = "tags_inline" in ordering_fields
         is_change_view = getattr(getattr(request, "resolver_match", None), "url_name", "") == "core_snapshot_change"
-        request.archivebox_default_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-
         prefetches = [
             Prefetch(
                 "crawl",
@@ -913,24 +881,13 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="👁", ordering="permissions")
     def permissions_badge(self, obj):
-        request = self.request
         permissions = getattr(obj, "snapshot_permissions", None)
         if permissions is None:
             if obj.permissions:
                 permissions = obj.permissions
-            elif obj.crawl.permissions:
-                permissions = obj.crawl.permissions
-            elif obj.crawl.persona_id:
-                persona_permissions = getattr(request, "archivebox_persona_permissions", None)
-                if persona_permissions is None:
-                    persona_permissions = {
-                        str(persona.id): persona.permissions or request.archivebox_default_permissions
-                        for persona in Persona.objects.only("id", "permissions")
-                    }
-                    request.archivebox_persona_permissions = persona_permissions
-                permissions = persona_permissions.get(str(obj.crawl.persona_id), request.archivebox_default_permissions)
             else:
-                permissions = request.archivebox_default_permissions
+                permissions = obj.crawl.permissions
+        permissions = normalize_permissions(permissions)
         icon, label, fg, bg = SNAPSHOT_PERMISSION_META[permissions]
         menu_items = format_html_join(
             "",

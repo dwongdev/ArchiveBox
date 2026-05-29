@@ -453,8 +453,8 @@
                 <input type="submit" value="Search">
             </form>
             <div class="public-snapshot-count">
-                {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }}
-                <span>(page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }})</span>
+                {{ page_obj.start_index }}-{{ page_obj.end_index }}{% if page_obj.has_next %}+{% endif %}
+                <span>(page {{ page_obj.number }}{% if page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.num_pages }}{% endif %})</span>
             </div>
         </div>
         <div class="public-snapshot-table-wrap">
@@ -463,7 +463,7 @@
                     <tr>
                         <th class="snapshot-time">Saved</th>
                         <th class="snapshot-preview-cell">Preview</th>
-                        <th>Snapshot ({{ page_obj.paginator.count }})</th>
+                        <th>Snapshot{% if page_obj.paginator.has_exact_count %} ({{ page_obj.paginator.count }}){% endif %}</th>
                         <th class="snapshot-tags-cell">Tags</th>
                         <th class="snapshot-status-cell">Status</th>
                         <th class="snapshot-files-cell">Files</th>
@@ -489,7 +489,7 @@
             </table>
         </div>
         <div class="public-pagination">
-            Showing {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }} total
+            Showing {{ page_obj.start_index }}-{{ page_obj.end_index }}{% if page_obj.has_next %}+{% elif page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.count }} total{% endif %}
             <br>
             <span class="step-links">
                 {% if page_obj.has_previous %}
@@ -498,11 +498,13 @@
                 {% endif %}
 
                 <span class="current">
-                    Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+                    Page {{ page_obj.number }}{% if page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.num_pages }}{% endif %}
                 </span>
 
                 {% if page_obj.has_next %}
                     <a href="?{% url_replace page=page_obj.next_page_number %}">next</a>
+                {% endif %}
+                {% if page_obj.has_next and page_obj.paginator.has_exact_count %}
                     <a href="?{% url_replace page=page_obj.paginator.num_pages %}">last &raquo;</a>
                 {% endif %}
             </span>

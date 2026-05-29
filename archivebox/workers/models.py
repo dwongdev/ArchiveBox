@@ -1,10 +1,12 @@
 __package__ = "archivebox.workers"
 
+import inspect
 import logging
 
 from typing import Any, ClassVar
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from statemachine.mixins import MachineMixin
 
 from django.db import models
@@ -35,6 +37,9 @@ default_retry_at_field: models.DateTimeField = models.DateTimeField(default=time
 RETRY_AT_MAX = datetime.max.replace(tzinfo=UTC)
 ACTIVE_STATE_LEASE_SECONDS = 60
 logger = logging.getLogger(__name__)
+MODULE_PATH = Path(__file__).resolve()
+REPO_ROOT = MODULE_PATH.parents[2]
+PACKAGE_ROOT = MODULE_PATH.parents[1]
 
 ObjectState = State | str
 ObjectStateList = Iterable[ObjectState]
@@ -251,8 +256,31 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         if process.process_type != Process.TypeChoices.ORCHESTRATOR:
             root_type = getattr(process.root, "process_type", None)
             if root_type != Process.TypeChoices.ORCHESTRATOR:
+                caller = "<unknown>"
+                frame = inspect.currentframe()
+                frame = frame.f_back if frame is not None else None
+                try:
+                    while frame is not None:
+                        frame_path = Path(frame.f_code.co_filename).resolve()
+                        if frame_path == MODULE_PATH:
+                            frame = frame.f_back
+                            continue
+                        if frame_path.is_relative_to(PACKAGE_ROOT) and frame_path.name == "models.py" and frame.f_code.co_name == "save":
+                            frame = frame.f_back
+                            continue
+                        if "site-packages" in frame_path.parts:
+                            frame = frame.f_back
+                            continue
+                        try:
+                            caller_path = frame_path.relative_to(REPO_ROOT)
+                        except ValueError:
+                            caller_path = frame_path
+                        caller = f"{caller_path}:{frame.f_lineno}"
+                        break
+                finally:
+                    del frame
                 logger.warning(
-                    "%s.save() outside runner process: id=%s status=%s retry_at=%s process=%s root=%s; "
+                    "%s.save() outside runner process: id=%s status=%s retry_at=%s process=%s root=%s caller=%s; "
                     "queue/status writes outside the runner should usually use safe_update()",
                     type(self).__name__,
                     self.pk,
@@ -260,6 +288,7 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                     self.RETRY_AT,
                     process.process_type,
                     root_type,
+                    caller,
                 )
         super().save(*args, **kwargs)
 

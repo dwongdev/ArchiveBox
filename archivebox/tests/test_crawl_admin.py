@@ -65,6 +65,15 @@ def test_crawl_admin_add_view_renders_url_filter_alias_fields(client, admin_user
     assert b"Subpaths only" in response.content
 
 
+def test_crawl_schedule_admin_add_redirects_to_add_page_schedule_field(client, admin_user):
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.get(reverse("admin:crawls_crawlschedule_add"), HTTP_HOST=ADMIN_HOST)
+
+    assert response.status_code == 302
+    assert response["Location"] == "/add/?focus=schedule"
+
+
 def test_crawl_admin_form_saves_tags_editor_to_tags_str(crawl, admin_user):
     form = CrawlAdminForm(
         data={
@@ -120,9 +129,32 @@ def test_crawl_admin_resume_action_updates_only_status(client, admin_user, crawl
 
     assert response.status_code == 302
     crawl.refresh_from_db()
-    assert crawl.status == Crawl.StatusChoices.STARTED
+    assert crawl.status == Crawl.StatusChoices.QUEUED
     assert crawl.retry_at is not None
     assert crawl.notes == "unsaved-change-guard"
+
+
+def test_crawl_admin_pause_action_updates_only_crawl_scheduler_row(client, admin_user, crawl):
+    snapshots = crawl.create_snapshots_from_urls()
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.post(
+        reverse("admin:crawls_crawl_changelist"),
+        data={
+            "action": "pause_selected_crawls",
+            "_selected_action": str(crawl.pk),
+            "index": "0",
+        },
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 302
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.PAUSED
+    assert list(Snapshot.objects.filter(pk__in=[snapshot.pk for snapshot in snapshots]).values_list("status", flat=True)) == [
+        Snapshot.StatusChoices.QUEUED,
+        Snapshot.StatusChoices.QUEUED,
+    ]
 
 
 @pytest.mark.django_db(transaction=True)
@@ -315,6 +347,85 @@ def test_create_snapshots_from_urls_respects_max_urls(admin_user):
     assert crawl.remaining_snapshot_capacity() == 0
     assert crawl.limit_stop_reason() == "crawl_max_urls"
     assert crawl.add_url({"url": "https://example.com/extra", "depth": 1}) is False
+
+
+def test_create_snapshots_from_urls_respects_only_new_exact_url_matches(admin_user):
+    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
+    Snapshot.objects.create(
+        url="https://example.com/existing",
+        crawl=existing_crawl,
+        timestamp="1700000000.001",
+    )
+    crawl = Crawl.objects.create(
+        urls="\n".join(
+            [
+                "https://example.com/existing",
+                "https://example.com/existing/",
+                "https://example.com/fresh",
+            ],
+        ),
+        config={"ONLY_NEW": True},
+        created_by=admin_user,
+    )
+
+    created = crawl.create_snapshots_from_urls()
+
+    assert [snapshot.url for snapshot in created] == [
+        "https://example.com/existing/",
+        "https://example.com/fresh",
+    ]
+    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 1
+
+
+def test_create_snapshots_from_urls_allows_existing_exact_url_when_only_new_false(admin_user):
+    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
+    Snapshot.objects.create(
+        url="https://example.com/existing",
+        crawl=existing_crawl,
+        timestamp="1700000000.002",
+    )
+    crawl = Crawl.objects.create(
+        urls="https://example.com/existing",
+        config={"ONLY_NEW": False},
+        created_by=admin_user,
+    )
+
+    created = crawl.create_snapshots_from_urls()
+
+    assert [snapshot.url for snapshot in created] == ["https://example.com/existing"]
+    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 2
+
+
+def test_create_discovered_snapshots_respects_only_new_exact_url_matches(admin_user):
+    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
+    Snapshot.objects.create(
+        url="https://example.com/existing",
+        crawl=existing_crawl,
+        timestamp="1700000000.003",
+    )
+    crawl = Crawl.objects.create(
+        urls="https://example.com/root",
+        max_depth=1,
+        config={"ONLY_NEW": True},
+        created_by=admin_user,
+    )
+    parent = crawl.create_snapshots_from_urls()[0]
+
+    created = crawl.create_discovered_snapshots(
+        parent,
+        [
+            {"url": "https://example.com/existing"},
+            {"url": "https://example.com/existing/"},
+            {"url": "https://example.com/fresh"},
+        ],
+        depth=1,
+    )
+
+    assert [snapshot.url for snapshot in created] == [
+        "https://example.com/existing/",
+        "https://example.com/fresh",
+    ]
+    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 1
 
 
 def test_url_filter_regex_lists_preserve_commas_and_split_on_newlines_only(admin_user):

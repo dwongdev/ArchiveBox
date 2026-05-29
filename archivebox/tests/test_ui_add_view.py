@@ -50,6 +50,9 @@ def test_add_view_renders_tag_editor_and_url_filter_fields(client, admin_user, m
         "crawl_max_concurrent_snapshots",
         "notes",
     }.issubset(form.fields)
+    assert b'name="url_filters_only_new"' in response.content
+    assert b"Only new URLs" in response.content
+    assert b"skip URLs you&#x27;ve previously saved" in response.content or b"skip URLs you've previously saved" in response.content
 
 
 def test_add_view_admin_renders_plugin_config_grid(client, admin_user, monkeypatch):
@@ -137,6 +140,7 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
             "crawl_max_concurrent_snapshots": "5",
             "url_filters_allowlist": "example.com\n*.example.com",
             "url_filters_denylist": "cdn.example.com",
+            "url_filters_only_new": "1",
             "notes": "Created from /add/",
             "schedule": "",
             "persona": "Default",
@@ -167,6 +171,37 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
     assert "ONLY_NEW" not in crawl.config
 
 
+def test_add_view_unchecked_only_new_sets_crawl_override(client, admin_user, monkeypatch):
+    monkeypatch.setenv("PUBLIC_ADD_VIEW", "true")
+    client.force_login(admin_user)
+
+    response = client.post(
+        reverse("add"),
+        data={
+            "url": "https://example.com/rearchive",
+            "tag": "",
+            "depth": "0",
+            "max_urls": "0",
+            "crawl_max_size": "0",
+            "snapshot_max_size": "0",
+            "url_filters_allowlist": "",
+            "url_filters_denylist": "",
+            "notes": "",
+            "schedule": "",
+            "persona": "Default",
+            "permissions": "public",
+            "index_only": "",
+            "config": "{}",
+        },
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 302, response.context["form"].errors if response.context else response.content.decode()
+    crawl = Crawl.objects.order_by("-created_at").first()
+    assert crawl is not None
+    assert crawl.config["ONLY_NEW"] is False
+
+
 def test_add_view_selected_persona_wins_over_stale_config_override(client, admin_user, monkeypatch):
     monkeypatch.setenv("PUBLIC_ADD_VIEW", "true")
     client.force_login(admin_user)
@@ -186,6 +221,7 @@ def test_add_view_selected_persona_wins_over_stale_config_override(client, admin
             "snapshot_max_size": "0",
             "url_filters_allowlist": "",
             "url_filters_denylist": "",
+            "url_filters_only_new": "1",
             "notes": "",
             "schedule": "",
             "persona": "Private",
@@ -223,6 +259,7 @@ def test_add_view_applies_plugin_config_overrides(client, admin_user, monkeypatc
             "snapshot_max_size": "0",
             "url_filters_allowlist": "",
             "url_filters_denylist": "",
+            "url_filters_only_new": "1",
             "notes": "",
             "schedule": "",
             "persona": "Default",
@@ -263,6 +300,7 @@ def test_add_view_public_submission_ignores_plugin_and_custom_config(client, adm
             "crawl_max_concurrent_snapshots": "2",
             "url_filters_allowlist": "example.com",
             "url_filters_denylist": "cdn.example.com",
+            "url_filters_only_new": "1",
             "notes": "public add",
             "schedule": "daily",
             "persona": "Default",
@@ -311,6 +349,7 @@ def test_add_view_queues_crawl_for_background_runner(client, admin_user, monkeyp
             "snapshot_max_size": "0",
             "url_filters_allowlist": "",
             "url_filters_denylist": "",
+            "url_filters_only_new": "1",
             "notes": "",
             "schedule": "",
             "persona": "Default",
@@ -352,6 +391,7 @@ def test_add_view_extracts_urls_from_mixed_text_input(client, admin_user, monkey
             "snapshot_max_size": "0",
             "url_filters_allowlist": "",
             "url_filters_denylist": "",
+            "url_filters_only_new": "1",
             "notes": "",
             "schedule": "",
             "persona": "Default",
@@ -399,6 +439,7 @@ def test_add_view_trims_trailing_punctuation_from_markdown_urls(client, admin_us
             "snapshot_max_size": "0",
             "url_filters_allowlist": "",
             "url_filters_denylist": "",
+            "url_filters_only_new": "1",
             "notes": "",
             "schedule": "",
             "persona": "Default",

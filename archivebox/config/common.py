@@ -37,6 +37,32 @@ _WARNED_SERVER_SECURITY_MODES: set[str] = set()
 _WARNED_ARCHIVING_CONFIGS: set[tuple[int, bool]] = set()
 
 
+def _legacy_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def permissions_from_legacy_public_flags(raw_config: Mapping[str, object]) -> str | None:
+    if str(raw_config.get("PERMISSIONS") or "").strip():
+        return None
+
+    public_snapshots = _legacy_bool(raw_config.get("PUBLIC_SNAPSHOTS"))
+    public_index = _legacy_bool(raw_config.get("PUBLIC_INDEX"))
+    if public_snapshots is False:
+        return "private"
+    if public_index is False:
+        return "unlisted"
+    if public_snapshots is True or public_index is True:
+        return "public"
+    return None
+
+
 def rprint(*args, file=None, **kwargs):
     console = _STDERR_CONSOLE if file is sys.stderr else _STDOUT_CONSOLE
     console.print(*args, **kwargs)
@@ -102,6 +128,7 @@ class StorageConfig(BaseConfigSet):
     OUTPUT_PERMISSIONS: str = Field(default="644")
     RESTRICT_FILE_NAMES: str = Field(default="windows")
     ENFORCE_ATOMIC_WRITES: bool = Field(default=True)
+    ALLOW_NO_UNIX_SOCKETS: bool = Field(default=False, alias="ARCHIVEBOX_ALLOW_NO_UNIX_SOCKETS")
 
     # not supposed to be user settable:
     DIR_OUTPUT_PERMISSIONS: str = Field(default="755")  # computed from OUTPUT_PERMISSIONS
@@ -192,6 +219,26 @@ class ServerConfig(BaseConfigSet):
             "unsafe-onedomain-noadmin",
             "danger-onedomain-fullreplay",
         )
+
+
+class DatabaseConfig(BaseConfigSet):
+    toml_section_header: str = "DATABASE_CONFIG"
+
+    DATABASE_NAME: str = Field(default=str(CONSTANTS.DATABASE_FILE), alias="ARCHIVEBOX_DATABASE_NAME")
+    SQLITE_JOURNAL_MODE: str = Field(
+        default="WAL",
+        alias="ARCHIVEBOX_SQLITE_JOURNAL_MODE",
+        pattern=r"(?i)^(DELETE|TRUNCATE|PERSIST|MEMORY|WAL|OFF)$",
+    )
+    SQLITE_MMAP_SIZE: int = Field(
+        default=0 if CONSTANTS.IN_DOCKER else 134217728,
+        alias="ARCHIVEBOX_SQLITE_MMAP_SIZE",
+        ge=0,
+    )
+    SQLITE_TIMEOUT: float = Field(default=30.0, alias="ARCHIVEBOX_SQLITE_TIMEOUT", ge=0)
+    SQLITE_BUSY_TIMEOUT: int = Field(default=30000, alias="ARCHIVEBOX_SQLITE_BUSY_TIMEOUT", ge=0)
+    SQLITE_LOCK_RETRY_TIMEOUT: float = Field(default=60.0, alias="ARCHIVEBOX_SQLITE_LOCK_RETRY_TIMEOUT", ge=0)
+    SQLITE_LOCK_RETRY_INTERVAL: float = Field(default=5.0, alias="ARCHIVEBOX_SQLITE_LOCK_RETRY_INTERVAL", gt=0)
 
 
 def _print_server_security_mode_warning(config: ServerConfig) -> None:
@@ -446,6 +493,7 @@ class ArchiveBoxBaseConfig(
     StorageConfig,
     GeneralConfig,
     ServerConfig,
+    DatabaseConfig,
     ArchivingConfig,
     SearchBackendConfig,
     LDAPConfig,
@@ -583,6 +631,9 @@ def get_config(
             config_data.update(dict(base_config))
     else:
         config_data.update(ArchiveBoxConfig().model_dump(mode="json"))
+        legacy_permissions = permissions_from_legacy_public_flags({**BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE), **os.environ})
+        if legacy_permissions:
+            config_data["PERMISSIONS"] = legacy_permissions
 
     scope_overrides: ConfigPayload = {}
 
@@ -602,8 +653,13 @@ def get_config(
         scope_overrides.update(crawl.config)
 
     if crawl is not None:
-        scope_overrides["CRAWL_OUTPUT_DIR"] = crawl.output_dir
-        scope_overrides["CRAWL_DIR"] = crawl.output_dir
+        crawl_output_dir = None
+        if not overrides or "CRAWL_OUTPUT_DIR" not in overrides or "CRAWL_DIR" not in overrides:
+            crawl_output_dir = crawl.output_dir
+        if not overrides or "CRAWL_OUTPUT_DIR" not in overrides:
+            scope_overrides["CRAWL_OUTPUT_DIR"] = crawl_output_dir
+        if not overrides or "CRAWL_DIR" not in overrides:
+            scope_overrides["CRAWL_DIR"] = crawl_output_dir
 
     if snapshot is not None and snapshot.config:
         scope_overrides.update(snapshot.config)
@@ -616,6 +672,10 @@ def get_config(
 
     if overrides:
         scope_overrides.update(overrides)
+
+    legacy_scope_permissions = permissions_from_legacy_public_flags(scope_overrides)
+    if legacy_scope_permissions:
+        scope_overrides["PERMISSIONS"] = legacy_scope_permissions
 
     archivebox_scope_overrides = {key: value for key, value in scope_overrides.items() if key in _archivebox_config_input_names()}
     config_data.update(archivebox_scope_overrides)
@@ -655,6 +715,7 @@ def get_all_configs() -> dict[str, BaseConfigSet]:
         "STORAGE_CONFIG": StorageConfig(),
         "GENERAL_CONFIG": GeneralConfig(),
         "SERVER_CONFIG": ServerConfig(),
+        "DATABASE_CONFIG": DatabaseConfig(),
         "ARCHIVING_CONFIG": ArchivingConfig(),
         "SEARCH_BACKEND_CONFIG": SearchBackendConfig(),
         "LDAP_CONFIG": LDAPConfig(),

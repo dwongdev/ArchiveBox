@@ -38,7 +38,7 @@ class Command(BaseCommand):
             worker_type="worker_runner_watch",
             pwd=str(CONSTANTS.DATA_DIR),
             url=bind_url,
-            timeout=0,
+            timeout=CONSTANTS.MAX_HOOK_RUNTIME_SECONDS,
         )
 
         interval = max(0.2, float(kwargs.get("interval", 1.0)))

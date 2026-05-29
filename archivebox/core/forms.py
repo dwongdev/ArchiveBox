@@ -728,6 +728,13 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         self.fields["timeout"].initial = default_config.TIMEOUT
         self.fields["crawl_max_concurrent_snapshots"].initial = default_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS
         self.fields["delete_after"].initial = default_config.DELETE_AFTER
+        self.fields["url_filters"].initial = {
+            "allowlist": "",
+            "denylist": "",
+            "same_domain_only": False,
+            "subpaths_only": False,
+            "only_new": bool(default_config.ONLY_NEW),
+        }
 
         if self.is_bound:
             selected_persona = (
@@ -796,6 +803,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             "denylist": "\n".join(Crawl.split_filter_patterns(value.get("denylist", ""))),
             "same_domain_only": bool(value.get("same_domain_only")),
             "subpaths_only": bool(value.get("subpaths_only")),
+            "only_new": bool(value.get("only_new")),
         }
 
     def clean_max_urls(self):

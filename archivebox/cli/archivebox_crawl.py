@@ -263,10 +263,10 @@ def update_crawls(
                 elif status == Crawl.StatusChoices.STARTED:
                     crawl.update_and_requeue(status=Crawl.StatusChoices.STARTED, retry_at=timezone.now())
             if max_depth is not None:
+                crawl.safe_update({"max_depth": max_depth, "modified_at": timezone.now()}, refresh=False)
                 crawl.max_depth = max_depth
-                crawl.save(update_fields=["max_depth", "modified_at"])
             elif not status:
-                crawl.save(update_fields=["modified_at"])
+                crawl.safe_update({"modified_at": timezone.now()}, refresh=False)
             updated_count += 1
 
             if not is_tty:

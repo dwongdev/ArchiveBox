@@ -3,7 +3,9 @@ from datetime import timedelta
 
 import pytest
 import requests
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.auth import get_user_model
+from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from django.utils import timezone
 
 from archivebox.core.models import ArchiveResult, Snapshot, Tag
@@ -88,6 +90,114 @@ def test_archiveresult_upload_api_queues_snapshot_maintenance_without_finalizing
     assert sealed_snapshot.status == Snapshot.StatusChoices.SEALED
     assert sealed_snapshot.retry_at is not None
     assert sealed_snapshot.downloaded_at is not None
+
+
+def test_archiveresult_patch_upload_finalizes_queued_result(client):
+    from archivebox.api.auth import get_or_create_api_token
+
+    user = get_user_model().objects.create_superuser(
+        username="patchuploadapiadmin",
+        email="patchuploadapiadmin@example.com",
+        password="testpass123",
+    )
+    api_token = get_or_create_api_token(user)
+    assert api_token is not None
+
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by=user,
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=None,
+    )
+    snapshot = Snapshot.objects.create(
+        url="https://example.com/upload-patch",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+        retry_at=None,
+    )
+    result = ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="dom",
+        hook_name="on_Snapshot__archivebox_browser_extension_upload",
+        status=ArchiveResult.StatusChoices.QUEUED,
+    )
+
+    response = client.generic(
+        "PATCH",
+        f"/api/v1/core/archiveresult/{result.id}",
+        encode_multipart(
+            BOUNDARY,
+            {
+                "files": SimpleUploadedFile("output.html", b"<html>uploaded</html>", content_type="text/html"),
+                "output_paths": "output.html",
+                "output_str": "output.html",
+            },
+        ),
+        content_type=MULTIPART_CONTENT,
+        HTTP_HOST="api.archivebox.localhost:8000",
+        HTTP_X_ARCHIVEBOX_API_KEY=api_token.token,
+    )
+    assert response.status_code == 200, response.content
+
+    result.refresh_from_db()
+    snapshot.refresh_from_db()
+    assert result.status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result.output_str == "output.html"
+    assert snapshot.status == Snapshot.StatusChoices.SEALED
+    assert snapshot.retry_at is not None
+
+
+def test_crawl_cancel_api_defers_cleanup_to_runner(client):
+    from archivebox.api.auth import get_or_create_api_token
+    from archivebox.services.runner import run_due_crawl
+
+    user = get_user_model().objects.create_superuser(
+        username="cancelapiadmin",
+        email="cancelapiadmin@example.com",
+        password="testpass123",
+    )
+    api_token = get_or_create_api_token(user)
+    assert api_token is not None
+
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by=user,
+        status=Crawl.StatusChoices.STARTED,
+        retry_at=timezone.now() + timedelta(minutes=5),
+    )
+    child = Snapshot.objects.create(
+        url="https://example.com/cancel-child",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.STARTED,
+        retry_at=timezone.now() + timedelta(minutes=5),
+    )
+    crawl.output_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = crawl.output_dir / "cleanup-test.pid"
+    pid_file.write_text("12345")
+
+    response = client.patch(
+        f"/api/v1/crawls/crawl/{crawl.id}",
+        {"action": "cancel"},
+        content_type="application/json",
+        HTTP_HOST="api.archivebox.localhost:8000",
+        HTTP_X_ARCHIVEBOX_API_KEY=api_token.token,
+    )
+    assert response.status_code == 200, response.content
+
+    crawl.refresh_from_db()
+    child.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert crawl.retry_at is not None
+    assert crawl.retry_at <= timezone.now()
+    assert child.status == Snapshot.StatusChoices.STARTED
+    assert child.retry_at is not None
+    assert child.retry_at <= timezone.now()
+    assert pid_file.exists()
+
+    assert run_due_crawl(crawl, lock_seconds=60) is True
+    crawl.refresh_from_db()
+    assert crawl.retry_at is None
+    assert not pid_file.exists()
 
 
 @pytest.mark.timeout(180)

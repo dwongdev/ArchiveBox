@@ -22,6 +22,7 @@ from django.urls import reverse_lazy
 from django.utils import timezone
 from statemachine import State, registry
 from archivebox.config.common import rprint as print
+from archivebox.core.permissions import PERMISSIONS_VALUES, normalize_permissions
 
 from archivebox.base_models.models import (
     ModelWithUUID,
@@ -73,8 +74,15 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
         self.label = self.label or (self.template.label if self.template else "")
         super().save(*args, **kwargs)
         if self.template:
+            self.template.safe_update(
+                {
+                    "schedule_id": self.pk,
+                    "modified_at": timezone.now(),
+                },
+                refresh=False,
+            )
+            self.template.schedule_id = self.pk
             self.template.schedule = self
-            self.template.save()
 
     @property
     def last_run_at(self):
@@ -187,20 +195,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return get_config(crawl=self).DELETE_AFTER
 
     def pause(self, *, save: bool = True) -> bool:
-        paused = super().pause(save=save)
-        if paused and self.pk:
-            from archivebox.core.models import ArchiveResult, Snapshot
-
-            active_snapshots = self.snapshot_set.filter(
-                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
-            )
-            active_snapshots.update(
-                status=Snapshot.StatusChoices.PAUSED,
-                retry_at=RETRY_AT_MAX,
-                modified_at=timezone.now(),
-            )
-            ArchiveResult.pause_queryset(ArchiveResult.objects.filter(snapshot__crawl=self))
-        return paused
+        return super().pause(save=save)
 
     def resume(self, *, when=None, save: bool = True) -> bool:
         resumed = super().resume(when=when, save=save)
@@ -220,31 +215,60 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return resumed
 
     def cancel(self) -> None:
-        if self.status != self.StatusChoices.SEALED:
-            self.sm.seal()
-        else:
-            scheduled_children = self.schedule_child_snapshots_for_sealing()
-            if scheduled_children or self.retry_at is not None:
-                self.update_and_requeue(retry_at=None)
+        now = timezone.now()
+        self.schedule_child_snapshots_for_sealing()
+        # User-initiated cancellation may come from an admin/API request while
+        # the runner owns the crawl lease. This is intentionally a plain
+        # conditional UPDATE instead of CAS: cancellation is an idempotent user
+        # command, not a stale iterator write. Keep it to a tight scheduler row
+        # update and let the runner claim the SEALED+due row for cleanup hooks.
+        type(self).objects.filter(pk=self.pk).exclude(status=self.StatusChoices.SEALED).update(
+            status=self.StatusChoices.SEALED,
+            retry_at=now,
+            modified_at=now,
+        )
+        self.status = self.StatusChoices.SEALED
+        self.retry_at = now
 
     def schedule_child_snapshots_for_sealing(self) -> int:
         from archivebox.core.models import Snapshot
 
         now = timezone.now()
         # Cancellation seals the Crawl first, then lets the runner seal each
-        # child Snapshot through its own state machine. We only write retry_at
-        # here so Snapshot cleanup/save side effects still happen per row, and
-        # so SEALED+retry_at maintenance work remains a separate code path.
-        return (
-            self.snapshot_set.filter(
-                status__in=[
-                    Snapshot.StatusChoices.QUEUED,
-                    Snapshot.StatusChoices.STARTED,
-                    Snapshot.StatusChoices.PAUSED,
-                ],
-            )
-            .filter(Q(retry_at__isnull=True) | Q(retry_at__gt=now))
-            .update(retry_at=now, modified_at=now)
+        # child Snapshot through its own state machine. Active children that
+        # are already due need no write; the runner will claim them as-is.
+        active_children = self.snapshot_set.filter(
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+            ],
+        )
+        return active_children.filter(
+            Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+        ).update(
+            retry_at=now,
+            modified_at=now,
+        )
+
+    def schedule_child_snapshots_for_pause(self) -> int:
+        from archivebox.core.models import Snapshot
+
+        now = timezone.now()
+        # Parent pause is a scheduler command. Wake child rows only; each
+        # Snapshot runner claim performs the real pause transition and cascades
+        # its own ArchiveResults, keeping request/admin transactions tiny.
+        active_children = self.snapshot_set.filter(
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+            ],
+        )
+        return active_children.filter(
+            Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+        ).update(
+            retry_at=now,
+            modified_at=now,
         )
 
     @classmethod
@@ -263,6 +287,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             previous_tag_names = set(self.parse_tag_names(old_crawl.tags_str or ""))
 
         config = dict(self.config or {})
+        if str(config.get("PERMISSIONS") or "").strip().lower() not in PERMISSIONS_VALUES:
+            from archivebox.config.common import get_config
+
+            persona = self.persona if self.persona_id else None
+            user = self.created_by if self.created_by_id else None
+            config["PERMISSIONS"] = normalize_permissions(get_config(persona=persona, user=user, include_machine=True).PERMISSIONS)
         if "CRAWL_MAX_CONCURRENT_SNAPSHOTS" in config:
             raw_concurrency = config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]
             if raw_concurrency in (None, ""):
@@ -436,8 +466,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         )
         return crawl
 
-    @property
-    def output_dir(self) -> Path:
+    def output_dir_for_config(self, runtime_config: Mapping[str, Any] | Any) -> Path:
         """
         Construct output directory: archive/users/{username}/crawls/{YYYYMMDD}/{domain}/{crawl-id}
         Domain is extracted from the first URL in the crawl.
@@ -454,12 +483,14 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 break
         domain = Snapshot.extract_domain_from_url(first_url) if first_url else "unknown"
 
-        runtime_config = getattr(self, "_runtime_config", None)
-        if runtime_config is None:
-            from archivebox.config.common import get_config
+        users_dir = Path(runtime_config["USERS_DIR"]) if isinstance(runtime_config, Mapping) else runtime_config.USERS_DIR
+        return users_dir / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
 
-            runtime_config = get_config(resolve_plugins=False)
-        return runtime_config.USERS_DIR / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
+    @property
+    def output_dir(self) -> Path:
+        from archivebox.config.common import get_config
+
+        return self.output_dir_for_config(get_config(resolve_plugins=False))
 
     def get_urls_list(self) -> list[str]:
         """Get list of URLs from urls field, filtering out comments and empty lines."""
@@ -824,6 +855,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             List of newly created Snapshot objects
         """
         from archivebox.core.models import Snapshot, Tag
+        from archivebox.config.common import get_config
         from archivebox.misc.util import fix_url_from_markdown, sanitize_extracted_url
 
         if self.status == self.StatusChoices.SEALED:
@@ -832,6 +864,8 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         created_snapshots = []
         crawl_tag_names = self.current_tag_names()
         tags_by_name: dict[str, Tag] = {}
+        config = get_config(crawl=self)
+        only_new_urls = bool(config.ONLY_NEW) and not bool(config.OVERWRITE)
 
         for line in self.urls.splitlines():
             if not line.strip():
@@ -865,6 +899,8 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 print(f"[yellow][!] Skipping internal ArchiveBox snapshot URL: {url}[/yellow]")
                 continue
             if not self.url_passes_filters(url):
+                continue
+            if only_new_urls and Snapshot.objects.filter(url=url).exists():
                 continue
 
             # Skip if depth exceeds max_depth
@@ -1003,7 +1039,8 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         if not deduped_records:
             return []
 
-        existing_urls = set(self.snapshot_set.filter(url__in=deduped_records.keys()).values_list("url", flat=True))
+        existing_scope = Snapshot.objects if bool(config.ONLY_NEW) and not bool(config.OVERWRITE) else self.snapshot_set
+        existing_urls = set(existing_scope.filter(url__in=deduped_records.keys()).values_list("url", flat=True))
         urls = [url for url in deduped_records.keys() if url not in existing_urls]
         remaining = self.remaining_snapshot_capacity()
         if remaining is not None:
@@ -1016,7 +1053,11 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             Snapshot(
                 url=url,
                 timestamp=str((now + timedelta(microseconds=index)).timestamp()),
-                title=str(deduped_records[url].get("title") or "").strip()[:512] or None,
+                title=Snapshot._normalize_title_candidate(
+                    str(deduped_records[url].get("title") or "").strip()[:512],
+                    snapshot_url=url,
+                )
+                or None,
                 crawl=self,
                 parent_snapshot=parent_snapshot,
                 depth=depth,
@@ -1533,16 +1574,30 @@ class CrawlMachine(BaseStateMachine):
             retry_at=RETRY_AT_MAX,
             status=Crawl.StatusChoices.PAUSED,
         )
+        self.crawl.schedule_child_snapshots_for_pause()
 
     @sealed.enter
     def enter_sealed(self):
-        self.crawl.schedule_child_snapshots_for_sealing()
-        # Clean up background hooks and run on_CrawlEnd hooks
-        self.crawl.cleanup()
-
+        now = timezone.now()
         self.crawl.status = Crawl.StatusChoices.SEALED
         self.crawl.retry_at = None
-        self.crawl.save(update_fields=["status", "retry_at", "modified_at"])
+        updated = self.crawl.safe_update(
+            {
+                "status": Crawl.StatusChoices.SEALED,
+                "retry_at": None,
+                "modified_at": now,
+            },
+            refresh=False,
+        )
+        if not updated:
+            self.crawl.refresh_from_db()
+            return
+        self.crawl.modified_at = now
+
+        self.crawl.schedule_child_snapshots_for_sealing()
+        # Clean up background hooks and run on_CrawlEnd hooks after the final
+        # state is visible so cleanup projectors cannot resurrect the crawl.
+        self.crawl.cleanup()
 
 
 # =============================================================================

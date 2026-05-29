@@ -1010,6 +1010,49 @@ def test_crawl_completed_event_requeues_active_snapshots():
 
 
 @pytest.mark.django_db(transaction=True)
+def test_crawl_start_event_does_not_resurrect_cancelled_crawl():
+    from django.utils import timezone
+
+    from archivebox.base_models.models import get_or_create_system_user_pk
+    from archivebox.crawls.models import Crawl
+    from archivebox.services.crawl_service import CrawlService
+    from abx_dl.events import CrawlStartEvent
+    from abx_dl.orchestrator import create_bus
+
+    now = timezone.now()
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by_id=get_or_create_system_user_pk(),
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=now,
+    )
+
+    bus = create_bus(name=f"test_crawl_start_cancelled_{str(crawl.id).replace('-', '_')}")
+    service = CrawlService(bus, crawl_id=str(crawl.id))
+    assert service is not None
+
+    async def emit_start() -> None:
+        try:
+            event = CrawlStartEvent(
+                url="https://example.com",
+                snapshot_id="",
+                output_dir=str(crawl.output_dir),
+            )
+            emitted = bus.emit(event)
+            await emitted.wait()
+            await emitted.event_results_list()
+            await bus.wait_until_idle()
+        finally:
+            await bus.destroy()
+
+    asyncio.run(emit_start())
+
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert crawl.retry_at == now
+
+
+@pytest.mark.django_db(transaction=True)
 def test_crawl_cleanup_event_requeues_unfinished_crawl():
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.crawls.models import Crawl

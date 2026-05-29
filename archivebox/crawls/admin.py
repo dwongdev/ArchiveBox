@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 from django import forms
 from django.core.paginator import Paginator
-from django.http import JsonResponse, HttpRequest, HttpResponseNotAllowed
+from django.http import JsonResponse, HttpRequest, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.urls import path, reverse
@@ -13,7 +13,7 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Case, CharField, Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Value, When
+from django.db.models import Case, CharField, Count, IntegerField, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Coalesce
 
 
@@ -21,12 +21,19 @@ from django_object_actions import action
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 
-from archivebox.config.common import get_config
 from archivebox.core.models import Snapshot
-from archivebox.core.permissions import PERMISSIONS_PRIVATE, PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED
+from archivebox.core.permissions import (
+    PERMISSIONS_CHOICES,
+    PERMISSIONS_META,
+    PERMISSIONS_PRIVATE,
+    PERMISSIONS_PUBLIC,
+    PERMISSIONS_UNLISTED,
+    PERMISSIONS_VALUES,
+    normalize_permissions,
+)
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.crawls.models import Crawl, CrawlSchedule
-from archivebox.personas.models import Persona
+from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.workers.models import RETRY_AT_MAX
 
 
@@ -61,15 +68,6 @@ def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, 
     if status_filter in valid_statuses:
         filtered_qs = filtered_qs.filter(status=status_filter)
 
-    global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-    persona_ids_by_permissions = {
-        PERMISSIONS_PUBLIC: [],
-        PERMISSIONS_UNLISTED: [],
-        PERMISSIONS_PRIVATE: [],
-    }
-    for persona in Persona.objects.only("id", "permissions"):
-        persona_ids_by_permissions[persona.permissions or global_permissions].append(str(persona.id))
-
     snapshots_qs = filtered_qs.order_by("-created_at").annotate(
         total_results=Count("archiveresult"),
         succeeded_results=Count("archiveresult", filter=Q(archiveresult__status="succeeded")),
@@ -83,10 +81,7 @@ def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, 
             When(crawl__permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
             When(crawl__permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
             When(crawl__permissions=PERMISSIONS_PRIVATE, then=Value(PERMISSIONS_PRIVATE)),
-            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_PUBLIC], then=Value(PERMISSIONS_PUBLIC)),
-            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_UNLISTED], then=Value(PERMISSIONS_UNLISTED)),
-            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_PRIVATE], then=Value(PERMISSIONS_PRIVATE)),
-            default=Value(global_permissions),
+            default=Value(PERMISSIONS_PRIVATE),
             output_field=CharField(),
         ),
     )
@@ -479,22 +474,23 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     form = CrawlAdminForm
     change_form_template = "admin/crawls/crawl/change_form.html"
     list_select_related = ()
+    paginator = AcceleratedPaginator
+    show_full_result_count = False
     list_display = (
-        "id",
+        "short_id",
+        "permissions_badge",
         "created_at",
-        "created_by",
-        "max_depth",
-        "stop_reason_badge",
-        "pause_control",
-        "resume_control",
+        "owner",
+        "depth",
+        "status_with_stop_reason",
+        "pause_resume_control",
         "label",
         "notes",
         "urls_preview",
         "schedule_str",
-        "status",
         "retry_at",
-        "health_display",
-        "num_snapshots",
+        "num_archived_snapshots",
+        "num_total_snapshots",
     )
     sort_fields = (
         "id",
@@ -579,39 +575,111 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     list_filter = (MaxDepthListFilter, "schedule", "created_by", "status", "retry_at")
     ordering = ["-created_at", "-retry_at"]
     list_per_page = 50
-    actions = ["pause_selected_crawls", "resume_selected_crawls", "delete_selected_batched"]
+    actions = [
+        "pause_selected_crawls",
+        "resume_selected_crawls",
+        "seal_selected_crawls",
+        "delete_selected_batched",
+        "set_crawl_permissions",
+    ]
     change_actions = ["recrawl"]
+
+    def __init__(self, model, admin_site):
+        super().__init__(model, admin_site)
+        self.crawl_admin_base_config = None
+        self.stop_reason_cache = {}
+        self.persona_limit_config_cache = {}
 
     class Media:
         css = {"all": ("admin/crawls/crawl_change.css",)}
         js = ("admin/crawls/crawl_admin.js",)
 
+    def changelist_view(self, request, extra_context=None):
+        self.request = request
+        self.crawl_admin_base_config = request.archivebox_config
+        self.stop_reason_cache = {}
+        self.persona_limit_config_cache = {}
+        response = super().changelist_view(request, extra_context)
+        cl = getattr(response, "context_data", {}).get("cl") if hasattr(response, "context_data") else None
+        if cl is not None and not self.should_annotate_snapshot_counts(request):
+            self.hydrate_visible_snapshot_counts(cl.result_list)
+        return response
+
+    def should_annotate_snapshot_counts(self, request):
+        ordering = request.GET.get("o", "")
+        if not ordering:
+            return False
+        list_display = list(self.get_list_display(request))
+        count_positions = {
+            str(list_display.index("num_archived_snapshots") + 1),
+            str(list_display.index("num_total_snapshots") + 1),
+        }
+        return any(part.lstrip("-") in count_positions for part in ordering.split("."))
+
+    def hydrate_visible_snapshot_counts(self, crawls):
+        crawl_list = list(crawls)
+        crawl_ids = [crawl.pk for crawl in crawl_list]
+        if not crawl_ids:
+            return
+        counts = {
+            str(row["crawl_id"]): row
+            for row in Snapshot.objects.filter(crawl_id__in=crawl_ids)
+            .values("crawl_id")
+            .annotate(
+                num_snapshots_cached=Count("pk"),
+                num_archived_snapshots_cached=Count("pk", filter=Q(status=Snapshot.StatusChoices.SEALED)),
+            )
+        }
+        for crawl in crawl_list:
+            row = counts.get(str(crawl.pk), {})
+            crawl.num_snapshots_cached = row.get("num_snapshots_cached", 0)
+            crawl.num_archived_snapshots_cached = row.get("num_archived_snapshots_cached", 0)
+
     def get_queryset(self, request):
         """Keep joins page-local while computing per-row snapshot counts in the page query."""
-        snapshot_count = (
-            Snapshot.objects.filter(crawl_id=OuterRef("pk")).order_by().values("crawl_id").annotate(count=Count("pk")).values("count")
-        )
-        return (
+        queryset = (
             super()
             .get_queryset(request)
             .prefetch_related(
                 "created_by",
-                Prefetch("schedule", queryset=CrawlSchedule.objects.select_related("template")),
+                "persona",
+                "schedule__template",
             )
-            .annotate(
+        )
+        if self.should_annotate_snapshot_counts(request):
+            snapshot_count = (
+                Snapshot.objects.filter(crawl_id=OuterRef("pk")).order_by().values("crawl_id").annotate(count=Count("pk")).values("count")
+            )
+            archived_snapshot_count = (
+                Snapshot.objects.filter(crawl_id=OuterRef("pk"), status=Snapshot.StatusChoices.SEALED)
+                .order_by()
+                .values("crawl_id")
+                .annotate(count=Count("pk"))
+                .values("count")
+            )
+            queryset = queryset.annotate(
                 num_snapshots_cached=Coalesce(
                     Subquery(snapshot_count, output_field=IntegerField()),
                     Value(0),
                 ),
+                num_archived_snapshots_cached=Coalesce(
+                    Subquery(archived_snapshot_count, output_field=IntegerField()),
+                    Value(0),
+                ),
             )
-        )
+        return queryset
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         self.request = request
+        self.crawl_admin_base_config = request.archivebox_config
+        self.stop_reason_cache = {}
+        self.persona_limit_config_cache = {}
         crawl = self.get_object(request, object_id)
+        if crawl:
+            self.hydrate_visible_snapshot_counts([crawl])
         extra_context = {
             **(extra_context or {}),
-            "crawl_stop_reason": crawl.limit_stop_reason() if crawl else "",
+            "crawl_stop_reason": self.stop_reason_for_crawl(crawl) if crawl else "",
             "crawl_snapshots_changelist": self.snapshots_changelist(crawl) if crawl else "",
         }
         return super().change_view(request, object_id, form_url, extra_context)
@@ -636,10 +704,20 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
                 self.admin_site.admin_view(self.exclude_domain_view),
                 name="crawls_crawl_snapshot_exclude_domain",
             ),
+            path(
+                "<path:object_id>/set-permissions/",
+                self.admin_site.admin_view(self.set_permissions_view),
+                name="crawls_crawl_set_permissions",
+            ),
         ]
         return custom_urls + urls
 
-    @admin.action(description="Delete selected crawls")
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    @admin.action(description="Delete")
     def delete_selected_batched(self, request, queryset):
         """Delete crawls in a single transaction to avoid SQLite concurrency issues."""
         from django.db import transaction
@@ -655,41 +733,97 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
         messages.success(request, f"Successfully deleted {total} crawls ({deleted_count} total objects including related records).")
 
-    @admin.action(description="Pause selected crawls")
+    @admin.action(description="Pause")
     def pause_selected_crawls(self, request, queryset):
-        paused = 0
-        for crawl in queryset.exclude(status=Crawl.StatusChoices.SEALED).iterator(chunk_size=100):
-            paused += int(crawl.pause())
+        # Admin changelist actions must stay set-based. Calling crawl.pause()
+        # here fans out into per-crawl Snapshot/ArchiveResult writes and can
+        # hold SQLite behind the request for minutes on large archives. The
+        # Crawl row is the scheduler signal; the runner observes PAUSED and
+        # owns child-row lifecycle work.
+        paused = queryset.exclude(status__in=[Crawl.StatusChoices.SEALED, Crawl.StatusChoices.PAUSED]).update(
+            status=Crawl.StatusChoices.PAUSED,
+            retry_at=RETRY_AT_MAX,
+            modified_at=timezone.now(),
+        )
         if paused:
             messages.success(request, f"Paused {paused} crawl(s). The runner will stop scheduling new work on the next sweep.")
         else:
             messages.warning(request, "No active crawls were selected to pause.")
 
-    @admin.action(description="Resume selected crawls")
+    @admin.action(description="Resume")
     def resume_selected_crawls(self, request, queryset):
-        resumed = 0
-        for crawl in queryset.iterator(chunk_size=100):
-            if crawl.status == Crawl.StatusChoices.SEALED:
-                paused_at = timezone.now()
-                # Resume-from-sealed is an admin scheduler edit, not a full
-                # Crawl.save() operation. Guard the iterator-read row with
-                # modified_at so a stale changelist page cannot reopen a crawl
-                # that the runner/admin changed after this action started.
-                updated = crawl.safe_update(
-                    {
-                        "status": Crawl.StatusChoices.PAUSED,
-                        "retry_at": RETRY_AT_MAX,
-                        "modified_at": paused_at,
-                    },
-                    extra_filter={"status": Crawl.StatusChoices.SEALED},
-                )
-                if not updated:
-                    continue
-            resumed += int(crawl.resume())
+        # Keep resume symmetrical with pause: one tight scheduler UPDATE, no
+        # save() hooks and no child fanout in the request path. Paused child
+        # rows become runnable through their own resume/maintenance paths.
+        resumed = queryset.filter(status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED]).update(
+            status=Crawl.StatusChoices.QUEUED,
+            retry_at=timezone.now(),
+            modified_at=timezone.now(),
+        )
         if resumed:
             messages.success(request, f"Resumed {resumed} crawl(s). The runner will pick them up on the next sweep.")
         else:
             messages.warning(request, "No paused or sealed crawls were selected to resume.")
+
+    @admin.action(description="Seal")
+    def seal_selected_crawls(self, request, queryset):
+        now = timezone.now()
+        crawl_ids = list(queryset.exclude(status=Crawl.StatusChoices.SEALED).values_list("pk", flat=True))
+        if not crawl_ids:
+            messages.warning(request, "No unsealed crawls were selected to seal.")
+            return
+
+        Snapshot.objects.filter(
+            crawl_id__in=crawl_ids,
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+            ],
+        ).filter(
+            Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+        ).update(
+            retry_at=now,
+            modified_at=now,
+        )
+        sealed = (
+            Crawl.objects.filter(pk__in=crawl_ids)
+            .exclude(status=Crawl.StatusChoices.SEALED)
+            .update(
+                status=Crawl.StatusChoices.SEALED,
+                retry_at=now,
+                modified_at=now,
+            )
+        )
+        messages.success(request, f"Sealed {sealed} crawl(s). The runner will finish cleanup on the next sweep.")
+
+    @admin.action(description="Set Permissions ▾")
+    def set_crawl_permissions(self, request, queryset):
+        permissions = (request.POST.get("permissions") or "").strip().lower()
+        if permissions not in PERMISSIONS_VALUES:
+            messages.error(request, "Choose a valid permissions value.")
+            return
+        updated = self.update_crawl_permissions(queryset, permissions)
+        messages.success(request, f"Set permissions to {permissions} on {updated} crawl(s).")
+
+    def update_crawl_permissions(self, queryset, permissions):
+        now = timezone.now()
+        updated = 0
+        batch = []
+        for crawl in queryset.only("id", "config").iterator(chunk_size=500):
+            config = dict(crawl.config or {})
+            config["PERMISSIONS"] = permissions
+            crawl.config = config
+            crawl.modified_at = now
+            batch.append(crawl)
+            if len(batch) >= 500:
+                Crawl.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
+                updated += len(batch)
+                batch.clear()
+        if batch:
+            Crawl.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
+            updated += len(batch)
+        return updated
 
     @action(label="Recrawl", description="Create a new crawl with the same settings")
     def recrawl(self, request, obj):
@@ -719,43 +853,141 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="Stop Reason")
     def stop_reason_display(self, obj):
-        reason = obj.limit_stop_reason() if obj else ""
+        reason = self.stop_reason_for_crawl(obj) if obj else ""
         if not reason:
             return mark_safe('<span class="crawl-stop-reason crawl-stop-reason--empty">None</span>')
         return format_html('<span class="crawl-stop-reason">{}</span>', reason)
 
-    @admin.display(description="Stop Reason")
-    def stop_reason_badge(self, obj):
-        return self.stop_reason_display(obj)
+    def stop_reason_for_crawl(self, obj):
+        from abx_dl.limits import CrawlLimitState
 
-    @admin.display(description="Resume")
-    def resume_control(self, obj):
-        if obj.status != Crawl.StatusChoices.SEALED and not obj.is_paused:
-            return mark_safe('<span class="crawl-resume-muted">-</span>')
-        reason = "paused" if obj.is_paused else (obj.limit_stop_reason() or "sealed")
+        if obj.pk in self.stop_reason_cache:
+            return self.stop_reason_cache[obj.pk]
+
+        output_dir = obj.output_dir_for_config(self.crawl_admin_base_config)
+        config = self.limit_config_for_crawl(obj, output_dir)
+        reason = ""
+        if (output_dir / ".abx-dl" / "limits.json").exists():
+            config["CRAWL_DIR"] = str(output_dir)
+            reason = CrawlLimitState.from_config(config).get_stop_reason() or ""
+
+        max_urls = int(config["CRAWL_MAX_URLS"] or 0)
+        if not reason and max_urls > 0 and obj.num_snapshots_cached >= max_urls and obj.count_urls_for_limit() >= max_urls:
+            reason = "crawl_max_urls"
+
+        self.stop_reason_cache[obj.pk] = reason
+        return reason
+
+    def limit_config_for_crawl(self, obj, output_dir):
+        config = {
+            "CRAWL_DIR": str(output_dir),
+            "CRAWL_MAX_URLS": self.crawl_admin_base_config.CRAWL_MAX_URLS,
+            "CRAWL_MAX_SIZE": self.crawl_admin_base_config.CRAWL_MAX_SIZE,
+            "CRAWL_TIMEOUT": self.crawl_admin_base_config.CRAWL_TIMEOUT,
+            "SNAPSHOT_MAX_SIZE": self.crawl_admin_base_config.SNAPSHOT_MAX_SIZE,
+        }
+        if obj.persona_id:
+            if obj.persona_id not in self.persona_limit_config_cache:
+                self.persona_limit_config_cache[obj.persona_id] = {
+                    key: value for key, value in obj.persona.get_derived_config().items() if key in config
+                }
+            config.update(self.persona_limit_config_cache[obj.persona_id])
+        if obj.config:
+            config.update({key: value for key, value in obj.config.items() if key in config})
+        return config
+
+    @admin.display(description="Status", ordering="status")
+    def status_with_stop_reason(self, obj):
+        status = "PAUSED" if obj.is_paused else str(obj.status or "").upper()
+        reason = self.stop_reason_for_crawl(obj) if obj.status == Crawl.StatusChoices.SEALED else ""
+        if reason:
+            reason_label = reason.removeprefix("crawl_").replace("_", " ")
+            return format_html(
+                '<span class="crawl-status-group"><span class="crawl-status crawl-status--{}">{}</span><span class="crawl-status-reason crawl-status-reason--{}">{}</span></span>',
+                obj.status,
+                status,
+                reason,
+                reason_label,
+            )
+        return format_html('<span class="crawl-status crawl-status--{}">{}</span>', obj.status, status)
+
+    @admin.display(description="ID", ordering="id")
+    def short_id(self, obj):
+        short_id = str(obj.pk)[-8:]
+        return format_html('<a href="{}">{}</a>', obj.admin_change_url, short_id)
+
+    @admin.display(description="Owner", ordering="created_by")
+    def owner(self, obj):
+        return obj.created_by
+
+    @admin.display(description="Depth", ordering="max_depth")
+    def depth(self, obj):
+        return obj.max_depth
+
+    @admin.display(description="👁", ordering="permissions")
+    def permissions_badge(self, obj):
+        permissions = normalize_permissions(obj.permissions)
+        icon, label, fg, bg = PERMISSIONS_META[permissions]
+        menu_items = format_html_join(
+            "",
+            (
+                '<button type="button" class="snapshot-permissions-menu-item{}" data-permissions="{}">'
+                '<span class="snapshot-permissions-icon" aria-hidden="true" style="color:{}; background:{};">{}</span>'
+                "<span>{}</span>"
+                "</button>"
+            ),
+            (
+                (
+                    " is-active" if choice_value == permissions else "",
+                    choice_value,
+                    choice_fg,
+                    choice_bg,
+                    choice_icon,
+                    choice_label,
+                )
+                for choice_value, choice_label in PERMISSIONS_CHOICES
+                for choice_icon, _choice_title, choice_fg, choice_bg in [PERMISSIONS_META[choice_value]]
+            ),
+        )
         return format_html(
-            '<button type="button" class="button crawl-resume-row" data-crawl-id="{}" title="Resume crawl. Stop reason: {}">Resume</button>',
-            obj.pk,
-            reason,
+            '<span class="snapshot-permissions-quick" data-current-permissions="{}" data-permissions-url="{}">'
+            '<button type="button" class="snapshot-permissions-button snapshot-permissions-{}" title="{}" aria-label="Change crawl permissions: {}" aria-expanded="false">'
+            '<span class="snapshot-permissions-icon" aria-hidden="true" style="color:{}; background:{};">{}</span>'
+            "</button>"
+            '<span class="snapshot-permissions-menu" role="menu" hidden>{}</span>'
+            "</span>",
+            permissions,
+            reverse(f"{self.admin_site.name}:crawls_crawl_set_permissions", args=[obj.pk]),
+            permissions,
+            label,
+            label,
+            fg,
+            bg,
+            icon,
+            menu_items,
         )
 
     @admin.display(description="Pause")
-    def pause_control(self, obj):
-        if obj.status == Crawl.StatusChoices.SEALED:
-            return mark_safe('<span class="crawl-resume-muted">-</span>')
-        if obj.is_paused:
-            return mark_safe('<span class="crawl-resume-muted">Paused</span>')
+    def pause_resume_control(self, obj):
+        if obj.is_paused or obj.status == Crawl.StatusChoices.SEALED:
+            reason = "paused" if obj.is_paused else (self.stop_reason_for_crawl(obj) or "sealed")
+            return format_html(
+                '<button type="button" class="button crawl-resume-row" data-crawl-id="{}" title="Resume crawl. Stop reason: {}">Resume</button>',
+                obj.pk,
+                reason,
+            )
         return format_html(
             '<button type="button" class="button crawl-pause-row" data-crawl-id="{}" title="Pause crawl">Pause</button>',
             obj.pk,
         )
 
-    def num_snapshots(self, obj):
-        # Use cached annotation from get_queryset to avoid N+1
-        count = getattr(obj, "num_snapshots_cached", None)
-        if count is None:
-            count = obj.snapshot_set.count()
-        return count
+    @admin.display(description="Archived", ordering="num_archived_snapshots_cached")
+    def num_archived_snapshots(self, obj):
+        return obj.num_archived_snapshots_cached
+
+    @admin.display(description="Snapshots", ordering="num_snapshots_cached")
+    def num_total_snapshots(self, obj):
+        return obj.num_snapshots_cached
 
     @admin.display(description="Snapshots")
     def snapshots_changelist(self, obj):
@@ -826,6 +1058,19 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             },
         )
 
+    def set_permissions_view(self, request: HttpRequest, object_id: str):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+
+        permissions = (request.POST.get("permissions") or "").strip().lower()
+        if permissions not in PERMISSIONS_VALUES:
+            return HttpResponseBadRequest("Invalid permissions value")
+
+        crawl = get_object_or_404(Crawl, pk=object_id)
+        self.update_crawl_permissions(Crawl.objects.filter(pk=crawl.pk), permissions)
+        icon, label, fg, bg = PERMISSIONS_META[permissions]
+        return JsonResponse({"permissions": permissions, "icon": icon, "label": label, "fg": fg, "bg": bg})
+
     @admin.display(description="Schedule", ordering="schedule")
     def schedule_str(self, obj):
         if not obj.schedule:
@@ -836,12 +1081,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     def urls_preview(self, obj):
         first_url = next((line.strip() for line in (obj.urls or "").splitlines() if line.strip() and not line.strip().startswith("#")), "")
         return first_url[:80] + "..." if len(first_url) > 80 else first_url
-
-    @admin.display(description="Health", ordering="health")
-    def health_display(self, obj):
-        h = obj.health
-        color = "green" if h >= 80 else "orange" if h >= 50 else "red"
-        return format_html('<span style="color: {};">{}</span>', color, h)
 
     @admin.display(description="URLs")
     def urls_editor(self, obj):
@@ -941,6 +1180,9 @@ class CrawlScheduleAdmin(BaseModelAdmin):
     def change_view(self, request, object_id, form_url="", extra_context=None):
         self.request = request
         return super().change_view(request, object_id, form_url, extra_context)
+
+    def add_view(self, request, form_url="", extra_context=None):
+        return redirect("/add/?focus=schedule")
 
     def get_fieldsets(self, request, obj=None):
         if obj is None:

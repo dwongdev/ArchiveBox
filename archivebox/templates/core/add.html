@@ -487,6 +487,11 @@
                     if (permissionsSelect && permissionsValue) {
                         permissionsSelect.value = permissionsValue;
                     }
+                    const onlyNewInput = document.querySelector('input[name="url_filters_only_new"]');
+                    const onlyNewValue = personaData.effective_config?.ONLY_NEW;
+                    if (onlyNewInput && onlyNewValue !== undefined && onlyNewValue !== null) {
+                        onlyNewInput.checked = Boolean(onlyNewValue);
+                    }
                     if (typeof window.archiveboxSetPluginConfigValues === 'function') {
                         window.archiveboxSetPluginConfigValues(personaData.effective_config || {}, personaData.binary_urls || {});
                     }
@@ -1121,6 +1126,7 @@
                         event.target.matches('input[name="max_urls"]') ||
                         event.target.matches('input[name="url_filters_same_domain_only"]') ||
                         event.target.matches('input[name="url_filters_subpaths_only"]') ||
+                        event.target.matches('input[name="url_filters_only_new"]') ||
                         event.target.matches('#id_config_rows .kv-key') ||
                         event.target.matches('#id_config_rows .kv-value')
                     ) {
@@ -1293,6 +1299,17 @@
                 }
 
                 loadFormState();
+
+                const focusTarget = new URLSearchParams(window.location.search).get('focus');
+                if (focusTarget === 'schedule') {
+                    const scheduleInput = document.querySelector('[name="schedule"]');
+                    const advancedSection = scheduleInput?.closest('details');
+                    if (advancedSection) advancedSection.open = true;
+                    if (scheduleInput) {
+                        scheduleInput.scrollIntoView({ block: 'center' });
+                        scheduleInput.focus();
+                    }
+                }
 
                 // Form submission handler
                 document.getElementById('add-form').addEventListener('submit', function(event) {

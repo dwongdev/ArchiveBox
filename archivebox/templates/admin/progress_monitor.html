@@ -61,13 +61,14 @@
         flex-shrink: 0;
     }
     #progress-monitor .status-dot.running {
-        background: #3fb950;
-        box-shadow: 0 0 8px #3fb950;
+        background: #238636;
+        box-shadow: 0 0 8px #238636;
         animation: pulse 2s infinite;
     }
     #progress-monitor .status-dot.idle {
-        background: #d29922;
-        box-shadow: 0 0 4px #d29922;
+        background: #7ee787;
+        box-shadow: 0 0 4px #7ee787;
+        animation: idle-pulse 5s infinite;
     }
     #progress-monitor .status-dot.stopped {
         background: #6e7681;
@@ -76,8 +77,12 @@
         animation: flash 0.3s ease-out;
     }
     @keyframes pulse {
-        0%, 100% { opacity: 1; box-shadow: 0 0 8px #3fb950; }
-        50% { opacity: 0.6; box-shadow: 0 0 4px #3fb950; }
+        0%, 100% { opacity: 1; box-shadow: 0 0 8px #238636; }
+        50% { opacity: 0.6; box-shadow: 0 0 4px #238636; }
+    }
+    @keyframes idle-pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 4px #7ee787; }
+        50% { opacity: 0.65; box-shadow: 0 0 2px #7ee787; }
     }
     @keyframes flash {
         0% { transform: scale(1.5); }
@@ -104,23 +109,14 @@
         font-weight: 600;
         font-variant-numeric: tabular-nums;
     }
+    #progress-monitor .stat-value.compact {
+        font-size: 11px;
+        white-space: nowrap;
+    }
     #progress-monitor .stat-value.success { color: #3fb950; }
     #progress-monitor .stat-value.error { color: #f85149; }
     #progress-monitor .stat-value.warning { color: #d29922; }
     #progress-monitor .stat-value.info { color: #58a6ff; }
-    #progress-monitor .stat.clickable {
-        cursor: pointer;
-        padding: 2px 6px;
-        margin: -2px -6px;
-        border-radius: 4px;
-        transition: background 0.2s;
-    }
-    #progress-monitor .stat.clickable:hover {
-        background: rgba(255,255,255,0.1);
-    }
-    #progress-monitor .stat.clickable:active {
-        background: rgba(255,255,255,0.2);
-    }
 
     /* Toggle Button */
     #progress-monitor .toggle-btn {
@@ -172,6 +168,14 @@
         cursor: wait;
         border-color: #6e7681;
         color: #6e7681;
+    }
+    #progress-monitor .progress-overflow-note {
+        padding: 8px 12px;
+        color: #8b949e;
+        font-size: 11px;
+        text-align: center;
+        background: rgba(33, 38, 45, 0.55);
+        border-top: 1px solid #30363d;
     }
 
     /* Tree Container */
@@ -1043,20 +1047,20 @@
             </div>
             <div class="stats">
                 <div class="stat">
-                    <span class="stat-label">Processes</span>
-                    <span class="stat-value info" id="worker-count">0</span>
+                    <span class="stat-label">Crawls</span>
+                    <span class="stat-value compact info"><span id="crawls-active">0</span> active · <span id="crawls-queued">0</span> queued</span>
                 </div>
                 <div class="stat">
-                    <span class="stat-label">Queued</span>
-                    <span class="stat-value warning" id="total-queued">0</span>
+                    <span class="stat-label">Snapshots</span>
+                    <span class="stat-value compact info"><span id="snapshots-active">0</span> active · <span id="snapshots-queued">0</span> queued</span>
                 </div>
-                <div class="stat" id="stat-succeeded">
-                    <span class="stat-label">Done</span>
-                    <span class="stat-value success" id="total-succeeded">0</span>
+                <div class="stat">
+                    <span class="stat-label">Downloads</span>
+                    <span class="stat-value compact warning"><span id="downloads-active">0</span> active · <span id="downloads-queued">0</span> queued</span>
                 </div>
-                <div class="stat" id="stat-failed">
-                    <span class="stat-label">Failed</span>
-                    <span class="stat-value error" id="total-failed">0</span>
+                <div class="stat">
+                    <span class="stat-label">Indexing</span>
+                    <span class="stat-value compact success"><span id="indexing-active">0</span> active · <span id="indexing-queued">0</span> queued</span>
                 </div>
             </div>
         </div>
@@ -1285,11 +1289,8 @@
                 state: 'not-launched',
                 icon: '▯',
                 title: 'Waiting for browser',
-                subtitle: 'Live preview will appear as soon as Chrome publishes a page frame.',
+                subtitle: 'Live preview will appear whenever Chrome is active.',
             };
-        }
-        if (hasWork) {
-            screencastPanel.classList.add('visible');
         }
         if (target.type === 'placeholder') {
             const currentFrame = screencastPanel.querySelector('.screencast-frame img');
@@ -1310,6 +1311,7 @@
             }
             screencastPanel.dataset.mode = 'placeholder';
             screencastPanel.dataset.key = placeholderKey;
+            screencastPanel.classList.add('visible');
             screencastPanel.innerHTML = `
                 <a class="screencast-frame" href="${escapeAttr(crawlUrl)}" title="Open crawl admin">
                     <span class="screencast-placeholder ${escapeAttr(target.state)}">
@@ -1333,12 +1335,56 @@
         const linkUrl = snapshot.screencast_link || snapshot.view_url || adminUrl;
         const titleText = snapshot.title || formatUrl(snapshot.full_url || snapshot.url);
         const urlText = snapshot.full_url || snapshot.url || '';
+        const newUrl = snapshot.screencast_url;
+        const snapshotKey = `${target.crawl?.id || ''}|${snapshot.id || ''}`;
+        screencastPanel.dataset.desiredFrameKey = snapshotKey;
+
+        if (screencastPanel.dataset.mode !== 'frame' && !screencastPanel.querySelector('.screencast-frame img')?.getAttribute('src')) {
+            if (screencastPanel.dataset.pendingFrameSrc) return;
+            screencastPanel.dataset.pendingFrameSrc = newUrl;
+            screencastPanel.dataset.pendingFrameKey = snapshotKey;
+            const firstFrame = new Image();
+            firstFrame.decoding = 'async';
+            firstFrame.onload = () => {
+                (firstFrame.decode ? firstFrame.decode() : Promise.resolve()).catch(() => {}).finally(() => {
+                    if (screencastPanel.dataset.pendingFrameSrc !== newUrl) return;
+                    delete screencastPanel.dataset.pendingFrameSrc;
+                    delete screencastPanel.dataset.pendingFrameKey;
+                    if (screencastPanel.dataset.desiredFrameKey !== snapshotKey) return;
+                    screencastPanel.dataset.mode = 'frame';
+                    screencastPanel.dataset.key = '';
+                    screencastPanel.dataset.currentFrameSrc = newUrl;
+                    screencastPanel.innerHTML = `
+                        <a class="screencast-frame" href="${escapeAttr(linkUrl)}" title="Open active snapshot">
+                            <img src="${escapeAttr(newUrl)}" alt="" decoding="async" loading="eager">
+                        </a>
+                        <a class="screencast-caption" href="${escapeAttr(adminUrl)}" title="Open snapshot admin">
+                            <span class="screencast-dot"></span>
+                            <span class="screencast-text">
+                                <span class="screencast-title">${escapeHtml(titleText)}</span>
+                                <span class="screencast-url">${escapeHtml(urlText)}</span>
+                            </span>
+                        </a>
+                    `;
+                    screencastPanel.classList.add('visible');
+                });
+            };
+            firstFrame.onerror = () => {
+                if (screencastPanel.dataset.pendingFrameSrc === newUrl) {
+                    delete screencastPanel.dataset.pendingFrameSrc;
+                    delete screencastPanel.dataset.pendingFrameKey;
+                }
+            };
+            firstFrame.src = newUrl;
+            return;
+        }
+
         if (screencastPanel.dataset.mode !== 'frame') {
             screencastPanel.dataset.mode = 'frame';
             screencastPanel.dataset.key = '';
             screencastPanel.innerHTML = `
                 <a class="screencast-frame" href="" title="Open active snapshot">
-                    <img src="" alt="" decoding="async">
+                    <img src="" alt="" decoding="async" loading="eager">
                 </a>
                 <a class="screencast-caption" href="" title="Open snapshot admin">
                     <span class="screencast-dot"></span>
@@ -1362,22 +1408,32 @@
             img.style.opacity = '1';
             screencastPanel.classList.add('visible');
         }
-        if (img.dataset.src !== snapshot.screencast_url || !img.getAttribute('src')) {
-            const newUrl = snapshot.screencast_url;
-            img.dataset.src = newUrl;
+        if (screencastPanel.dataset.currentFrameSrc !== newUrl && screencastPanel.dataset.pendingFrameSrc !== newUrl && !screencastPanel.dataset.pendingFrameSrc) {
+            screencastPanel.dataset.pendingFrameSrc = newUrl;
+            screencastPanel.dataset.pendingFrameKey = snapshotKey;
             const nextFrame = new Image();
             nextFrame.decoding = 'async';
             nextFrame.onload = () => {
-                if (img.dataset.src === newUrl) {
-                    img.style.opacity = '1';
-                    img.src = newUrl;
+                (nextFrame.decode ? nextFrame.decode() : Promise.resolve()).catch(() => {}).finally(() => {
+                    if (screencastPanel.dataset.pendingFrameSrc !== newUrl) return;
+                    delete screencastPanel.dataset.pendingFrameSrc;
+                    delete screencastPanel.dataset.pendingFrameKey;
+                    if (screencastPanel.dataset.desiredFrameKey !== snapshotKey) return;
+                    const currentImg = screencastPanel.querySelector('.screencast-frame img');
+                    if (!currentImg) return;
+                    nextFrame.alt = '';
+                    nextFrame.loading = 'eager';
+                    nextFrame.style.opacity = '1';
+                    currentImg.replaceWith(nextFrame);
+                    screencastPanel.dataset.currentFrameSrc = newUrl;
                     screencastPanel.classList.add('visible');
-                }
+                });
             };
             nextFrame.onerror = () => {
-                if (img.dataset.src === newUrl) {
-                    img.dataset.src = '';
-                    if (!img.getAttribute('src')) {
+                if (screencastPanel.dataset.pendingFrameSrc === newUrl) {
+                    delete screencastPanel.dataset.pendingFrameSrc;
+                    delete screencastPanel.dataset.pendingFrameKey;
+                    if (!screencastPanel.querySelector('.screencast-frame img')?.getAttribute('src')) {
                         screencastPanel.classList.remove('visible');
                     }
                 }
@@ -1541,6 +1597,10 @@
         if (crawl.active_snapshots && crawl.active_snapshots.length > 0) {
             snapshotsHtml = crawl.active_snapshots.map(s => renderSnapshot(s, crawl.id)).join('');
         }
+        const queuedSnapshotsHidden = Number(crawl.queued_snapshots_hidden || 0);
+        const queuedSnapshotsNote = queuedSnapshotsHidden > 0
+            ? `<div class="progress-overflow-note">${queuedSnapshotsHidden} more queued snapshot${queuedSnapshotsHidden === 1 ? '' : 's'} not shown</div>`
+            : '';
         let setupHtml = '';
         if (crawl.setup_plugins && crawl.setup_plugins.length > 0) {
             const sortedSetup = [...crawl.setup_plugins].sort((a, b) =>
@@ -1595,12 +1655,6 @@
             warningHtml = `
                 <div style="padding: 8px 14px; background: rgba(248, 81, 73, 0.1); border-top: 1px solid #f85149; color: #f85149; font-size: 11px;">
                     Runner stopped with ${crawl.started_snapshots || 0} active and ${crawl.pending_snapshots || 0} pending snapshots. It will resume when the runner starts again.
-                </div>
-            `;
-        } else if (crawl.status === 'started' && crawl.worker_state === 'stalled') {
-            warningHtml = `
-                <div style="padding: 8px 14px; background: rgba(210, 153, 34, 0.1); border-top: 1px solid #d29922; color: #d29922; font-size: 11px;">
-                    Runner is online but no worker is attached to this crawl yet.
                 </div>
             `;
         } else if (crawl.worker_state === 'cancelled') {
@@ -1663,14 +1717,19 @@
                     <div class="snapshot-list">
                         ${setupHtml}
                         ${snapshotsHtml}
+                        ${queuedSnapshotsNote}
                     </div>
                 </div>
             </div>
         `;
     }
 
-
     function updateProgress(data) {
+        function setCount(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = Number(value || 0).toLocaleString();
+        }
+
         // Calculate if there's activity
         const hasActivity = data.active_crawls.length > 0 ||
                            data.crawls_pending > 0 || data.crawls_started > 0 ||
@@ -1688,13 +1747,12 @@
             }
         }
 
-        // Update orchestrator status - show "Running" only when there's actual activity
-        // Don't distinguish between "Stopped" and "Idle" since orchestrator starts/stops frequently
+        // Update orchestrator status - show "Running" only when there are active workers.
         const dot = document.getElementById('orchestrator-dot');
         const text = document.getElementById('orchestrator-text');
         const pidEl = document.getElementById('orchestrator-pid');
         const hasWorkers = data.total_workers > 0;
-        const hasBlockedCrawl = (data.active_crawls || []).some(c => c.worker_state === 'crashed' || c.worker_state === 'stalled');
+        const hasBlockedCrawl = (data.active_crawls || []).some(c => c.worker_state === 'crashed');
 
         if (hasWorkers) {
             dot.classList.remove('stopped', 'idle');
@@ -1707,7 +1765,7 @@
         } else if (hasActivity) {
             dot.classList.remove('stopped', 'running');
             dot.classList.add('idle');
-            text.textContent = data.orchestrator_running ? 'Runner online' : 'Waiting';
+            text.textContent = data.orchestrator_running ? 'Idle' : 'Waiting';
         } else {
             // No activity - show as idle (whether orchestrator process exists or not)
             dot.classList.remove('stopped', 'running');
@@ -1728,18 +1786,24 @@
         setTimeout(() => dot.classList.remove('flash'), 300);
 
         // Update stats
-        document.getElementById('worker-count').textContent = data.total_workers;
-        document.getElementById('total-queued').textContent =
-            data.crawls_pending + data.snapshots_pending + data.archiveresults_pending;
-
-        document.getElementById('total-succeeded').textContent = data.archiveresults_succeeded;
-        document.getElementById('total-failed').textContent = data.archiveresults_failed;
+        setCount('crawls-active', data.crawls_active ?? data.crawls_started);
+        setCount('crawls-queued', data.crawls_queued ?? data.crawls_pending);
+        setCount('snapshots-active', data.snapshots_active ?? data.snapshots_started);
+        setCount('snapshots-queued', data.snapshots_queued ?? data.snapshots_pending);
+        setCount('downloads-active', data.downloads_active ?? data.downloads_started);
+        setCount('downloads-queued', data.downloads_queued ?? data.downloads_pending);
+        setCount('indexing-active', data.indexing_active ?? data.indexing_started);
+        setCount('indexing-queued', data.indexing_queued ?? data.indexing_pending);
         updateScreencastPanel(data);
 
         // Render crawl tree
         if (data.active_crawls.length > 0) {
             idleMessage.style.display = 'none';
-            crawlTree.innerHTML = data.active_crawls.map(c => renderCrawl(c)).join('');
+            const queuedCrawlsHidden = Number(data.queued_crawls_hidden || 0);
+            const queuedCrawlsNote = queuedCrawlsHidden > 0
+                ? `<div class="progress-overflow-note">${queuedCrawlsHidden} more queued crawl${queuedCrawlsHidden === 1 ? '' : 's'} not shown</div>`
+                : '';
+            crawlTree.innerHTML = data.active_crawls.map(c => renderCrawl(c)).join('') + queuedCrawlsNote;
         } else if (hasActivity) {
             idleMessage.style.display = 'none';
             crawlTree.innerHTML = `

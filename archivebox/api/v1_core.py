@@ -636,6 +636,9 @@ def patch_archiveresult(
             normalized_status = latest_result.status
         result.status = normalized_status
         update_fields.append("status")
+    elif latest_result.status == ArchiveResult.StatusChoices.QUEUED and ArchiveResult.output_files_upload_complete(output_files):
+        result.status = ArchiveResult.StatusChoices.SUCCEEDED
+        update_fields.append("status")
     if output_json:
         result.output_json = _parse_archiveresult_output_json(output_json)
         update_fields.append("output_json")

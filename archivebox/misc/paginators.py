@@ -1,8 +1,50 @@
 __package__ = "archivebox.misc"
 
 from django.core.paginator import Paginator
+from django.core.paginator import Page
+from django.core.paginator import EmptyPage
 from django.db import connection
 from django.utils.functional import cached_property
+
+
+class CountlessPage(Page):
+    def __init__(self, object_list, number, paginator, has_next_page=False):
+        self.has_next_page = has_next_page
+        super().__init__(object_list, number, paginator)
+
+    def has_next(self):
+        return self.has_next_page
+
+
+class CountlessPaginator(Paginator):
+    has_exact_count = False
+
+    @cached_property
+    def count(self):
+        return getattr(self, "_count_hint", 0)
+
+    @cached_property
+    def num_pages(self):
+        return self.count
+
+    def validate_number(self, number):
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
+            raise EmptyPage("That page number is not an integer")
+        if number < 1:
+            raise EmptyPage("That page number is less than 1")
+        return number
+
+    def page(self, number):
+        number = self.validate_number(number)
+        bottom = (number - 1) * self.per_page
+        page_objects = list(self.object_list[bottom : bottom + self.per_page + 1])
+        has_next_page = len(page_objects) > self.per_page
+        if has_next_page:
+            page_objects = page_objects[: self.per_page]
+        self._count_hint = bottom + len(page_objects) + (1 if has_next_page else 0)
+        return CountlessPage(page_objects, number, self, has_next_page=has_next_page)
 
 
 class AcceleratedPaginator(Paginator):

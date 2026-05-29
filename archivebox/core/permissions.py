@@ -3,8 +3,6 @@ from __future__ import annotations
 from django.db.models import Q, QuerySet
 from django.http import HttpRequest
 
-from archivebox.config.common import get_config
-
 PERMISSIONS_PUBLIC = "public"
 PERMISSIONS_UNLISTED = "unlisted"
 PERMISSIONS_PRIVATE = "private"
@@ -13,6 +11,19 @@ PERMISSIONS_CHOICES = (
     (PERMISSIONS_UNLISTED, "Unlisted"),
     (PERMISSIONS_PRIVATE, "Private"),
 )
+PERMISSIONS_VALUES = {value for value, _label in PERMISSIONS_CHOICES}
+PERMISSIONS_META = {
+    PERMISSIONS_PUBLIC: ("👥", "Public", "#047857", "#d1fae5"),
+    PERMISSIONS_UNLISTED: ("🔗", "Unlisted", "#1d4ed8", "#dbeafe"),
+    PERMISSIONS_PRIVATE: ("🔒", "Private", "#991b1b", "#fee2e2"),
+}
+
+
+def normalize_permissions(permissions: object, *, default: str = PERMISSIONS_PRIVATE) -> str:
+    permissions = str(permissions or "").strip().lower()
+    if permissions not in PERMISSIONS_VALUES:
+        return default
+    return permissions
 
 
 def is_admin_user(request: HttpRequest) -> bool:
@@ -21,10 +32,10 @@ def is_admin_user(request: HttpRequest) -> bool:
 
 
 def get_snapshot_permissions(snapshot) -> str:
-    try:
-        return str(get_config(snapshot=snapshot, resolve_plugins=False).PERMISSIONS).strip().lower()
-    except Exception:
-        return PERMISSIONS_PRIVATE
+    permissions = snapshot.permissions
+    if not permissions:
+        permissions = snapshot.crawl.permissions
+    return normalize_permissions(permissions)
 
 
 def can_view_snapshot(request: HttpRequest, snapshot) -> bool:
@@ -35,9 +46,7 @@ def can_view_snapshot(request: HttpRequest, snapshot) -> bool:
 def _persona_ids_for_permissions(allowed_permissions: set[str]) -> list[str]:
     from archivebox.personas.models import Persona
 
-    fallback_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-    personas = Persona.objects.only("id", "config")
-    return [str(persona.id) for persona in personas if (persona.permissions or fallback_permissions) in allowed_permissions]
+    return [str(persona_id) for persona_id in Persona.objects.filter(permissions__in=allowed_permissions).values_list("id", flat=True)]
 
 
 def filter_personas_by_permissions(queryset: QuerySet, allowed_permissions: set[str]) -> QuerySet:
@@ -45,27 +54,11 @@ def filter_personas_by_permissions(queryset: QuerySet, allowed_permissions: set[
 
 
 def filter_snapshots_by_permissions(queryset: QuerySet, *, direct: bool = False, allowed_permissions: set[str] | None = None) -> QuerySet:
-    from archivebox.crawls.models import Crawl
-    from archivebox.personas.models import Persona
-
     allowed_permissions = allowed_permissions or ({PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED} if direct else {PERMISSIONS_PUBLIC})
-    fallback_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
-    has_overrides = (
-        queryset.model.objects.filter(permissions__gt="").exists()
-        or Crawl.objects.filter(permissions__gt="").exists()
-        or Persona.objects.filter(permissions__gt="").exists()
-    )
-    if not has_overrides:
-        return queryset if fallback_permissions in allowed_permissions else queryset.none()
-
-    allowed_persona_ids = _persona_ids_for_permissions(allowed_permissions)
-    valid_persona_ids = [str(persona_id) for persona_id in Persona.objects.values_list("id", flat=True)]
-    fallback_query = Q(crawl__persona_id__in=allowed_persona_ids)
-    if fallback_permissions in allowed_permissions:
-        fallback_query |= Q(crawl__persona_id__isnull=True) | ~Q(crawl__persona_id__in=valid_persona_ids)
-    inherited_query = Q(crawl__permissions__in=sorted(allowed_permissions)) | (Q(crawl__permissions__isnull=True) & fallback_query)
-    return queryset.filter(
-        Q(permissions__in=sorted(allowed_permissions)) | (Q(permissions__isnull=True) & inherited_query),
+    allowed = sorted(allowed_permissions)
+    return queryset.exclude(
+        (Q(permissions__isnull=False) & ~Q(permissions__in=allowed))
+        | (Q(permissions__isnull=True) & (Q(crawl__permissions__isnull=True) | ~Q(crawl__permissions__in=allowed))),
     )
 
 

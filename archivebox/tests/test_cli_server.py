@@ -248,7 +248,6 @@ def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db)
                     pid=proc.pid,
                     started_at=started_at,
                     status=Process.StatusChoices.RUNNING,
-                    timeout=0,
                 )
 
         with use_archivebox_db(tmp_path):

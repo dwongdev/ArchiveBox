@@ -4,6 +4,7 @@ import re
 import os
 import tempfile
 import logging
+from pathlib import Path
 
 
 from archivebox.config import CONSTANTS
@@ -18,6 +19,39 @@ IGNORABLE_URL_PATTERNS = [
     re.compile(r"/static/.*"),
     re.compile(r"/admin/jsi18n/"),
 ]
+
+
+SENSITIVE_QUERY_PARAM_RE = re.compile(r"(?i)([?&](?:api_key|token|access_token|password|secret)=)([^&#\s]+)")
+WEBREQUEST_RE = re.compile(r"<WebRequest\b[^>]*\bmethod=(?P<method>[A-Z]+)\s+uri=(?P<uri>\S+)")
+RUNNING_AT_RE = re.compile(r"running at\s+([^>]+:\d+)")
+
+
+def _redact_url(url: str) -> str:
+    return SENSITIVE_QUERY_PARAM_RE.sub(r"\1[REDACTED]", url)
+
+
+def _short_code_path(path: str) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(Path.cwd().resolve()))
+    except (OSError, ValueError):
+        parts = Path(path).parts
+        return "/".join(parts[-4:]) if len(parts) > 4 else path
+
+
+def _resolve_view_name(url: str) -> str:
+    try:
+        from django.urls import resolve
+
+        match = resolve(url.split("?", 1)[0])
+        if match.view_name:
+            return match.view_name
+        view_func = match.func
+        view_class = getattr(view_func, "view_class", None)
+        if view_class is not None:
+            return f"{view_class.__module__}.{view_class.__name__}"
+        return f"{view_func.__module__}.{view_func.__name__}"
+    except Exception:
+        return "unknown"
 
 
 class NoisyRequestsFilter(logging.Filter):
@@ -39,6 +73,30 @@ class NoisyRequestsFilter(logging.Filter):
             if ignorable_404_pattern.match(logline):
                 return False
 
+        return True
+
+
+class DaphneCloseTimeoutFilter(logging.Filter):
+    def filter(self, record) -> bool:
+        if record.name != "daphne.server":
+            return True
+        logline = record.getMessage()
+        if not (
+            "Application instance" in logline
+            and "for connection <WebRequest" in logline
+            and "took too long to shut down" in logline
+            and "was killed" in logline
+        ):
+            return True
+
+        match = WEBREQUEST_RE.search(logline)
+        method = match.group("method") if match else "-"
+        uri = _redact_url(match.group("uri")) if match else "-"
+        view = _resolve_view_name(uri) if uri != "-" else "unknown"
+        code_paths = [_short_code_path(path) for path in RUNNING_AT_RE.findall(logline)]
+        code = code_paths[-1] if code_paths else "unknown"
+        record.msg = f"Daphne killed slow response after client disconnect: {method} {uri} view={view} code={code}"
+        record.args = ()
         return True
 
 
@@ -100,6 +158,9 @@ SETTINGS_LOGGING = {
         "noisyrequestsfilter": {
             "()": NoisyRequestsFilter,
         },
+        "daphneclosetimeout": {
+            "()": DaphneCloseTimeoutFilter,
+        },
         "stripansi": {
             "()": StripANSIColorCodesFilter,
         },
@@ -117,7 +178,7 @@ SETTINGS_LOGGING = {
             "level": "DEBUG",
             "markup": False,
             "rich_tracebacks": False,  # Use standard Python tracebacks (no frame/box)
-            "filters": ["noisyrequestsfilter", "stripansi"],
+            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "stripansi"],
         },
         "logfile": {
             "level": "INFO",
@@ -126,7 +187,7 @@ SETTINGS_LOGGING = {
             "maxBytes": 1024 * 1024 * 25,  # 25 MB
             "backupCount": 10,
             "formatter": "rich",
-            "filters": ["noisyrequestsfilter", "stripansi"],
+            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "stripansi"],
         },
         "outbound_webhooks": {
             "class": "rich.logging.RichHandler",
