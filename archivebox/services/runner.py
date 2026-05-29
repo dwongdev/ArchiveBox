@@ -68,7 +68,7 @@ from .binary_service import BinaryService
 from .crawl_service import CrawlService
 from .machine_service import MachineService
 from .process_service import ProcessService as PersistedProcessService
-from .snapshot_service import SnapshotService
+from .snapshot_service import SnapshotService, finalize_completed_snapshot
 from .tag_service import TagService
 
 
@@ -1045,6 +1045,11 @@ class CrawlRunner:
                     raise RuntimeError(f"Snapshot {snapshot_id} did not complete")
                 await completed_snapshot.wait(timeout=snapshot_phase_timeout)
                 await completed_snapshot.event_results_list()
+                # SnapshotCompletedEvent is the normal projection path, but the
+                # runner is the scheduler owner. Finalize idempotently here too
+                # so a completed snapshot cannot remain STARTED if the event was
+                # observed before its DB projector advanced the state machine.
+                await sync_to_async(finalize_completed_snapshot, thread_sensitive=True)(snapshot_id)
                 if snapshot["status"] == "sealed":
                     await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id)
                     return

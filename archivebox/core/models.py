@@ -3199,11 +3199,9 @@ class SnapshotMachine(BaseStateMachine):
         # Clean up background hooks
         self.snapshot.cleanup()
 
-        self.snapshot.update_and_requeue(
-            retry_at=None,
-            status=Snapshot.StatusChoices.SEALED,
-            refresh=False,
-        )
+        self.snapshot.status = Snapshot.StatusChoices.SEALED
+        self.snapshot.retry_at = None
+        self.snapshot.save(update_fields=["status", "retry_at", "modified_at"])
 
         # Crawl finalization is handled by the runner/CrawlService cleanup
         # phase. Sealing the parent crawl here races recursive discovery:

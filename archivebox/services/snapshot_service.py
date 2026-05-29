@@ -3,12 +3,54 @@ from __future__ import annotations
 import sys
 
 from asgiref.sync import sync_to_async
-from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 from rich import print as rprint
 from abx_dl.events import SnapshotCompletedEvent, SnapshotEvent
 from abx_dl.limits import CrawlLimitState
 from abx_dl.services.base import BaseService
+
+
+def finalize_completed_snapshot(snapshot_id: str) -> None:
+    from archivebox.core.models import Snapshot
+
+    snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_id).first()
+    if snapshot is None:
+        return
+
+    if snapshot.downloaded_at is None:
+        snapshot.downloaded_at = timezone.now()
+        snapshot.save(update_fields=["downloaded_at", "modified_at"])
+
+    stop_reason = _crawl_limit_stop_reason(snapshot.crawl)
+    if snapshot.crawl_id and stop_reason in ("crawl_max_size", "crawl_timeout"):
+        Snapshot.objects.filter(
+            crawl_id=snapshot.crawl_id,
+            status=Snapshot.StatusChoices.QUEUED,
+        ).exclude(id=snapshot.id).update(
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=None,
+            modified_at=timezone.now(),
+        )
+
+    if snapshot.status == Snapshot.StatusChoices.QUEUED:
+        snapshot.sm.tick()
+        snapshot.refresh_from_db()
+    if snapshot.status == Snapshot.StatusChoices.STARTED and snapshot.is_finished_processing():
+        snapshot.sm.seal()
+        snapshot.refresh_from_db()
+
+    snapshot.write_index_jsonl()
+    snapshot.write_json_details()
+    snapshot.write_html_details()
+
+
+def _crawl_limit_stop_reason(crawl) -> str:
+    from archivebox.config.common import get_config
+
+    config = get_config(crawl=crawl, include_machine=False)
+    config["CRAWL_DIR"] = str(crawl.output_dir)
+    return CrawlLimitState.from_config(config).get_stop_reason()
 
 
 class SnapshotService(BaseService):
@@ -54,43 +96,4 @@ class SnapshotService(BaseService):
             await sync_to_async(snapshot.ensure_crawl_symlink, thread_sensitive=True)()
 
     async def on_SnapshotCompletedEvent(self, event: SnapshotCompletedEvent) -> None:
-        from archivebox.core.models import Snapshot
-
-        snapshot = await Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=event.snapshot_id).afirst()
-        snapshot_id: str | None = None
-        if snapshot is not None:
-            snapshot.downloaded_at = snapshot.downloaded_at or timezone.now()
-            await snapshot.asave(update_fields=["downloaded_at", "modified_at"])
-            stop_reason = await sync_to_async(self._crawl_limit_stop_reason, thread_sensitive=True)(snapshot.crawl)
-            if snapshot.crawl_id and stop_reason in ("crawl_max_size", "crawl_timeout"):
-                await (
-                    Snapshot.objects.filter(
-                        crawl_id=snapshot.crawl_id,
-                        status=Snapshot.StatusChoices.QUEUED,
-                    )
-                    .exclude(id=snapshot.id)
-                    .aupdate(
-                        status=Snapshot.StatusChoices.SEALED,
-                        retry_at=None,
-                        modified_at=timezone.now(),
-                    )
-                )
-            if snapshot.status == Snapshot.StatusChoices.QUEUED:
-                await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
-                await sync_to_async(snapshot.refresh_from_db, thread_sensitive=True)()
-            if snapshot.status == Snapshot.StatusChoices.STARTED:
-                await sync_to_async(snapshot.sm.seal, thread_sensitive=True)()
-            snapshot_id = str(snapshot.id)
-        if snapshot_id:
-            snapshot = await Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").afirst()
-            if snapshot is not None:
-                await sync_to_async(snapshot.write_index_jsonl, thread_sensitive=True)()
-                await sync_to_async(snapshot.write_json_details, thread_sensitive=True)()
-                await sync_to_async(snapshot.write_html_details, thread_sensitive=True)()
-
-    def _crawl_limit_stop_reason(self, crawl) -> str:
-        from archivebox.config.common import get_config
-
-        config = get_config(crawl=crawl, include_machine=False)
-        config["CRAWL_DIR"] = str(crawl.output_dir)
-        return CrawlLimitState.from_config(config).get_stop_reason()
+        await sync_to_async(finalize_completed_snapshot, thread_sensitive=True)(event.snapshot_id)

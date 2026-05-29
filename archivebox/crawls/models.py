@@ -1540,10 +1540,9 @@ class CrawlMachine(BaseStateMachine):
         # Clean up background hooks and run on_CrawlEnd hooks
         self.crawl.cleanup()
 
-        self.crawl.update_and_requeue(
-            retry_at=None,
-            status=Crawl.StatusChoices.SEALED,
-        )
+        self.crawl.status = Crawl.StatusChoices.SEALED
+        self.crawl.retry_at = None
+        self.crawl.save(update_fields=["status", "retry_at", "modified_at"])
 
 
 # =============================================================================
