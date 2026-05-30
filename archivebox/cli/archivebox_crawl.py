@@ -39,7 +39,7 @@ from collections.abc import Iterable
 import rich_click as click
 from rich import print as rprint
 
-from archivebox.cli.cli_utils import apply_filters
+from archivebox.cli.cli_util import apply_filters
 
 
 # =============================================================================

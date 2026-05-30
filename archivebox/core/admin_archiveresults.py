@@ -24,10 +24,10 @@ from archivebox.config.common import get_config
 from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.base_models.admin import BaseModelAdmin
 from archivebox.hooks import get_plugin_icon
-from archivebox.core.host_utils import build_snapshot_url
+from archivebox.core.host_util import build_snapshot_url
 from archivebox.core.widgets import InlineTagEditorWidget
 from archivebox.core.views import LIVE_PLUGIN_BASE_URL
-from archivebox.machine.env_utils import env_to_shell_exports
+from archivebox.machine.env_util import env_to_shell_exports
 
 
 from archivebox.core.models import ArchiveResult, Snapshot

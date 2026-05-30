@@ -51,7 +51,7 @@ def _build_script(body: str) -> str:
     from archivebox.core.models import Snapshot, ArchiveResult
     from archivebox.config.common import get_config
     SERVER_CONFIG = get_config()
-    from archivebox.core.host_utils import (
+    from archivebox.core.host_util import (
         get_admin_host,
         get_admin_base_url,
         get_base_host,
@@ -188,7 +188,7 @@ class TestUrlRouting:
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
 
-    def test_host_utils_and_public_redirect(self) -> None:
+    def test_host_util_and_public_redirect(self) -> None:
         self._run(
             """
             snapshot = get_snapshot()

@@ -66,7 +66,7 @@ from archivebox.core.permissions import (
     is_admin_user,
     public_snapshots_queryset,
 )
-from archivebox.core.host_utils import (
+from archivebox.core.host_util import (
     build_admin_url,
     build_snapshot_url,
     build_web_url,

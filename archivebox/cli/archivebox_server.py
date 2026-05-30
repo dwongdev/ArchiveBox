@@ -162,7 +162,7 @@ def _print_server_startup_warnings(config, host: str, port: str) -> None:
     # CSRF_TRUSTED_ORIGINS set, get_base_url() will silently use that as the
     # implicit BASE_URL. Surface what we picked so the user knows where their
     # links / redirects are going — and tell them how to make it explicit.
-    from archivebox.core.host_utils import derive_base_url_from_csrf
+    from archivebox.core.host_util import derive_base_url_from_csrf
 
     csrf_derived = derive_base_url_from_csrf(config)
     if csrf_derived:
@@ -178,7 +178,7 @@ def _print_server_startup_warnings(config, host: str, port: str) -> None:
         print()
         return
 
-    # BASE_URL was not set explicitly. The host_utils derivation gives one of
+    # BASE_URL was not set explicitly. The host_util derivation gives one of
     # three results, with very different risk profiles — show a tailored hint
     # so new users coming from the 0.7.x single-domain world know whether the
     # default is fine for them or needs attention.
@@ -203,7 +203,7 @@ def _print_server_startup_warnings(config, host: str, port: str) -> None:
             )
         print()
     else:
-        # Loopback / wildcard bind. The host_utils default of
+        # Loopback / wildcard bind. The host_util default of
         # http://archivebox.localhost:PORT works in a browser on the same
         # machine, but anything else (reverse proxy, k8s ingress, LAN client)
         # needs BASE_URL set. (Real hostnames can't reach this branch — the
@@ -298,7 +298,7 @@ def server(
         return
 
     os.environ["BIND_ADDR"] = f"{host}:{port}"
-    from archivebox.core.host_utils import get_base_url
+    from archivebox.core.host_util import get_base_url
 
     base_url = get_base_url().rstrip("/")
     admin_url = f"{base_url}/admin/"

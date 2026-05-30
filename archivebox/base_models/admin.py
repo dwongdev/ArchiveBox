@@ -3,6 +3,7 @@
 __package__ = "archivebox.base_models"
 
 import json
+import uuid
 from collections.abc import Mapping
 from typing import NotRequired, TypedDict
 
@@ -11,8 +12,39 @@ from django.contrib import admin
 from django.db import models
 from django.forms.renderers import BaseRenderer
 from django.http import HttpRequest, QueryDict
+from django.urls import path, register_converter
 from django.utils.safestring import SafeString, mark_safe
 from django_object_actions import DjangoObjectActions
+
+
+class HexUUIDConverter:
+    """URL path converter that canonicalizes UUIDs to their 32-char hex form.
+
+    Accepts both the hyphenated (``aaaaaaaa-bbbb-...``) and bare-hex
+    (``aaaaaaaabbbb...``) UUID strings on the way in (Django's UUIDField
+    parses either), but ``to_url`` always emits the bare-hex form. This is
+    what makes ``reverse("admin:app_model_change", args=[obj.pk])`` produce
+    ``/admin/app/model/06a1a8facb0d.../change/`` instead of the default
+    hyphenated rendering — admin links throughout the app reverse through
+    this converter once ``BaseModelAdmin.get_urls`` swaps in
+    ``<hexuuid:object_id>`` below.
+    """
+
+    regex = r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+    def to_python(self, value: str) -> str:
+        # Strip hyphens but stay as a string — Django admin treats the
+        # captured object_id as a string and calls ``model._meta.pk.to_python``
+        # itself, so we don't want to short-circuit that.
+        return value.replace("-", "")
+
+    def to_url(self, value) -> str:
+        if isinstance(value, uuid.UUID):
+            return value.hex
+        return str(value).replace("-", "")
+
+
+register_converter(HexUUIDConverter, "hexuuid")
 
 
 class ConfigOption(TypedDict):
@@ -846,3 +878,30 @@ class BaseModelAdmin(DjangoObjectActions, admin.ModelAdmin):
         if "created_by" in form.base_fields:
             form.base_fields["created_by"].initial = request.user
         return form
+
+    def get_urls(self):
+        """Swap the per-object admin URLs from ``<path:object_id>`` to
+        ``<hexuuid:object_id>`` so canonical change/delete/history URLs use the
+        32-char hex form. The hyphenated form still resolves because the
+        converter's regex accepts both — Django reverses through ``to_url``
+        which always emits hex, so links in templates / changelists / inline
+        formsets all canonicalize automatically.
+
+        Non-UUID PKs (an ``IntegerField`` PK on some legacy table, for example)
+        won't match the converter's regex and fall back to the default
+        ``<path:object_id>`` patterns we still include after our swap.
+        """
+        info = self.opts.app_label, self.opts.model_name
+        object_routes = [
+            path("<hexuuid:object_id>/history/", self.admin_site.admin_view(self.history_view), name="%s_%s_history" % info),
+            path("<hexuuid:object_id>/delete/", self.admin_site.admin_view(self.delete_view), name="%s_%s_delete" % info),
+            path("<hexuuid:object_id>/change/", self.admin_site.admin_view(self.change_view), name="%s_%s_change" % info),
+        ]
+        # Append after super().get_urls() so our patterns are the
+        # *last-registered* ones with the canonical admin URL names — Django's
+        # reverse() picks the later registration when names collide, which is
+        # how we make ``reverse("admin:app_model_change", args=[obj.pk])``
+        # emit the hex form. The original ``<path:object_id>`` routes stay in
+        # place as a fallback for non-UUID PKs and for resolving inbound
+        # hyphenated URLs (the ``hexuuid`` regex accepts both forms anyway).
+        return super().get_urls() + object_routes

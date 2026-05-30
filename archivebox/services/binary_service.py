@@ -18,10 +18,13 @@ class BinaryService(BaseService):
         self.bus.on(BinaryEvent, self.on_BinaryEvent)
 
     async def on_BinaryRequestEvent(self, event: BinaryRequestEvent) -> str | None:
-        from archivebox.machine.models import Binary, Machine
+        from archivebox.machine.models import Binary, Machine, _canonical_binary_name
 
         machine = await sync_to_async(Machine.current, thread_sensitive=True)()
-        existing = await Binary.objects.filter(machine=machine, name=event.name).afirst()
+        binary_name = _canonical_binary_name(event.name)
+        if not binary_name:
+            return None
+        existing = await Binary.objects.filter(machine=machine, name=binary_name).afirst()
         cache_invalidated = False
         if existing and existing.status == Binary.StatusChoices.INSTALLED:
             changed = False
@@ -39,7 +42,7 @@ class BinaryService(BaseService):
         elif existing is None:
             await Binary.objects.acreate(
                 machine=machine,
-                name=event.name,
+                name=binary_name,
                 binproviders=event.binproviders,
                 overrides=event.overrides or {},
                 status=Binary.StatusChoices.QUEUED,
@@ -48,7 +51,7 @@ class BinaryService(BaseService):
         installed = None
         if not cache_invalidated:
             installed = (
-                await Binary.objects.filter(machine=machine, name=event.name, status=Binary.StatusChoices.INSTALLED)
+                await Binary.objects.filter(machine=machine, name=binary_name, status=Binary.StatusChoices.INSTALLED)
                 .exclude(abspath="")
                 .exclude(abspath__isnull=True)
                 .order_by("-modified_at")
@@ -132,13 +135,16 @@ class BinaryService(BaseService):
         return None
 
     async def on_BinaryEvent(self, event: BinaryEvent) -> None:
-        from archivebox.machine.models import Binary, Machine
+        from archivebox.machine.models import Binary, Machine, _canonical_binary_name
         from archivebox.config.common import get_config
 
         machine = await sync_to_async(Machine.current, thread_sensitive=True)()
+        binary_name = _canonical_binary_name(event.name)
+        if not binary_name:
+            return
         binary, _ = await Binary.objects.aget_or_create(
             machine=machine,
-            name=event.name,
+            name=binary_name,
             defaults={
                 "status": Binary.StatusChoices.QUEUED,
             },

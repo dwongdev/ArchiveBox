@@ -152,6 +152,37 @@ def mirror_machine_config_to_file(config: Any) -> None:
         _MIRROR_IN_PROGRESS = False
 
 
+def _coerce_from_str_dict(file_config: dict[str, str]) -> dict[str, Any]:
+    """Inverse of ``_coerce_to_str_dict``: decode complex INI values to native.
+
+    ``mirror_machine_config_to_file`` JSON-encodes ``dict`` / ``list`` values
+    so they round-trip through INI's string-only storage. When reading the
+    file back into ``Machine.config`` (a JSONField that holds native types)
+    those strings have to be decoded — otherwise downstream consumers like
+    ``_emit_machine_config`` → ``MachineEvent`` → abx-dl see a JSON string
+    where they expect a dict and raise ``TypeError``.
+    Delegates to pydantic-settings' own ``field_is_complex`` /
+    ``prepare_field_value`` (the same machinery ``IniConfigSettingsSource``
+    uses for the file-read path), so every dict/list/tuple field is
+    decoded according to its declared annotation — no hardcoded type
+    checks, no manual ``json.loads`` per call site.
+    """
+    from archivebox.config.common import ArchiveBoxConfig
+    from archivebox.config.configset import IniConfigSettingsSource
+
+    decoder = IniConfigSettingsSource(ArchiveBoxConfig)
+    decoded: dict[str, Any] = dict(file_config)
+    for field_name, field in ArchiveBoxConfig.model_fields.items():
+        if field_name not in decoded:
+            continue
+        raw = decoded[field_name]
+        if not isinstance(raw, str) or not raw:
+            continue
+        if decoder.field_is_complex(field):
+            decoded[field_name] = decoder.prepare_field_value(field_name, field, raw, True)
+    return decoded
+
+
 def _mirror_file_to_machine_config(file_config: dict[str, str]) -> None:
     """Copy ``ArchiveBox.conf`` contents into ``Machine.config``.
 
@@ -163,7 +194,7 @@ def _mirror_file_to_machine_config(file_config: dict[str, str]) -> None:
     machine = Machine.current()
     if _coerce_to_str_dict(machine.config) == file_config:
         return
-    machine.config = dict(file_config)
+    machine.config = _coerce_from_str_dict(file_config)
     machine.save(update_fields=["config", "modified_at"])
 
 
@@ -226,7 +257,7 @@ def sync_machine_and_file(machine: Any = None) -> None:
         if merged != file_config:
             _write_file_if_changed(_render_config_file_content(merged))
         if merged != machine_config:
-            machine.config = dict(merged)
+            machine.config = _coerce_from_str_dict(merged)
             machine.save(update_fields=["config", "modified_at"])
     finally:
         _MIRROR_IN_PROGRESS = False

@@ -31,9 +31,9 @@ from archivebox.core.models import Snapshot, ArchiveResult, Tag
 from archivebox.core.permissions import public_snapshots_queryset
 from archivebox.api.auth import auth_using_token
 from archivebox.config.common import get_config
-from archivebox.core.host_utils import build_web_url
+from archivebox.core.host_util import build_web_url
 from archivebox.misc.util import filter_queryset_by_uuid_substring, validate_url_length
-from archivebox.core.tag_utils import (
+from archivebox.core.tag_util import (
     add_snapshot_counts,
     build_tag_cards,
     delete_tag as delete_tag_record,

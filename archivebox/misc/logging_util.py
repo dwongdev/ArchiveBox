@@ -13,7 +13,6 @@ from multiprocessing import Process
 from pathlib import Path
 
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from typing import Any, Optional, IO, TYPE_CHECKING, cast
 from collections.abc import Iterable
 
@@ -23,33 +22,10 @@ if TYPE_CHECKING:
 from rich import print
 from rich.panel import Panel
 
-from archivebox.config import CONSTANTS, DATA_DIR, VERSION
+from archivebox.config import DATA_DIR, VERSION
 from archivebox.config.common import get_config
-from archivebox.misc.system import get_dir_size
 from archivebox.misc.util import enforce_types
 from archivebox.misc.logging import ANSI
-
-
-@dataclass
-class RuntimeStats:
-    """mutable stats counter for logging archiving timing info to CLI output"""
-
-    skipped: int = 0
-    succeeded: int = 0
-    failed: int = 0
-
-    parse_start_ts: datetime | None = None
-    parse_end_ts: datetime | None = None
-
-    index_start_ts: datetime | None = None
-    index_end_ts: datetime | None = None
-
-    archiving_start_ts: datetime | None = None
-    archiving_end_ts: datetime | None = None
-
-
-# globals are bad, mmkay
-_LAST_RUN_STATS = RuntimeStats()
 
 
 class TimedProgress:
@@ -176,257 +152,6 @@ def log_cli_command(subcommand: str, subcommand_args: Iterable[str] = (), stdin:
     print(Panel(version_msg), file=sys.stderr)
 
 
-### Parsing Stage
-
-
-def log_importing_started(urls: str | list[str], depth: int, index_only: bool):
-    _LAST_RUN_STATS.parse_start_ts = datetime.now(timezone.utc)
-    print(
-        "[green][+] [{}] Adding {} links to index (crawl depth={}){}...[/]".format(
-            _LAST_RUN_STATS.parse_start_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            len(urls) if isinstance(urls, list) else len(urls.split("\n")),
-            depth,
-            " (index only)" if index_only else "",
-        ),
-    )
-
-
-def log_source_saved(source_file: str):
-    print("    > Saved verbatim input to {}/{}".format(CONSTANTS.SOURCES_DIR_NAME, source_file.rsplit("/", 1)[-1]))
-
-
-def log_parsing_finished(num_parsed: int, parser_name: str):
-    _LAST_RUN_STATS.parse_end_ts = datetime.now(timezone.utc)
-    print(f"    > Parsed {num_parsed} URLs from input ({parser_name})")
-
-
-def log_deduping_finished(num_new_links: int):
-    print(f"    > Found {num_new_links} new URLs not already in index")
-
-
-def log_crawl_started(new_links):
-    print()
-    print(f"[green][*] Starting crawl of {len(new_links)} sites 1 hop out from starting point[/]")
-
-
-### Indexing Stage
-
-
-def log_indexing_process_started(num_links: int):
-    start_ts = datetime.now(timezone.utc)
-    _LAST_RUN_STATS.index_start_ts = start_ts
-    print()
-    print(
-        "[bright_black][*] [{}] Writing {} links to main index...[/]".format(
-            start_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            num_links,
-        ),
-    )
-
-
-def log_indexing_process_finished():
-    end_ts = datetime.now(timezone.utc)
-    _LAST_RUN_STATS.index_end_ts = end_ts
-
-
-def _display_data_path(out_path: str) -> str:
-    path = Path(out_path).resolve()
-    try:
-        return f"./{path.relative_to(DATA_DIR)}"
-    except ValueError:
-        return str(path)
-
-
-def log_indexing_started(out_path: str, config=None, **config_kwargs):
-    config = config or get_config(**config_kwargs)
-    if config.IS_TTY:
-        sys.stdout.write(f"    > {_display_data_path(out_path)}")
-
-
-def log_indexing_finished(out_path: str):
-    print(f"\r    √ {_display_data_path(out_path)}")
-
-
-### Archiving Stage
-
-
-def log_archiving_started(num_links: int, resume: float | None = None):
-
-    start_ts = datetime.now(timezone.utc)
-    _LAST_RUN_STATS.archiving_start_ts = start_ts
-    print()
-    if resume:
-        print(
-            "[green][▶] [{}] Resuming archive updating for {} pages starting from {}...[/]".format(
-                start_ts.strftime("%Y-%m-%d %H:%M:%S"),
-                num_links,
-                resume,
-            ),
-        )
-    else:
-        print(
-            "[green][▶] [{}] Starting archiving of {} snapshots in index...[/]".format(
-                start_ts.strftime("%Y-%m-%d %H:%M:%S"),
-                num_links,
-            ),
-        )
-
-
-def log_archiving_paused(num_links: int, idx: int, timestamp: str):
-
-    end_ts = datetime.now(timezone.utc)
-    _LAST_RUN_STATS.archiving_end_ts = end_ts
-    print()
-    print(
-        "\n[yellow3][X] [{now}] Downloading paused on link {timestamp} ({idx}/{total})[/]".format(
-            now=end_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            idx=idx + 1,
-            timestamp=timestamp,
-            total=num_links,
-        ),
-    )
-    print()
-    print("    Continue archiving where you left off by running:")
-    print(f"        archivebox update --resume={timestamp}")
-
-
-def log_archiving_finished(num_links: int):
-
-    from archivebox.core.models import Snapshot
-
-    end_ts = datetime.now(timezone.utc)
-    _LAST_RUN_STATS.archiving_end_ts = end_ts
-    assert _LAST_RUN_STATS.archiving_start_ts is not None
-    seconds = end_ts.timestamp() - _LAST_RUN_STATS.archiving_start_ts.timestamp()
-    if seconds > 60:
-        duration = f"{seconds / 60:.2f} min"
-    else:
-        duration = f"{seconds:.2f} sec"
-
-    print()
-    print(
-        "[green][√] [{}] Update of {} pages complete ({})[/]".format(
-            end_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            num_links,
-            duration,
-        ),
-    )
-    print(f"    - {_LAST_RUN_STATS.skipped} links skipped")
-    print(f"    - {_LAST_RUN_STATS.succeeded + _LAST_RUN_STATS.failed} links updated")
-    print(f"    - {_LAST_RUN_STATS.failed} links had errors")
-
-    if Snapshot.objects.count() < 50:
-        print()
-        print("    [violet]Hint:[/] To manage your archive in a Web UI, run:")
-        print("        archivebox server 0.0.0.0:8000")
-
-
-def log_snapshot_archiving_started(snapshot: "Snapshot", out_dir: str, is_new: bool):
-
-    # [*] [2019-03-22 13:46:45] "Log Structured Merge Trees - ben stopford"
-    #     http://www.benstopford.com/2015/02/14/log-structured-merge-trees/
-    #     > output/archive/1478739709
-
-    print(
-        '\n[[{symbol_color}]{symbol}[/]] [[{symbol_color}]{now}[/]] "{title}"'.format(
-            symbol_color="green" if is_new else "bright_black",
-            symbol="+" if is_new else "√",
-            now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            title=snapshot.title or snapshot.base_url,
-        ),
-    )
-    print(f"    [sky_blue1]{snapshot.url}[/]")
-    print(
-        "    {} {}".format(
-            ">" if is_new else "√",
-            pretty_path(out_dir),
-        ),
-    )
-
-
-def log_snapshot_archiving_finished(snapshot: "Snapshot", out_dir: str, is_new: bool, stats: dict, start_ts: datetime):
-    total = sum(stats.values())
-
-    if stats["failed"] > 0:
-        _LAST_RUN_STATS.failed += 1
-    elif stats["skipped"] == total:
-        _LAST_RUN_STATS.skipped += 1
-    else:
-        _LAST_RUN_STATS.succeeded += 1
-
-    try:
-        results = snapshot.archiveresult_set.only("output_files", "output_size")
-        total_bytes = sum(result.output_size or result.output_size_from_files() for result in results)
-        total_files = sum(result.output_file_count() for result in results)
-        size = (total_bytes, 0, total_files)
-    except Exception:
-        try:
-            size = get_dir_size(out_dir)
-        except FileNotFoundError:
-            size = (0, None, "0")
-
-    end_ts = datetime.now(timezone.utc)
-    duration = str(end_ts - start_ts).split(".")[0]
-    print(f"        [bright_black]{size[2]} files ({printable_filesize(size[0])}) in {duration}s [/]")
-
-
-def log_archive_method_started(method: str):
-    print(f"      > {method}")
-
-
-def log_archive_method_finished(result: dict):
-    """
-    quote the argument with whitespace in a command so the user can
-    copy-paste the outputted string directly to run the cmd
-    """
-    # Prettify CMD string and make it safe to copy-paste by quoting arguments
-    quoted_cmd = " ".join(f'"{arg}"' if (" " in arg) or (":" in arg) else arg for arg in result["cmd"])
-
-    if result["status"] == "failed":
-        output = result.get("output")
-        if output and output.__class__.__name__ == "TimeoutExpired":
-            duration = (result["end_ts"] - result["start_ts"]).seconds
-            hint_header = [
-                f"[yellow3]Extractor timed out after {duration}s.[/]",
-            ]
-        else:
-            error_name = output.__class__.__name__.replace("ArchiveError", "") if output else "Error"
-            hint_header = [
-                "[yellow3]Extractor failed:[/]",
-                f"    {error_name} [red1]{output}[/]",
-            ]
-
-        # Prettify error output hints string and limit to five lines
-        hints = getattr(output, "hints", None) or () if output else ()
-        if hints:
-            if isinstance(hints, (list, tuple, type(_ for _ in ()))):
-                hints = [hint.decode() if isinstance(hint, bytes) else str(hint) for hint in hints]
-            else:
-                if isinstance(hints, bytes):
-                    hints = hints.decode()
-                hints = hints.split("\n")
-
-            hints = (f"    [yellow1]{line.strip()}[/]" for line in list(hints)[:5] if line.strip())
-
-        docker_hints = ()
-        if os.environ.get("IN_DOCKER") in ("1", "true", "True", "TRUE", "yes"):
-            docker_hints = ("  docker run -it -v $PWD/data:/data archivebox/archivebox /bin/bash",)
-
-        # Collect and prefix output lines with indentation
-        output_lines = [
-            *hint_header,
-            *hints,
-            "[violet]Run to see full output:[/]",
-            *docker_hints,
-            *(["    cd {};".format(result.get("pwd"))] if result.get("pwd") else []),
-            f"    {quoted_cmd}",
-        ]
-        print(
-            "\n".join(f"        {line}" for line in output_lines if line),
-        )
-        print()
-
-
 def log_list_started(filter_patterns: list[str] | None, filter_type: str):
     print(f"[green][*] Finding links in the archive index matching these {filter_type} patterns:[/]")
     print("    {}".format(" ".join(filter_patterns or ())))
@@ -470,14 +195,6 @@ def log_removal_finished(remaining_links: int, removed_links: int):
         print()
         print(f"[red1][√] Removed {removed_links} out of {total_before} links from the archive index.[/]")
         print(f"    Index now contains {remaining_links} links.")
-
-
-### Search Indexing Stage
-
-
-def log_index_started(url: str):
-    print(f"[green][*] Indexing url: {url} in the search index[/]")
-    print()
 
 
 ### Helpers

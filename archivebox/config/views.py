@@ -360,12 +360,27 @@ def _binary_sort_key(binary: Binary) -> tuple[int, int, int, Any]:
 
 
 def get_db_binaries_by_name() -> dict[str, Binary]:
+    """Group Binary rows by a URL-safe canonical name.
+
+    Hooks occasionally emit ``BinaryEvent.name`` carrying an abspath rather
+    than a short binary name (see ``services/binary_service.py``). That used
+    to leak ``name='/Users/.../bin/foo'`` rows into the DB, which then broke
+    ``/admin/environment/binaries`` because the admin URL regex is
+    ``(?P<key>[^/]+)``. Canonicalize at the keying step so duplicates fold
+    into the real binary and the admin link key stays slash-free regardless
+    of legacy DB state.
+    """
+    from archivebox.machine.models import _canonical_binary_name
+
     grouped: dict[str, list[Binary]] = {}
     binary_name_aliases = {
         "youtube-dl": "yt-dlp",
     }
     for binary in Binary.objects.all():
-        canonical_name = binary_name_aliases.get(binary.name, binary.name)
+        canonical_name = _canonical_binary_name(binary.name)
+        canonical_name = binary_name_aliases.get(canonical_name, canonical_name)
+        if not canonical_name:
+            continue
         grouped.setdefault(canonical_name, []).append(binary)
 
     return {name: max(records, key=_binary_sort_key) for name, records in grouped.items()}
@@ -628,6 +643,7 @@ def worker_list_view(request: HttpRequest, **kwargs) -> TableContext:
 
     rows = {
         "Name": [],
+        "Type": [],
         "State": [],
         "PID": [],
         "Started": [],
@@ -657,12 +673,115 @@ def worker_list_view(request: HttpRequest, **kwargs) -> TableContext:
             continue
         all_config[config_name] = config_data
 
-    # Add top row for supervisord process manager
+    # Collect every PID we plan to show so we can resolve them to Process rows
+    # in a single query. supervisord's per-worker description carries the pid
+    # in the form ``pid 12345, uptime 0:01:23`` (or just the bare ``pid``
+    # placeholder when stopped); we ignore non-numeric values.
+    process_items = supervisor.getAllProcessInfo()
+    if not isinstance(process_items, list):
+        process_items = []
+
+    def _parse_worker_pid_and_uptime(description: str) -> tuple[int | None, str]:
+        body = description.replace("pid ", "", 1)
+        pid_part, _, uptime_part = body.partition(", uptime ")
+        try:
+            return int(pid_part.strip()), uptime_part.strip()
+        except ValueError:
+            return None, ""
+
+    pids: set[int] = set()
+    supervisor_pid = supervisor.getPID()
+    if isinstance(supervisor_pid, int):
+        pids.add(supervisor_pid)
+    for proc_data in process_items:
+        if not isinstance(proc_data, dict):
+            continue
+        pid_int, _ = _parse_worker_pid_and_uptime(str(proc_data.get("description") or ""))
+        if pid_int is not None:
+            pids.add(pid_int)
+
+    pid_to_process_id: dict[int, str] = {}
+    pid_to_process_type: dict[int, str] = {}
+    if pids:
+        try:
+            from archivebox.machine.models import Machine, Process
+
+            for row in (
+                Process.objects.filter(machine=Machine.current(), pid__in=pids)
+                .order_by("pid", "-started_at", "-created_at")
+                .only("id", "pid", "process_type")
+            ):
+                if row.pid in pid_to_process_id:
+                    continue  # keep the most recent row per PID
+                pid_to_process_id[row.pid] = str(row.id)
+                pid_to_process_type[row.pid] = row.process_type
+
+        except Exception:
+            pass
+
+    def _pid_cell(pid_value: int | None, uptime_str: str = ""):
+        if pid_value is None:
+            return ""
+        pid_text = str(pid_value)
+        process_id = pid_to_process_id.get(pid_value)
+        if process_id:
+            link = format_html('<a href="/admin/machine/process/{}/change/">{}</a>', process_id, pid_text)
+        else:
+            link = format_html("{}", pid_text)
+        if uptime_str:
+            return format_html("{}, uptime {}", link, uptime_str)
+        return link
+
+    # Add top row for supervisord process manager. supervisord exposes its
+    # state + pid over XML-RPC but not its own start time / exit status / uptime,
+    # so we read those from the OS process (or fall back to the Process row
+    # recorded in _record_supervisord_process). Exit status stays blank while
+    # it's RUNNING — supervisord wouldn't be answering RPC if it had exited.
     rows["Name"].append(ItemLink("supervisord", key="supervisord"))
+    rows["Type"].append("supervisord")
     supervisor_state = supervisor.getState()
-    rows["State"].append(str(supervisor_state.get("statename") if isinstance(supervisor_state, dict) else ""))
-    rows["PID"].append(str(supervisor.getPID()))
-    rows["Started"].append("-")
+    state_name = str(supervisor_state.get("statename") if isinstance(supervisor_state, dict) else "")
+    rows["State"].append(state_name)
+
+    supervisor_started = ""
+    supervisor_uptime = ""
+    try:
+        import time as _time
+
+        import psutil
+
+        ps_proc = psutil.Process(supervisor_pid)
+        create_time = ps_proc.create_time()
+        supervisor_started = format_parsed_datetime(create_time)
+        seconds = max(int(_time.time() - create_time), 0)
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        supervisor_uptime = f"{hours}:{minutes:02d}:{secs:02d}"
+    except Exception:
+        try:
+            from archivebox.machine.models import Machine, Process
+
+            row = (
+                Process.objects.filter(
+                    machine=Machine.current(),
+                    process_type=Process.TypeChoices.SUPERVISORD,
+                    pid=supervisor_pid,
+                )
+                .order_by("-started_at")
+                .first()
+            )
+            if row and row.started_at:
+                supervisor_started = row.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                seconds = max(int((timezone.now() - row.started_at).total_seconds()), 0)
+                hours, remainder = divmod(seconds, 3600)
+                minutes, secs = divmod(remainder, 60)
+                supervisor_uptime = f"{hours}:{minutes:02d}:{secs:02d}"
+        except Exception:
+            pass
+
+    rows["PID"].append(_pid_cell(supervisor_pid if isinstance(supervisor_pid, int) else None, supervisor_uptime))
+    rows["Started"].append(supervisor_started or "-")
+
     rows["Command"].append("supervisord --configuration=tmp/supervisord.conf")
     rows["Logfile"].append(
         format_html(
@@ -671,12 +790,9 @@ def worker_list_view(request: HttpRequest, **kwargs) -> TableContext:
             "logs/supervisord.log",
         ),
     )
-    rows["Exit Status"].append("0")
+    rows["Exit Status"].append("" if state_name == "RUNNING" else "-")
 
     # Add a row for each worker process managed by supervisord
-    process_items = supervisor.getAllProcessInfo()
-    if not isinstance(process_items, list):
-        process_items = []
     for proc_data in process_items:
         if not isinstance(proc_data, dict):
             continue
@@ -685,10 +801,15 @@ def worker_list_view(request: HttpRequest, **kwargs) -> TableContext:
         proc_start = proc_data.get("start")
         proc_logfile = str(proc_data.get("stdout_logfile") or "")
         proc_config = all_config.get(proc_name, {})
+        pid_int, uptime_str = _parse_worker_pid_and_uptime(proc_description)
 
         rows["Name"].append(ItemLink(proc_name, key=proc_name))
+        # Prefer the Process row's process_type when we have one (e.g. "worker",
+        # "hook"); otherwise fall back to the generic "worker" label since
+        # everything in this loop is supervisord-managed.
+        rows["Type"].append(pid_to_process_type.get(pid_int, "worker") if pid_int else "worker")
         rows["State"].append(str(proc_data.get("statename") or ""))
-        rows["PID"].append(proc_description.replace("pid ", ""))
+        rows["PID"].append(_pid_cell(pid_int, uptime_str))
         rows["Started"].append(format_parsed_datetime(proc_start))
         rows["Command"].append(str(proc_config.get("command") or ""))
         rows["Logfile"].append(
@@ -811,7 +932,7 @@ def log_list_view(request: HttpRequest, **kwargs) -> TableContext:
                 f.seek(0)
             last_lines = f.read().decode("utf-8", errors="replace").split("\n")
             non_empty_lines = [line for line in last_lines if line.strip()]
-            rows["Most Recent Lines"].append(non_empty_lines[-1])
+            rows["Most Recent Lines"].append(non_empty_lines[-1] if non_empty_lines else "")
 
     return TableContext(
         title="Debug Log files",

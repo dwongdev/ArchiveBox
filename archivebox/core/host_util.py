@@ -87,27 +87,6 @@ def derive_base_url_from_csrf(config: dict[str, Any] | None = None, **config_kwa
     return ""
 
 
-def request_host_is_explicitly_allowed(request_host: str, config) -> bool:
-    """True if the incoming Host is in ALLOWED_HOSTS or matches a CSRF origin.
-
-    Used by ``get_base_url`` to honour the request's own Host header when the
-    operator hasn't pinned ``BASE_URL`` explicitly. The check is intentionally
-    strict — we won't trust arbitrary Host headers, only ones the user has
-    already opted into via ALLOWED_HOSTS / CSRF_TRUSTED_ORIGINS.
-    """
-    if not request_host:
-        return False
-    host, _ = split_host_port(request_host)
-    allowed = _allowed_hosts(config)
-    if host in allowed:
-        return True
-    for origin in _csrf_trusted_origins(config):
-        origin_host, _ = split_host_port(urlparse(origin).netloc)
-        if origin_host == host:
-            return True
-    return False
-
-
 def get_listen_host(config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
     config = config or get_config(**config_kwargs)
     return (config.BIND_ADDR or "").strip()

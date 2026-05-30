@@ -198,7 +198,14 @@ def add(
     #    Discovered URLs become child Snapshots (depth+1)
 
     if index_only:
-        print("[yellow]\\[*] Index-only mode - crawl queued, runner not started[/yellow]")
+        # ``--index-only`` means "add the URLs to the index without archiving
+        # them now". That only holds if we actually materialize the Snapshot
+        # rows here — otherwise the CLI returns success with nothing in the
+        # index, which broke ``test_add_url_after_init`` & friends. Create
+        # the Snapshots synchronously (the same step the runner would do)
+        # but skip starting any worker so extractors don't run.
+        crawl.create_snapshots_from_urls()
+        print("[yellow]\\[*] Index-only mode - URLs indexed, runner not started[/yellow]")
         return crawl, crawl.snapshot_set.all()
 
     # 5. Start the crawl runner to process the queue
@@ -277,7 +284,7 @@ def add(
             except Exception:
                 rel_output_str = str(crawl.output_dir)
 
-            from archivebox.core.host_utils import build_admin_url
+            from archivebox.core.host_util import build_admin_url
 
             admin_url = build_admin_url(f"/admin/crawls/crawl/{crawl.id}/change/", config=config)
 

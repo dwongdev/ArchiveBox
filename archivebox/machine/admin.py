@@ -2,6 +2,7 @@ __package__ = "archivebox.machine"
 
 import json
 import shlex
+from pathlib import Path
 
 from django.contrib import admin, messages
 from django.db.models import DurationField, ExpressionWrapper, F
@@ -14,7 +15,7 @@ from django_object_actions import action
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 from archivebox.misc.logging_util import printable_filesize
-from archivebox.machine.env_utils import env_to_dotenv_text
+from archivebox.machine.env_util import env_to_dotenv_text
 from archivebox.machine.models import Machine, NetworkInterface, Binary, Process
 
 
@@ -398,7 +399,7 @@ class ProcessAdmin(BaseModelAdmin):
         "snapshot_link",
         "crawl_link",
         "cmd_str",
-        "status",
+        "status_badge",
         "duration_display",
         "exit_code",
         "pid",
@@ -413,7 +414,7 @@ class ProcessAdmin(BaseModelAdmin):
         "snapshot_link",
         "crawl_link",
         "cmd_str",
-        "status",
+        "status_badge",
         "duration_display",
         "exit_code",
         "pid",
@@ -628,10 +629,52 @@ class ProcessAdmin(BaseModelAdmin):
     def cmd_str(self, process):
         if not process.cmd:
             return "-"
-        cmd = " ".join(process.cmd[:3]) if isinstance(process.cmd, list) else str(process.cmd)
-        if len(process.cmd) > 3:
-            cmd += " ..."
+        # Compact the list-view rendering only — the change-page ``cmd_display``
+        # still shows the full original ``process.cmd`` (and the DB row is
+        # untouched). If the first argv token looks like an absolute path,
+        # collapse it to its basename so a row like
+        # ``/Users/.../.venv/bin/python -m archivebox foo`` reads as
+        # ``python -m archivebox foo`` in the column.
+        if isinstance(process.cmd, list):
+            parts = [str(arg) for arg in process.cmd[:3]]
+            if parts and (parts[0].startswith("/") or parts[0].startswith("~")):
+                parts[0] = Path(parts[0]).name
+            cmd = " ".join(parts)
+            if len(process.cmd) > 3:
+                cmd += " ..."
+        else:
+            cmd = str(process.cmd)
         return format_html('<code style="font-size: 0.9em;">{}</code>', cmd[:80])
+
+    @admin.display(description="Status", ordering="status")
+    def status_badge(self, process):
+        # Pill-style badge matching the look of other admin status columns.
+        # Color rules requested by the operator:
+        #   RUNNING            → green
+        #   EXITED, code == 0  → grey (clean exit)
+        #   EXITED, code == 10 → grey (treated as a clean / "skipped" exit)
+        #   EXITED, code other → red (failure)
+        #   QUEUED / anything  → amber so it stands out without screaming
+        status_value = str(process.status or "").lower()
+        label = (process.get_status_display() or status_value or "?").upper()
+        exit_code = process.exit_code
+        if status_value == Process.StatusChoices.RUNNING:
+            bg, fg = "#16a34a", "#fff"
+        elif status_value == Process.StatusChoices.EXITED:
+            if exit_code in (0, 10):
+                bg, fg = "#6b7280", "#fff"
+            else:
+                bg, fg = "#dc2626", "#fff"
+        else:
+            bg, fg = "#f59e0b", "#fff"
+        return format_html(
+            '<span style="display:inline-block;background:{};color:{};'
+            "padding:1px 6px;border-radius:3px;font-weight:800;font-size:11px;"
+            'letter-spacing:0.3px;text-transform:uppercase;">{}</span>',
+            bg,
+            fg,
+            label,
+        )
 
     @admin.display(description="Duration", ordering="runtime_sort")
     def duration_display(self, process):

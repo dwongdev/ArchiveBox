@@ -12,7 +12,7 @@ from archivebox.hooks import (
     get_plugin_template,
     get_plugin_name,
 )
-from archivebox.core.host_utils import (
+from archivebox.core.host_util import (
     canonical_base_host_for_request,
     get_admin_base_url,
     get_public_base_url,

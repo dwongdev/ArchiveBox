@@ -10,12 +10,6 @@ from django.db.backends.sqlite3.base import DatabaseWrapper as DjangoSQLiteDatab
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper as DjangoSQLiteCursorWrapper
 
 
-def _is_locked_error(error: BaseException) -> bool:
-    from django.db import OperationalError
-
-    return isinstance(error, (sqlite3.OperationalError, OperationalError)) and "database is locked" in str(error).lower()
-
-
 def _sqlite_lock_retry_timeout() -> float:
     from django.conf import settings
 
@@ -111,7 +105,9 @@ def _retry_locked_database(action, query: str, params=None, *, db_wrapper=None):
         try:
             return action()
         except (sqlite3.OperationalError, Exception) as err:
-            if not _is_locked_error(err):
+            from archivebox.misc.db import sqlite_lock_error
+
+            if not sqlite_lock_error(err):
                 raise
             attempt += 1
             elapsed = time.monotonic() - started_at

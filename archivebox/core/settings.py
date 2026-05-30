@@ -8,13 +8,12 @@ import importlib
 from pathlib import Path
 
 from django.conf.locale.en import formats as en_formats  # type: ignore
-from django.utils.crypto import get_random_string
 
 import archivebox
 
 from archivebox.config.constants import CONSTANTS
 from archivebox.config.common import get_config
-from archivebox.core.host_utils import normalize_base_url, get_admin_base_url, get_api_base_url
+from archivebox.core.host_util import normalize_base_url, get_admin_base_url, get_api_base_url
 from .settings_logging import SETTINGS_LOGGING
 
 
@@ -359,7 +358,34 @@ CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
 ### Security Settings
 ################################################################################
 
-SECRET_KEY = CONFIG.SECRET_KEY or get_random_string(50, "abcdefghijklmnopqrstuvwxyz0123456789_")
+# Persist SECRET_KEY on first use. Data dirs created before init wrote a
+# SECRET_KEY line — or those whose ArchiveBox.conf was hand-edited to remove
+# it — would otherwise sign session cookies with a fresh random key on every
+# boot (because the pydantic field's default_factory regenerates), logging
+# users out on every server restart. ``archivebox init`` writes this for new
+# collections; this branch is the recovery path for the rest.
+#
+# We can't check ``CONFIG.SECRET_KEY`` for "missing" — pydantic's
+# default_factory already filled it with a fresh random value. We have to
+# inspect the conf file directly to know whether the value will survive.
+SECRET_KEY = CONFIG.SECRET_KEY
+try:
+    from archivebox.config.configset import BaseConfigSet as _BaseConfigSet
+
+    _persisted_keys = _BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE)
+    _secret_persisted = bool((_persisted_keys.get("SECRET_KEY") or "").strip())
+except Exception:
+    _secret_persisted = True  # err on the side of NOT touching disk
+if not _secret_persisted:
+    try:
+        from archivebox.config.collection import write_config_file
+
+        write_config_file({"SECRET_KEY": SECRET_KEY})
+    except Exception:
+        # Read-only mount, missing data dir, mid-init race — fall back to the
+        # in-memory random key. The user will get logged out on the next boot
+        # but the server still comes up.
+        pass
 
 ALLOWED_HOSTS = [host.strip() for host in CONFIG.ALLOWED_HOSTS.split(",") if host.strip()]
 CSRF_TRUSTED_ORIGINS = list({origin.strip() for origin in CONFIG.CSRF_TRUSTED_ORIGINS.split(",") if origin.strip()})

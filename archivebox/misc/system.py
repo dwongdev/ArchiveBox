@@ -2,87 +2,14 @@ __package__ = "archivebox.misc"
 
 
 import os
-import signal
-import sys
 
 from json import dump
 from pathlib import Path
-from subprocess import PIPE, Popen, CalledProcessError, CompletedProcess, TimeoutExpired
 
 from atomicwrites import atomic_write as lib_atomic_write
 
 from archivebox.config.common import get_config
 from archivebox.misc.util import enforce_types, ExtendedEncoder
-
-IS_WINDOWS = os.name == "nt"
-
-
-def run(cmd, *args, input=None, capture_output=True, timeout=None, check=False, text=False, start_new_session=True, **kwargs):
-    """Patched of subprocess.run to kill forked child subprocesses and fix blocking io making timeout=innefective
-    Mostly copied from https://github.com/python/cpython/blob/master/Lib/subprocess.py
-    """
-
-    cmd = [str(arg) for arg in cmd]
-
-    if input is not None:
-        if kwargs.get("stdin") is not None:
-            raise ValueError("stdin and input arguments may not both be used.")
-        kwargs["stdin"] = PIPE
-
-    if capture_output:
-        if ("stdout" in kwargs) or ("stderr" in kwargs):
-            raise ValueError("stdout and stderr arguments may not be used with capture_output.")
-        kwargs["stdout"] = PIPE
-        kwargs["stderr"] = PIPE
-
-    pgid = None
-    try:
-        if isinstance(cmd, (list, tuple)) and cmd[0].endswith(".py"):
-            PYTHON_BINARY = sys.executable
-            cmd = (PYTHON_BINARY, *cmd)
-
-        with Popen(cmd, *args, start_new_session=start_new_session, text=text, **kwargs) as process:
-            pgid = os.getpgid(process.pid)
-            try:
-                stdout, stderr = process.communicate(input, timeout=timeout)
-            except TimeoutExpired as exc:
-                process.kill()
-                if IS_WINDOWS:
-                    # Windows accumulates the output in a single blocking
-                    # read() call run on child threads, with the timeout
-                    # being done in a join() on those threads.  communicate()
-                    # _after_ kill() is required to collect that and add it
-                    # to the exception.
-                    timed_out_stdout, timed_out_stderr = process.communicate()
-                    exc.stdout = timed_out_stdout.encode() if isinstance(timed_out_stdout, str) else timed_out_stdout
-                    exc.stderr = timed_out_stderr.encode() if isinstance(timed_out_stderr, str) else timed_out_stderr
-                else:
-                    # POSIX _communicate already populated the output so
-                    # far into the TimeoutExpired exception.
-                    process.wait()
-                raise
-            except BaseException:  # Including KeyboardInterrupt, communicate handled that.
-                process.kill()
-                # We don't call process.wait() as .__exit__ does that for us.
-                raise
-
-            retcode = process.poll()
-            if check and retcode:
-                raise CalledProcessError(
-                    retcode,
-                    process.args,
-                    output=stdout,
-                    stderr=stderr,
-                )
-    finally:
-        # force kill any straggler subprocesses that were forked from the main proc
-        try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGINT)
-        except Exception:
-            pass
-
-    return CompletedProcess(process.args, retcode or 0, stdout, stderr)
 
 
 @enforce_types

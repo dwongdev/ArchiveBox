@@ -67,6 +67,40 @@ class DaphneCloseTimeoutFilter(logging.Filter):
         return True
 
 
+class AsyncioCancelledShieldFilter(logging.Filter):
+    """Drop asyncio's "CancelledError exception in shielded future" noise.
+
+    When a browser disconnects mid-request, daphne cancels the asgi task and
+    asgiref's ``sync_to_async`` shields the synchronous Django view via
+    ``asyncio.shield(exec_coro)``. The shield wakes up to find its parent
+    cancelled and re-raises ``CancelledError``; asyncio's default exception
+    handler then logs the full traceback via the ``asyncio`` logger. There's
+    nothing the server can do (the client is already gone), so these tracebacks
+    are pure noise and cause hundreds of lines of spam per disconnect.
+
+    We match conservatively: only drop the specific shielded-future message
+    that points back into asgiref's shield path. Other asyncio errors fall
+    through unchanged.
+    """
+
+    def filter(self, record) -> bool:
+        if record.name != "asyncio":
+            return True
+        logline = record.getMessage()
+        if "CancelledError exception in shielded future" in logline:
+            return False
+        exc_info = record.exc_info
+        if exc_info and exc_info[0] is not None:
+            try:
+                import asyncio as _asyncio
+
+                if issubclass(exc_info[0], _asyncio.CancelledError):
+                    return False
+            except Exception:
+                pass
+        return True
+
+
 class CustomOutboundWebhookLogFormatter(logging.Formatter):
     def format(self, record):
         result = super().format(record)
@@ -128,6 +162,9 @@ SETTINGS_LOGGING = {
         "daphneclosetimeout": {
             "()": DaphneCloseTimeoutFilter,
         },
+        "asynciocancelledshield": {
+            "()": AsyncioCancelledShieldFilter,
+        },
         "stripansi": {
             "()": StripANSIColorCodesFilter,
         },
@@ -145,7 +182,7 @@ SETTINGS_LOGGING = {
             "level": "DEBUG",
             "markup": False,
             "rich_tracebacks": False,  # Use standard Python tracebacks (no frame/box)
-            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "stripansi"],
+            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "asynciocancelledshield", "stripansi"],
         },
         "logfile": {
             "level": "INFO",
@@ -154,7 +191,7 @@ SETTINGS_LOGGING = {
             "maxBytes": 1024 * 1024 * 25,  # 25 MB
             "backupCount": 10,
             "formatter": "rich",
-            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "stripansi"],
+            "filters": ["noisyrequestsfilter", "daphneclosetimeout", "asynciocancelledshield", "stripansi"],
         },
         "outbound_webhooks": {
             "class": "rich.logging.RichHandler",

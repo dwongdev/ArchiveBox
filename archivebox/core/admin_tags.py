@@ -13,7 +13,7 @@ from django.utils.safestring import mark_safe
 
 from archivebox.base_models.admin import BaseModelAdmin
 from archivebox.core.models import SnapshotTag, Tag
-from archivebox.core.tag_utils import (
+from archivebox.core.tag_util import (
     TAG_HAS_SNAPSHOTS_CHOICES,
     TAG_SORT_CHOICES,
     build_tag_cards,
@@ -24,7 +24,7 @@ from archivebox.core.tag_utils import (
     normalize_has_snapshots_filter,
     normalize_tag_sort,
 )
-from archivebox.core.host_utils import build_snapshot_url
+from archivebox.core.host_util import build_snapshot_url
 
 
 class TagInline(admin.TabularInline):

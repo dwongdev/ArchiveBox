@@ -37,6 +37,6 @@
 {% block content %}
 {{ block.super }}
 {% if crawl_snapshots_changelist %}
-  {{ crawl_snapshots_changelist }}
+  <div id="snapshots">{{ crawl_snapshots_changelist }}</div>
 {% endif %}
 {% endblock %}

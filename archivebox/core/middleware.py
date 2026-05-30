@@ -15,7 +15,7 @@ from django.http import HttpResponseForbidden, HttpResponseNotModified
 from archivebox.config.common import get_config
 from archivebox.config import VERSION
 from archivebox.config.version import get_COMMIT_HASH
-from archivebox.core.host_utils import (
+from archivebox.core.host_util import (
     build_snapshot_url,
     build_admin_url,
     build_web_url,

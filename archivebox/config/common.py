@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, create_model, field_validator, model_vali
 from pydantic_settings import SettingsConfigDict
 from abx_plugins.plugins.base.utils import BASE_CONFIG_PATH, build_config_model, resolve_plugin_configs
 
-from archivebox.config.configset import BaseConfigSet
+from archivebox.config.configset import BaseConfigSet, IniConfigSettingsSource
 from archivebox.config.configset import COMPUTED_CONFIG_KEYS
 
 from .constants import CONSTANTS
@@ -653,6 +653,29 @@ def get_config(
         config_data.update(archivebox_scope_overrides)
 
     config_data["ABX_RUNTIME"] = "archivebox"
+
+    # Decode JSON-encoded complex values (dict/list fields) that came from
+    # string-only sources before validation. ``IniConfigSettingsSource`` does
+    # this for the ArchiveBox.conf path, but Machine.config (mirrored from the
+    # INI via ``_coerce_to_str_dict``) and plugin/env scope overrides bypass
+    # pydantic-settings sources entirely — they feed JSON strings directly
+    # into ``model_validate``, which rejects ``"{...}"`` for a ``dict[str, str]``
+    # field. Run pydantic-settings' own complex-value decoder here so every
+    # source converges on the same shape before validation.
+    _complex_decoder = IniConfigSettingsSource(ArchiveBoxConfig)
+    for _field_name, _field in ArchiveBoxConfig.model_fields.items():
+        if _field_name not in config_data:
+            continue
+        _raw = config_data[_field_name]
+        if not isinstance(_raw, str) or not _raw:
+            continue
+        if _complex_decoder.field_is_complex(_field):
+            config_data[_field_name] = _complex_decoder.prepare_field_value(
+                _field_name,
+                _field,
+                _raw,
+                True,
+            )
 
     config = ArchiveBoxConfig.model_validate(config_data)
     os.environ["LIB_DIR"] = str(config.LIB_DIR)

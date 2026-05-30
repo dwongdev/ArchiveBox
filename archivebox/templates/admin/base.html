@@ -1242,6 +1242,24 @@
                 color: #1d4ed8;
             }
 
+            .action-rearchive-wrapper {
+                position: relative;
+                display: inline-block;
+            }
+
+            .action-rearchive-select {
+                position: absolute;
+                left: 0;
+                bottom: 0;
+                width: 1px;
+                height: 1px;
+                opacity: 0;
+                pointer-events: none;
+                border: 0;
+                padding: 0;
+                margin: 0;
+            }
+
             /* Object count */
             .actions .action-counter {
                 color: #64748b;
@@ -1828,9 +1846,80 @@
                     hidden.dispatchEvent(new Event('change', { bubbles: true }))
                 }
 
+                const rearchiveActions = ['resnapshot_snapshot', 'update_snapshots', 'overwrite_snapshots']
+                const rearchiveItems = {
+                    resnapshot_snapshot: ['➕', 'Create fresh snapshot(s)'],
+                    update_snapshots: ['▶️', 'Retry only failed subtasks'],
+                    overwrite_snapshots: ['♻️', 'Reset & retry from scratch'],
+                }
+                let rearchiveBuilt = false
+
                 // for each action in the dropdown, turn it into a button instead
                 container.find('select[name=action] option:gt(0)').each(function () {
                     const action_type = this.value
+                    if (rearchiveActions.includes(action_type)) {
+                        if (rearchiveBuilt) return
+                        rearchiveBuilt = true
+                        const wrapper = $('<span></span>')
+                            .addClass('action-rearchive-wrapper')
+                            .appendTo(buttons)
+                        const select = $('<select></select>')
+                            .addClass('action-rearchive-select')
+                            .attr('aria-label', 'Re-Archive')
+                            .appendTo(wrapper)
+                        $('<button>')
+                            .attr('type', 'button')
+                            .addClass('button')
+                            .html('Re-Archive <span aria-hidden="true">▾</span>')
+                            .click(function (e) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                const el = select[0]
+                                if (typeof el.showPicker === 'function') {
+                                    try { el.showPicker() } catch (err) { el.focus(); el.click() }
+                                } else {
+                                    el.focus()
+                                    el.click()
+                                }
+                                return false
+                            })
+                            .appendTo(wrapper)
+                        $('<option></option>').attr('value', '').attr('hidden', true).appendTo(select)
+                        rearchiveActions.forEach(function (action_value) {
+                            const opt = container.find('select[name=action] option[value="' + action_value + '"]')[0]
+                            if (!opt) return
+                            const [icon, label] = rearchiveItems[action_value]
+                            $('<option></option>')
+                                .attr('value', action_value)
+                                .text(icon + ' ' + label)
+                                .appendTo(select)
+                        })
+                        select.change(function () {
+                            const action_value = this.value
+                            if (!action_value) return
+                            const num_selected = (
+                                document.querySelector('.action-selected-count')?.textContent.split('/')[0].trim()
+                                || document.querySelector('.action-counter')?.textContent.split(' ')[0]
+                                || '0'
+                            )
+                            if (action_value === 'overwrite_snapshots') {
+                                const message = (
+                                    'Are you sure you want to re-archive (overwrite) ' + num_selected + ' Snapshots?\n\n' +
+                                    'This will delete all previously saved files from these Snapshots and re-archive them from scratch.\n\n'
+                                )
+                                if (!window.confirm(message)) {
+                                    this.value = ''
+                                    return
+                                }
+                            }
+                            container.find('select[name=action]')
+                                .val(action_value)
+                                .trigger('change')
+                            $('#changelist-form button[name="index"]').click()
+                            document.querySelector('#logo').outerHTML = '<div class="loader"></div>'
+                        })
+                        return
+                    }
                     if (action_type === 'set_crawl_permissions') {
                         const wrapper = $('<span></span>')
                             .addClass('action-permissions-wrapper')

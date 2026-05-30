@@ -648,7 +648,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             return False
 
-        from archivebox.core.host_utils import get_admin_host, get_api_host, get_listen_host, get_public_host, get_web_host, split_host_port
+        from archivebox.core.host_util import get_admin_host, get_api_host, get_listen_host, get_public_host, get_web_host, split_host_port
 
         config = get_config()
         host = parsed.hostname.lower().strip(".")
@@ -2989,7 +2989,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def to_dict(self, extended: bool = False) -> dict[str, Any]:
         """Convert Snapshot to a dictionary (replacement for Link._asdict())"""
-        from archivebox.core.host_utils import build_snapshot_url
+        from archivebox.core.host_util import build_snapshot_url
 
         archive_size = self.archive_size
 

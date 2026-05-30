@@ -10,12 +10,9 @@ from collections.abc import Callable
 from pathlib import Path
 from inspect import signature
 from functools import wraps
-from hashlib import sha256
 from urllib.parse import urlparse, quote, unquote
 from html import escape, unescape
 from datetime import datetime, timezone
-
-from base32_crockford import encode as base32_encode
 
 from .logging import COLOR_DICT
 
@@ -41,14 +38,6 @@ def filter_queryset_by_uuid_substring(queryset, slug: str, field: str = "id"):
     return queryset.filter(Q(**{prefix: normalized}) | Q(**{suffix: normalized}))
 
 
-def detect_encoding(rawdata):
-    try:
-        import chardet  # type:ignore
-    except ImportError:
-        return "utf-8"
-    return chardet.detect(rawdata)["encoding"]
-
-
 ### Parsing Helpers
 
 # All of these are (str) -> str
@@ -65,10 +54,6 @@ query = lambda url: urlparse(url).query
 fragment = lambda url: urlparse(url).fragment
 extension = lambda url: basename(url).rsplit(".", 1)[-1].lower() if "." in basename(url) else ""
 base_url = lambda url: without_scheme(url)  # uniq base url used to dedupe links
-
-without_www = lambda url: url.replace("://www.", "://", 1)
-without_trailing_slash = lambda url: url[:-1] if url[-1] == "/" else url.replace("/?", "?")
-hashurl = lambda url: base32_encode(int(sha256(base_url(url).encode("utf-8")).hexdigest(), 16))[:20]
 
 urlencode = lambda s: s and quote(s, encoding="utf-8", errors="replace")
 urldecode = lambda s: s and unquote(s)
@@ -473,20 +458,6 @@ def ansi_to_html(text: str) -> str:
         return TEMPLATE.format(COLOR_DICT[color][0])
 
     return COLOR_REGEX.sub(single_sub, text)
-
-
-@enforce_types
-def dedupe(options: list[str]) -> list[str]:
-    """
-    Deduplicates the given CLI args by key=value. Options that come later override earlier.
-    """
-    deduped = {}
-
-    for option in options:
-        key = option.split("=")[0]
-        deduped[key] = option
-
-    return list(deduped.values())
 
 
 class ExtendedEncoder(pyjson.JSONEncoder):

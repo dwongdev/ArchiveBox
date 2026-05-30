@@ -28,8 +28,8 @@ from archivebox.misc.util import htmldecode, urldecode
 from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.misc.logging_util import printable_filesize
 from archivebox.search.admin import SEARCH_RESULT_CACHE_TTL, SearchResultsAdminMixin, SearchResultsChangeList, get_admin_search_cache_key
-from archivebox.core.host_utils import build_snapshot_url, build_web_url
-from archivebox.core.tag_utils import get_or_create_tag
+from archivebox.core.host_util import build_snapshot_url, build_web_url
+from archivebox.core.tag_util import get_or_create_tag
 from archivebox.hooks import discover_hooks, get_plugin_icon, get_plugin_name, get_plugins
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
@@ -1609,12 +1609,18 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         # on the resulting crawl so existing snapshots don't cause the crawl to
         # seal immediately with zero new snapshots (the default ONLY_NEW=True
         # would skip any URLs that have ever been archived before).
-        add(urls=urls, bg=True, config={"ONLY_NEW": False})
+        crawl, _ = add(urls=urls, bg=True, config={"ONLY_NEW": False})
 
         messages.success(
             request,
             f"Created 1 queued crawl with {len(snapshots)} URL(s). The background runner will create snapshots and process them.",
         )
+
+        # Redirect to the new crawl's admin page so the user lands on the
+        # work-in-progress crawl, not the old snapshot they re-archived from.
+        # A snapshot-view redirect would race the runner — the new snapshot
+        # may sit queued for a while before the runner creates the DB row.
+        return redirect(f"/admin/crawls/crawl/{crawl.id}/change/#snapshots")
 
     @admin.action(
         description="🔄 Redo",

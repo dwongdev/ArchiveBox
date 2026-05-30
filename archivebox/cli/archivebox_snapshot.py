@@ -37,7 +37,7 @@ import rich_click as click
 from rich import print as rprint
 from django.db.models import Case, IntegerField, Q, QuerySet, When
 
-from archivebox.cli.cli_utils import apply_filters
+from archivebox.cli.cli_util import apply_filters
 
 
 # =============================================================================

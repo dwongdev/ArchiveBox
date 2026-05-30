@@ -34,7 +34,7 @@ from archivebox.base_models.models import (
     get_or_create_system_user_pk,
 )
 from archivebox.workers.models import RETRY_AT_MAX, ModelWithStateMachine, BaseStateMachine
-from archivebox.crawls.schedule_utils import next_run_for_schedule, validate_schedule
+from archivebox.crawls.schedule_util import next_run_for_schedule, validate_schedule
 from archivebox.misc.util import validate_url, validate_url_length
 
 if TYPE_CHECKING:

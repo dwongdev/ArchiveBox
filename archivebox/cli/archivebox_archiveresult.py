@@ -38,7 +38,7 @@ import sys
 import rich_click as click
 from rich import print as rprint
 
-from archivebox.cli.cli_utils import apply_filters
+from archivebox.cli.cli_util import apply_filters
 
 
 def build_archiveresult_request(snapshot_id: str, plugin: str, hook_name: str = "", status: str = "queued") -> dict:

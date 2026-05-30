@@ -12,7 +12,7 @@ from django.http import HttpRequest
 from django.urls import reverse
 
 from archivebox.config.common import get_config
-from archivebox.core.host_utils import build_snapshot_url, build_web_url
+from archivebox.core.host_util import build_snapshot_url, build_web_url
 from archivebox.core.models import Snapshot, SnapshotTag, Tag
 
 

@@ -13,7 +13,7 @@ from django.utils.html import format_html
 from archivebox.misc.util import URL_REGEX, find_all_urls, parse_filesize_to_bytes
 from taggit.utils import edit_string_for_tags, parse_tags
 from archivebox.base_models.admin import KeyValueWidget
-from archivebox.crawls.schedule_utils import validate_schedule
+from archivebox.crawls.schedule_util import validate_schedule
 from archivebox.config.common import get_config, parse_delete_after
 from archivebox.core.permissions import PERMISSIONS_CHOICES, PERMISSIONS_PUBLIC, filter_personas_by_permissions, is_admin_user
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
