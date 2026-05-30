@@ -128,10 +128,18 @@ def _get_process_binary_env_keys(plugin_name: str, hook_path: str, env: dict[str
 
 
 def _sanitize_machine_config(config: dict[str, Any] | None, *, lib_dir: str | Path | None = None) -> dict[str, Any]:
+    """Validate ``Machine.config`` in place.
+
+    Drops stale ``*_BINARY`` overrides whose path no longer exists or whose
+    path falls outside of ``LIB_DIR`` (so a binary uninstall or a lib_dir
+    move clears the override automatically). Non-``_BINARY`` keys
+    (``BASE_URL``, ``SERVER_SECURITY_MODE``, plugin tunables, etc.) are
+    pass-through — they're arbitrary config overrides and not ours to filter.
+    """
     if not isinstance(config, dict):
         return {}
 
-    sanitized = {key: value for key, value in config.items() if str(key).endswith("_BINARY")}
+    sanitized = dict(config)
     active_lib_dir = Path(lib_dir).expanduser().absolute() if lib_dir else None
     for key, value in list(sanitized.items()):
         if not str(key).endswith("_BINARY"):
@@ -303,6 +311,19 @@ class Machine(ModelWithHealthStats):
             machine.save(update_fields=["config"])
             return machine
         return None
+
+    def save(self, *args, **kwargs):
+        # Drop the ``Machine.current()`` module-level cache on every save so
+        # config edits (admin form, from_json, etc.) become live in the same
+        # process without waiting out the 7-day ``MACHINE_RECHECK_INTERVAL``.
+        # The cache reads ``_CURRENT_MACHINE.modified_at`` and that value
+        # never moves forward on the cached object even when the row is
+        # updated in the DB, so without this we'd keep serving stale
+        # ``machine.config`` (incl. ``BASE_URL``) until the worker restarts.
+        super().save(*args, **kwargs)
+        global _CURRENT_MACHINE
+        if _CURRENT_MACHINE is not None and _CURRENT_MACHINE.pk == self.pk:
+            _CURRENT_MACHINE = None
 
 
 class NetworkInterfaceManager(models.Manager):
