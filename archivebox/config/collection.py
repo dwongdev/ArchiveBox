@@ -1,6 +1,7 @@
 __package__ = "archivebox.config"
 
 import io
+import json
 import os
 from typing import Any
 
@@ -43,12 +44,28 @@ def _coerce_to_str_dict(config: Any) -> dict[str, str]:
     INI files only round-trip strings, so we normalize Machine.config values
     to strings on the way out and accept the same shape on the way back.
     Pydantic re-coerces types at read time inside ``get_config``.
+
+    Composite values (``dict`` / ``list`` / ``tuple``) are JSON-encoded so
+    they round-trip back through pydantic-settings — ``str(some_dict)``
+    would produce Python's repr (``{'k': 'v'}`` with single quotes), and
+    pydantic-settings refuses to parse that as a ``dict`` field, causing
+    e.g. ``ABX_INSTALL_CACHE`` to crash with ``ValidationError: Input
+    should be a valid dictionary``.
     """
     if not config:
         return {}
-    if hasattr(config, "items"):
-        return {str(key).upper(): "" if value is None else str(value) for key, value in config.items()}
-    return {}
+    if not hasattr(config, "items"):
+        return {}
+    flat: dict[str, str] = {}
+    for key, value in config.items():
+        upper_key = str(key).upper()
+        if value is None:
+            flat[upper_key] = ""
+        elif isinstance(value, (dict, list, tuple)):
+            flat[upper_key] = json.dumps(value, default=str)
+        else:
+            flat[upper_key] = str(value)
+    return flat
 
 
 def _load_file_config_dict() -> tuple[dict[str, str], float | None]:
