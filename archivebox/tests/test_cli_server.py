@@ -15,10 +15,10 @@ from datetime import datetime
 from types import SimpleNamespace
 
 
-def test_sqlite_connections_use_explicit_30_second_busy_timeout():
+def test_sqlite_connections_use_explicit_busy_timeout():
     from archivebox.core.settings import SQLITE_CONNECTION_OPTIONS
 
-    assert SQLITE_CONNECTION_OPTIONS["OPTIONS"]["timeout"] == 30
+    assert SQLITE_CONNECTION_OPTIONS["OPTIONS"]["timeout"] == 30.0
     assert "PRAGMA busy_timeout = 30000;" in SQLITE_CONNECTION_OPTIONS["OPTIONS"]["init_command"]
     assert "PRAGMA journal_mode = WAL;" in SQLITE_CONNECTION_OPTIONS["OPTIONS"]["init_command"]
 

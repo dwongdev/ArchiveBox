@@ -67,8 +67,14 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
         else:
             # A paused snapshot may still accept explicit maintenance for one
             # ArchiveResult, but this path must not transition it back to
-            # queued/startable work.
-            snapshot.safe_update({"retry_at": timezone.now()}, refresh=False)
+            # queued/startable work. Guard: only set retry_at while the row is
+            # still paused — concurrent resume would otherwise see a stale
+            # retry_at marker.
+            snapshot.safe_update(
+                {"retry_at": timezone.now()},
+                refresh=False,
+                extra_filter={"status": snapshot.StatusChoices.PAUSED},
+            )
         crawl = snapshot.crawl
         if not crawl.claim_processing_lock(lock_seconds=10):
             rprint(
@@ -265,8 +271,14 @@ def run_plugins(
             # also keep status=paused here: `retry_at` only asks the orchestrator
             # to process the queued plugin rows, and run_due_snapshot restores
             # retry_at=MAX afterward instead of resuming the snapshot lifecycle.
-            for snapshot in Snapshot.objects.filter(id__in=existing_snapshot_ids).only("id", "modified_at"):
-                snapshot.safe_update({"retry_at": queue_at, "modified_at": queue_at}, refresh=False)
+            for snapshot in Snapshot.objects.filter(id__in=existing_snapshot_ids).only("id", "status", "modified_at"):
+                # Guard the read-time status so we never bump retry_at on a
+                # row that's been re-queued / started by a concurrent runner.
+                snapshot.safe_update(
+                    {"retry_at": queue_at, "modified_at": queue_at},
+                    refresh=False,
+                    extra_filter={"status": snapshot.status},
+                )
         else:
             # No plugin rows were requested, so this is a full snapshot retry.
             for snapshot in Snapshot.objects.filter(id__in=existing_snapshot_ids).only("id", "status", "retry_at", "modified_at"):
@@ -278,6 +290,7 @@ def run_plugins(
                         "modified_at": queue_at,
                     },
                     refresh=False,
+                    extra_filter={"status": snapshot.status},
                 )
     if existing_crawl_ids and not requested_rows:
         from archivebox.crawls.models import Crawl
@@ -289,7 +302,11 @@ def run_plugins(
             }
             if crawl.status != Crawl.StatusChoices.STARTED:
                 update_fields["status"] = Crawl.StatusChoices.QUEUED
-            crawl.safe_update(update_fields, refresh=False)
+            crawl.safe_update(
+                update_fields,
+                refresh=False,
+                extra_filter={"status": crawl.status},
+            )
 
     if processed_count == 0:
         rprint("[red]No snapshots to process[/red]", file=sys.stderr)

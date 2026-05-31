@@ -209,6 +209,28 @@ def isolated_data_dir(tmp_path):
 
 
 @pytest.fixture
+def hermetic_lib_dir(tmp_path, monkeypatch):
+    """
+    Point LIB_DIR at a tmp directory so the test can write fake binaries
+    without touching the real ``~/Library/Application Support/abx/lib`` (which
+    can contain symlinks to SIP-protected system binaries on macOS).
+
+    Opt-in only: most tests should reuse the cached real LIB_DIR for speed —
+    rebuilding from scratch per-test adds ~10× overhead. Use this only when
+    the test synthesizes binary paths or validates LIB_DIR-relative behavior.
+    """
+    import archivebox.machine.models as machine_models
+
+    lib_dir = tmp_path / "lib"
+    (lib_dir / "bin").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LIB_DIR", str(lib_dir))
+    monkeypatch.setenv("ABXPKG_LIB_DIR", str(lib_dir))
+    machine_models._CURRENT_MACHINE = None
+    machine_models._CURRENT_PROCESS = None
+    return lib_dir
+
+
+@pytest.fixture
 def initialized_archive(isolated_data_dir):
     """
     Initialize ArchiveBox archive in isolated directory.

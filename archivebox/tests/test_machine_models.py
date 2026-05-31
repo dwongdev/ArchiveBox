@@ -157,8 +157,13 @@ class TestMachineModel:
         assert result is not None
         assert result.config.get("WGET_BINARY") == str(wget_path)
 
-    def test_machine_from_jsonl_keeps_only_valid_binary_paths(self, cleanup_paths):
-        """Machine.from_json() should persist only valid LIB_DIR binary paths."""
+    def test_machine_from_jsonl_drops_invalid_binary_paths_keeps_mirror(self, cleanup_paths):
+        """Machine.from_json() drops invalid binary paths but mirrors other keys.
+
+        ``Machine.config`` mirrors ``ArchiveBox.conf`` (non-binary user config
+        keys live alongside derived binary state), so non-binary keys in the
+        import survive. Only ``_BINARY`` paths get validated/dropped on import.
+        """
         from archivebox.config.constants import CONSTANTS
 
         Machine.current()  # Ensure machine exists
@@ -178,7 +183,7 @@ class TestMachineModel:
 
         assert result is not None
         assert result.config.get("WGET_BINARY") == str(wget_path)
-        assert "CHROMIUM_VERSION" not in result.config
+        assert result.config.get("CHROMIUM_VERSION") == "123.4.5"
         assert "YTDLP_BINARY" not in result.config
 
     def test_machine_from_jsonl_invalid(self):
@@ -186,8 +191,14 @@ class TestMachineModel:
         result = Machine.from_json({"invalid": "record"})
         assert result is None
 
-    def test_machine_current_keeps_only_derived_runtime_cache(self, cleanup_paths):
-        """Machine.current() should keep derived cache entries, not runtime config."""
+    def test_machine_current_drops_invalid_binary_paths_keeps_mirror(self, cleanup_paths):
+        """Machine.current() mirrors ArchiveBox.conf, only drops invalid binaries.
+
+        ``Machine.config`` is the file ↔ DB mirror of ``ArchiveBox.conf``, so
+        non-binary keys (``CHROME_ISOLATION``, ``CHROMIUM_VERSION``, etc.) are
+        preserved on read. Only ``_BINARY`` paths get validated against
+        ``LIB_DIR`` and dropped when stale/missing.
+        """
         import archivebox.machine.models as models
         from archivebox.config.constants import CONSTANTS
 
@@ -216,17 +227,26 @@ class TestMachineModel:
 
         refreshed = Machine.current(refresh=True)
 
+        # Valid binary paths inside LIB_DIR survive.
         assert refreshed.config.get("CHROME_BINARY") == str(chrome_path)
         assert refreshed.config.get("NODE_BINARY") == str(node_path)
-        assert "ABX_INSTALL_CACHE" not in refreshed.config
-        assert "CHROME_ISOLATION" not in refreshed.config
-        assert "CHROME_USER_DATA_DIR" not in refreshed.config
-        assert "CHROMIUM_VERSION" not in refreshed.config
+        # Non-binary mirror keys survive — they belong to ArchiveBox.conf.
+        assert refreshed.config.get("ABX_INSTALL_CACHE") == {"wget": "2026-03-24T00:00:00+00:00"}
+        assert refreshed.config.get("CHROME_ISOLATION") == "snapshot"
+        assert refreshed.config.get("CHROME_USER_DATA_DIR") == "/tmp/profile"
+        assert refreshed.config.get("CHROMIUM_VERSION") == "123.4.5"
+        # Stale binary paths get dropped: YTDLP_BINARY outside LIB_DIR,
+        # WGET_BINARY path doesn't exist.
         assert "YTDLP_BINARY" not in refreshed.config
         assert "WGET_BINARY" not in refreshed.config
 
     def test_get_config_auto_applies_current_machine_config(self, cleanup_paths):
-        """get_config() should include sanitized Machine.current() config by default."""
+        """get_config() applies the full Machine.config mirror as scope overrides.
+
+        ``Machine.config`` mirrors ``ArchiveBox.conf``, so non-binary user keys
+        like ``CHROME_ISOLATION`` flow through into the merged ``get_config()``
+        result alongside validated binary paths.
+        """
         import archivebox.machine.models as models
         from archivebox.config.common import get_config
 
@@ -247,7 +267,7 @@ class TestMachineModel:
         config = get_config()
 
         assert config.CHROME_BINARY == str(chrome_path)
-        assert config.CHROME_ISOLATION == "crawl"
+        assert config.CHROME_ISOLATION == "snapshot"
 
     def test_machine_manager_current(self):
         """Machine.objects.current() should return current machine."""

@@ -1582,6 +1582,10 @@ class CrawlMachine(BaseStateMachine):
         now = timezone.now()
         self.crawl.status = Crawl.StatusChoices.SEALED
         self.crawl.retry_at = None
+        # Guard: never seal a row that a concurrent writer flipped to PAUSED.
+        # Sealing is idempotent (SEALED→SEALED is a no-op rewrite), so
+        # status__in covers both the QUEUED/STARTED→SEALED transition and the
+        # rare re-entry case.
         updated = self.crawl.safe_update(
             {
                 "status": Crawl.StatusChoices.SEALED,
@@ -1589,6 +1593,13 @@ class CrawlMachine(BaseStateMachine):
                 "modified_at": now,
             },
             refresh=False,
+            extra_filter={
+                "status__in": [
+                    Crawl.StatusChoices.QUEUED,
+                    Crawl.StatusChoices.STARTED,
+                    Crawl.StatusChoices.SEALED,
+                ],
+            },
         )
         if not updated:
             self.crawl.refresh_from_db()

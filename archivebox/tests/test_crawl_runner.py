@@ -299,10 +299,23 @@ def test_crawl_start_event_does_not_reschedule_sealed_parent_until_explicit_requ
 
     crawl.refresh_from_db()
     snapshot.refresh_from_db()
+    # CrawlStartEvent on a sealed parent is a no-op — neither the parent nor
+    # its sealed child gets resurrected by the handler.
     assert crawl.status == Crawl.StatusChoices.SEALED
-    assert crawl.retry_at is None
+    assert crawl.retry_at == before
     assert snapshot.status == Snapshot.StatusChoices.SEALED
     assert snapshot.retry_at == before
+
+    # The orchestrator's seal-cleanup pass picks the sealed row up via
+    # retry_at, runs cleanup, and clears retry_at — that's how the
+    # ``retry_at != None`` invariant the handler intentionally preserves
+    # eventually drains to ``None``.
+    from archivebox.services.runner import run_due_crawl
+
+    assert run_due_crawl(crawl, lock_seconds=10) is True
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert crawl.retry_at is None
 
     crawl.update_and_requeue(status=Crawl.StatusChoices.QUEUED, retry_at=timezone.now())
     crawl.refresh_from_db()
@@ -341,7 +354,7 @@ def test_snapshot_queue_selection_is_retry_at_only_for_sealed_maintenance():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_machine_service_persists_only_derived_config_events(tmp_path):
+def test_machine_service_persists_only_derived_config_events(tmp_path, hermetic_lib_dir):
     from abx_dl.events import MachineEvent
     from abx_dl.orchestrator import create_bus
     from archivebox.machine.models import Machine
@@ -350,9 +363,7 @@ def test_machine_service_persists_only_derived_config_events(tmp_path):
     machine = Machine.current()
     machine.config = {}
     machine.save(update_fields=["config"])
-    lib_dir = tmp_path / "lib"
-    wget_binary = lib_dir / "bin" / "wget"
-    wget_binary.parent.mkdir(parents=True)
+    wget_binary = hermetic_lib_dir / "bin" / "wget"
     wget_binary.write_text("#!/bin/sh\n")
     wget_binary.chmod(0o755)
 
@@ -400,11 +411,19 @@ def test_machine_service_persists_only_derived_config_events(tmp_path):
     asyncio.run(run_test())
 
     machine.refresh_from_db()
-    assert machine.config == {}
+    # User events are dropped (handler ignores non-derived). At the event
+    # projector ``machine_service.py`` strips anything that isn't a binary
+    # path / install cache — that's the security boundary that stops plugins
+    # from rewriting arbitrary user config via events. So CHROME_USER_DATA_DIR
+    # from the derived payload is dropped; WGET_BINARY made it in (inside
+    # LIB_DIR) then the unset removed it; ABX_INSTALL_CACHE survives.
+    assert machine.config == {
+        "ABX_INSTALL_CACHE": {"wget": "2026-03-24T00:00:00+00:00"},
+    }
 
 
 @pytest.mark.django_db(transaction=True)
-def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path):
+def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path, hermetic_lib_dir):
     import archivebox.machine.models as machine_models
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.config.common import get_config
@@ -413,13 +432,10 @@ def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path):
     from archivebox.machine.models import Machine
     from archivebox.services.runner import CrawlRunner
 
-    machine_models._CURRENT_MACHINE = None
-    machine_models._CURRENT_PROCESS = None
+    resolved_lib_dir = get_config(include_machine=False).LIB_DIR
+    assert resolved_lib_dir == hermetic_lib_dir, f"LIB_DIR override not applied: {resolved_lib_dir!r} != {hermetic_lib_dir!r}"
 
-    lib_dir = get_config(include_machine=False).LIB_DIR
-    wget_binary = lib_dir / "bin" / "wget"
-    wget_binary.parent.mkdir(parents=True, exist_ok=True)
-    original_wget = wget_binary.read_bytes() if wget_binary.exists() else None
+    wget_binary = resolved_lib_dir / "bin" / "wget"
     wget_binary.write_text("#!/bin/sh\n", encoding="utf-8")
     wget_binary.chmod(0o755)
     external_binary = tmp_path / "external" / "yt-dlp"
@@ -438,26 +454,30 @@ def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path):
     machine.save(update_fields=["config"])
     machine_models._CURRENT_MACHINE = machine
 
-    try:
-        crawl = Crawl.objects.create(
-            urls="https://example.com",
-            config={
-                "PLUGINS": "__archivebox_test_no_plugins__",
-                "CHROME_BINARY": "",
-            },
-            created_by_id=get_or_create_system_user_pk(),
-        )
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        config={
+            "PLUGINS": "__archivebox_test_no_plugins__",
+            "CHROME_BINARY": "",
+        },
+        created_by_id=get_or_create_system_user_pk(),
+    )
 
-        runner = CrawlRunner(crawl)
-        snapshot_ids = runner.load_run_state()
-    finally:
-        if original_wget is None:
-            wget_binary.unlink(missing_ok=True)
-        else:
-            wget_binary.write_bytes(original_wget)
+    runner = CrawlRunner(crawl)
+    snapshot_ids = runner.load_run_state()
 
-    assert runner.derived_config == {"WGET_BINARY": str(wget_binary)}
-    assert runner.base_config["LIB_DIR"] == lib_dir
+    # ``derived_config`` is Machine.config sanitized against LIB_DIR. Binary
+    # paths outside LIB_DIR drop out (YTDLP_BINARY → ``/tmp/...``); the
+    # ArchiveBox.conf mirror values (CHROME_ISOLATION, CHROME_USER_DATA_DIR,
+    # ABX_INSTALL_CACHE) survive so plugin hooks see the same runtime cache
+    # the user/runner persisted.
+    assert runner.derived_config == {
+        "WGET_BINARY": str(wget_binary),
+        "ABX_INSTALL_CACHE": {"wget": "2026-03-24T00:00:00+00:00"},
+        "CHROME_ISOLATION": "snapshot",
+        "CHROME_USER_DATA_DIR": "/tmp/stale-profile",
+    }
+    assert runner.base_config["LIB_DIR"] == resolved_lib_dir
     assert runner.base_config["CHROME_KEEPALIVE"] is False
     assert runner.selected_plugins == ["__archivebox_test_no_plugins__"]
     assert Snapshot.objects.filter(id__in=snapshot_ids, crawl=crawl, url="https://example.com").count() == 1

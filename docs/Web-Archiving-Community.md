@@ -426,7 +426,7 @@ Find your local archiving group in the list and see how you can contribute!
 - [Software Preservation Network](https://www.softwarepreservationnetwork.org/about/) (International)
 - [ITHAKA](https://www.ithaka.org/content/our-mission), [Portico](https://www.portico.org/why-portico/), [JSTOR](https://www.jstor.org/), [ARTSTOR](http://www.artstor.org/), [S+R](https://sr.ithaka.org/our-work/collections-and-preservation/) (USA)
 - [Archives and Records Association](https://www2.archivists.org/assoc-orgs/archives-and-records-association-united-kingdom-ireland) (UK & Ireland)
-- [Arkivrådet AAS](http://www.arkivradet.se/) (Sweden)
+- [Arkivrådet](http://www.arkivradet.se/) (Sweden)
 - [Asociación Española de Archiveros, Bibliotecarios, Museologos y Documentalistas (ANABAD)](https://www2.archivists.org/assoc-orgs/asociaci%C3%B3n-espa%C3%B1ola-de-archiveros-bibliotecarios-museologos-y-documentalistas-anabad) (Spain)
 - [Associação dos Arquivistas Brasileiros (AAB)](https://www2.archivists.org/assoc-orgs/associacao-dos-arquivistas-brasileiros-aab) (Brazil)
 - [Associação Portuguesa de Bibliotecários, Archivistas e Documentalistas (BAD)](https://www2.archivists.org/assoc-orgs/associacao-portuguesa-de-bibliotecarios-archivistas-e-documentalistas-bad) (Portugal)

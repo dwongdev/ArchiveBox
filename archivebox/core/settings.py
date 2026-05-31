@@ -235,7 +235,7 @@ SQLITE_CONNECTION_OPTIONS = {
         # https://gcollazo.com/optimal-sqlite-settings-for-django/
         # https://litestream.io/tips/#busy-timeout
         # https://docs.djangoproject.com/en/5.1/ref/databases/#setting-pragma-options
-        "timeout": CONFIG.SQLITE_TIMEOUT,
+        "timeout": CONFIG.SQLITE_BUSY_TIMEOUT / 1000,
         "check_same_thread": False,
         # Keep SQLite on Django's default deferred transaction mode. BEGIN
         # IMMEDIATE grabs the write lock as soon as atomic() opens, which is

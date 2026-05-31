@@ -570,7 +570,11 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
             # write to one statement while the migration loop does filesystem
             # work outside any transaction. The modified_at CAS prevents this
             # repair scan from overwriting a newer Snapshot edit.
-            if not snapshot.safe_update({"crawl": crawl}, refresh=False):
+            if not snapshot.safe_update(
+                {"crawl": crawl},
+                refresh=False,
+                extra_filter={"modified_at": snapshot.modified_at},
+            ):
                 stats["skipped"] += 1
                 print(f"    [{stats['processed']}] Skipped stale snapshot repair: {entry_path.name}")
                 continue
@@ -579,7 +583,11 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
         # Check if needs migration (0.8.x → 0.9.x)
         try:
             if snapshot.fs_migration_needed:
-                if snapshot.safe_update({"retry_at": timezone.now(), "modified_at": timezone.now()}, refresh=False):
+                if snapshot.safe_update(
+                    {"retry_at": timezone.now(), "modified_at": timezone.now()},
+                    refresh=False,
+                    extra_filter={"modified_at": snapshot.modified_at},
+                ):
                     stats["queued"] += 1
                     print(f"    [{stats['processed']}] Queued filesystem migration: {entry_path.name}")
                 else:
@@ -659,7 +667,13 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
                 # do filesystem migration work that belongs in the runner.
                 # Guard each single-row UPDATE with modified_at so stale scan
                 # pages cannot overwrite newer runner/admin writes.
-                updated += int(snapshot.safe_update(updates, refresh=False))
+                updated += int(
+                    snapshot.safe_update(
+                        updates,
+                        refresh=False,
+                        extra_filter={"modified_at": snapshot.modified_at},
+                    ),
+                )
             print(f"    [{label}] updated {updated} rows so far")
 
     now = timezone.now()
@@ -826,7 +840,13 @@ def process_filtered_snapshots(
                 # with paged_iterator() and writes later, modified_at is the CAS
                 # guard that prevents stale CLI scans from overwriting a newer
                 # runner/admin update to the same snapshot.
-                updated = int(snapshot.safe_update(update_values, refresh=False))
+                updated = int(
+                    snapshot.safe_update(
+                        update_values,
+                        refresh=False,
+                        extra_filter={"modified_at": snapshot.modified_at},
+                    ),
+                )
                 stats["updated_db"] += updated
 
             stats["queued"] += updated if queue_for_archiving else 0
