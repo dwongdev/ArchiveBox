@@ -893,8 +893,12 @@ def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str =
         except ImportError:
             _awp_preview = None
         if _awp_preview is not None:
-            response = _awp_preview.serve_replay_asset(rel_path, request_config)
-            if response is not None:
+            replay_asset = _awp_preview.serve_replay_asset(rel_path, request_config)
+            if replay_asset is not None:
+                body, content_type, headers = replay_asset
+                response = HttpResponse(body, content_type=content_type)
+                for key, value in headers.items():
+                    response.headers[key] = value
                 return response
 
     if rel_path == "progress.json":
