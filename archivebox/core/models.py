@@ -756,22 +756,40 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             crawl = self.crawl
             if not crawl.url_passes_filters(self.url, snapshot=self):
                 return
-            # Sibling snapshots in the same crawl race to append into the
-            # same ``crawl.urls`` text field; reload + retry on CAS miss
-            # so concurrent appends don't clobber each other.
-            for _ in range(16):
+            # TEMP INSTRUMENTATION: count retries to verify root cause
+            import logging as _logging
+            import os
+
+            for attempt in range(16):
                 crawl.refresh_from_db()
                 existing_urls = {url for _raw_line, url in crawl._iter_url_lines() if url}
                 if self.url in existing_urls:
+                    if attempt > 0:
+                        _logging.getLogger("archivebox.crawls").warning(
+                            "CAS_RETRY[%d] another_writer_won pid=%d snap=%s crawl=%s url=%s",
+                            attempt,
+                            os.getpid(),
+                            self.id,
+                            crawl.id,
+                            self.url,
+                        )
                     return
                 urls = f"{crawl.urls}\n{self.url}"
                 if crawl.safe_update({"urls": urls, "modified_at": timezone.now()}, refresh=False):
+                    if attempt > 0:
+                        _logging.getLogger("archivebox.crawls").warning(
+                            "CAS_RETRY[%d] succeeded pid=%d snap=%s crawl=%s url=%s",
+                            attempt,
+                            os.getpid(),
+                            self.id,
+                            crawl.id,
+                            self.url,
+                        )
                     crawl.urls = urls
                     return
-            import logging as _logging
-
             _logging.getLogger("archivebox.crawls").error(
-                "Snapshot %s could not append its URL to crawl %s.urls: %s",
+                "CAS_RETRY exhausted pid=%d snap=%s crawl=%s url=%s",
+                os.getpid(),
                 self.id,
                 crawl.id,
                 self.url,

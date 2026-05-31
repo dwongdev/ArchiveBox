@@ -27,6 +27,18 @@
     ```
 ````
 
+### Functions
+
+````{list-table}
+:class: autosummary longtable
+:align: left
+
+* - {py:obj}`_read_ini_config_cached <archivebox.config.configset._read_ini_config_cached>`
+  - ```{autodoc2-docstring} archivebox.config.configset._read_ini_config_cached
+    :summary:
+    ```
+````
+
 ### Data
 
 ````{list-table}
@@ -35,6 +47,10 @@
 
 * - {py:obj}`COMPUTED_CONFIG_KEYS <archivebox.config.configset.COMPUTED_CONFIG_KEYS>`
   - ```{autodoc2-docstring} archivebox.config.configset.COMPUTED_CONFIG_KEYS
+    :summary:
+    ```
+* - {py:obj}`_INI_CACHE <archivebox.config.configset._INI_CACHE>`
+  - ```{autodoc2-docstring} archivebox.config.configset._INI_CACHE
     :summary:
     ```
 ````
@@ -65,6 +81,24 @@ Bases: {py:obj}`configparser.ConfigParser`
 ````
 
 `````
+
+````{py:data} _INI_CACHE
+:canonical: archivebox.config.configset._INI_CACHE
+:type: dict[tuple[str, float], dict[str, typing.Any]]
+:value: >
+   None
+
+```{autodoc2-docstring} archivebox.config.configset._INI_CACHE
+```
+
+````
+
+````{py:function} _read_ini_config_cached(config_path_str: str) -> dict[str, typing.Any]
+:canonical: archivebox.config.configset._read_ini_config_cached
+
+```{autodoc2-docstring} archivebox.config.configset._read_ini_config_cached
+```
+````
 
 `````{py:class} IniConfigSettingsSource(settings_cls: type[pydantic_settings.main.BaseSettings])
 :canonical: archivebox.config.configset.IniConfigSettingsSource

@@ -228,9 +228,21 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
             current = type(self).objects.filter(pk=self.pk).values("modified_at", self.state_field_name).first()
             current_modified_at = current.get("modified_at") if current else "<deleted>"
             current_status = current.get(self.state_field_name) if current else "<deleted>"
+            # TEMP INSTRUMENTATION: capture caller stack so we can identify
+            # who's racing on the same row.
+            import traceback as _tb
+
+            caller_frame = "<unknown>"
+            try:
+                stack = _tb.extract_stack(limit=12)[:-1]
+                relevant = [f"{Path(s.filename).name}:{s.lineno}:{s.name}" for s in stack if "site-packages" not in s.filename][-6:]
+                caller_frame = " <- ".join(relevant)
+            except Exception:
+                pass
             logger.error(
                 "\nSafeUpdateCASMiss: %s row %s was modified by another process while writing; "
-                "loaded modified_at=%s loaded %s=%s current modified_at=%s current %s=%s update_fields=%s extra_filter=%s\n",
+                "loaded modified_at=%s loaded %s=%s current modified_at=%s current %s=%s "
+                "update_fields=%s extra_filter=%s caller=%s\n",
                 type(self).__name__,
                 self.pk,
                 self.modified_at,
@@ -241,6 +253,7 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                 current_status,
                 sorted(values),
                 extra_filter or {},
+                caller_frame,
             )
         if refresh:
             try:

@@ -91,8 +91,12 @@
   - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.result_list_tag
     :summary:
     ```
-* - {py:obj}`security_mode_banner <archivebox.core.templatetags.core_tags.security_mode_banner>`
-  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.security_mode_banner
+* - {py:obj}`_machine_health_stats <archivebox.core.templatetags.core_tags._machine_health_stats>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._machine_health_stats
+    :summary:
+    ```
+* - {py:obj}`system_warnings_banner <archivebox.core.templatetags.core_tags.system_warnings_banner>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.system_warnings_banner
     :summary:
     ```
 * - {py:obj}`_unconfigured_banner_context <archivebox.core.templatetags.core_tags._unconfigured_banner_context>`
@@ -185,6 +189,26 @@
     ```
 * - {py:obj}`_MEDIA_FILE_EXTS <archivebox.core.templatetags.core_tags._MEDIA_FILE_EXTS>`
   - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._MEDIA_FILE_EXTS
+    :summary:
+    ```
+* - {py:obj}`_LOW_DISK_THRESHOLD_GB <archivebox.core.templatetags.core_tags._LOW_DISK_THRESHOLD_GB>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._LOW_DISK_THRESHOLD_GB
+    :summary:
+    ```
+* - {py:obj}`_HIGH_MEMORY_THRESHOLD_PCT <archivebox.core.templatetags.core_tags._HIGH_MEMORY_THRESHOLD_PCT>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HIGH_MEMORY_THRESHOLD_PCT
+    :summary:
+    ```
+* - {py:obj}`_HIGH_LOAD_MULTIPLE <archivebox.core.templatetags.core_tags._HIGH_LOAD_MULTIPLE>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HIGH_LOAD_MULTIPLE
+    :summary:
+    ```
+* - {py:obj}`_HEALTH_CHECK_INTERVAL_SECONDS <archivebox.core.templatetags.core_tags._HEALTH_CHECK_INTERVAL_SECONDS>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HEALTH_CHECK_INTERVAL_SECONDS
+    :summary:
+    ```
+* - {py:obj}`_health_cache <archivebox.core.templatetags.core_tags._health_cache>`
+  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags._health_cache
     :summary:
     ```
 ````
@@ -384,10 +408,68 @@
 ```
 ````
 
-````{py:function} security_mode_banner(context)
-:canonical: archivebox.core.templatetags.core_tags.security_mode_banner
+````{py:data} _LOW_DISK_THRESHOLD_GB
+:canonical: archivebox.core.templatetags.core_tags._LOW_DISK_THRESHOLD_GB
+:value: >
+   1.0
 
-```{autodoc2-docstring} archivebox.core.templatetags.core_tags.security_mode_banner
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._LOW_DISK_THRESHOLD_GB
+```
+
+````
+
+````{py:data} _HIGH_MEMORY_THRESHOLD_PCT
+:canonical: archivebox.core.templatetags.core_tags._HIGH_MEMORY_THRESHOLD_PCT
+:value: >
+   95.0
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HIGH_MEMORY_THRESHOLD_PCT
+```
+
+````
+
+````{py:data} _HIGH_LOAD_MULTIPLE
+:canonical: archivebox.core.templatetags.core_tags._HIGH_LOAD_MULTIPLE
+:value: >
+   3
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HIGH_LOAD_MULTIPLE
+```
+
+````
+
+````{py:data} _HEALTH_CHECK_INTERVAL_SECONDS
+:canonical: archivebox.core.templatetags.core_tags._HEALTH_CHECK_INTERVAL_SECONDS
+:value: >
+   30
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._HEALTH_CHECK_INTERVAL_SECONDS
+```
+
+````
+
+````{py:data} _health_cache
+:canonical: archivebox.core.templatetags.core_tags._health_cache
+:type: dict
+:value: >
+   None
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._health_cache
+```
+
+````
+
+````{py:function} _machine_health_stats() -> dict
+:canonical: archivebox.core.templatetags.core_tags._machine_health_stats
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags._machine_health_stats
+```
+````
+
+````{py:function} system_warnings_banner(context)
+:canonical: archivebox.core.templatetags.core_tags.system_warnings_banner
+
+```{autodoc2-docstring} archivebox.core.templatetags.core_tags.system_warnings_banner
 ```
 ````
 
