@@ -31,6 +31,8 @@ SESSION_DATA_DIR = Path(
 # Force ArchiveBox imports to see a temp DATA_DIR during test collection.
 os.environ["ARCHIVEBOX_PYTEST_SESSION_DATA_DIR"] = str(SESSION_DATA_DIR)
 os.environ["DATA_DIR"] = str(SESSION_DATA_DIR)
+(SESSION_DATA_DIR / "tests").mkdir(parents=True, exist_ok=True)
+os.chdir(SESSION_DATA_DIR)
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "archivebox.core.settings")
 os.environ.pop("ARCHIVE_DIR", None)
 os.environ.pop("USERS_DIR", None)
