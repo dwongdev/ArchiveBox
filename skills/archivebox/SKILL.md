@@ -30,20 +30,16 @@ data/
           YYYYMMDD/
             <domain>/
               <crawl-uuid>/
-                snapshots/
-                  <domain>/<snapshot-uuid> -> symlink to snapshot output dir
+                ...crawl-level state
         snapshots/
           YYYYMMDD/
             <domain>/
               <snapshot-uuid>/
                 index.jsonl
-                index.json
-                index.html
                 <plugin>/
-                  ...
+                  ...plugin output files
 ```
 
-Legacy 0.7.x/0.8.x snapshots may still exist at `archive/<timestamp>/` or as compatibility symlinks. Current snapshots are resolved from `Snapshot.output_dir`, which is built by `Snapshot.get_storage_path_for_version()`.
 
 ## Setup
 
@@ -53,7 +49,7 @@ Preferred Docker Compose workflow:
 mkdir -p ~/archivebox/data
 cd ~/archivebox
 curl -fsSL 'https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/dev/docker-compose.yml' -o docker-compose.yml
-docker compose run archivebox init --install
+docker compose run archivebox init
 docker compose up
 ```
 
