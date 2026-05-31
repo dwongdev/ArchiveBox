@@ -62,6 +62,11 @@ async function main() {
   const launchOptions = {
     headless: true,
     defaultViewport: { width, height },
+    // Default protocolTimeout is 30s; admin pages with many DB-backed
+    // partials (snapshot grid, progress monitor, etc.) routinely take
+    // longer to capture on a busy server. Lift to 5min — failures should
+    // be the server actually being slow, not the CDP heartbeat.
+    protocolTimeout: 300_000,
   };
   if (process.env.SCREENSHOT_HOST_RESOLVER_RULES) {
     launchOptions.args = [`--host-resolver-rules=${process.env.SCREENSHOT_HOST_RESOLVER_RULES}`];
