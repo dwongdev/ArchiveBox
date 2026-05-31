@@ -806,7 +806,6 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
         PUBLIC_ADD_VIEW="True",
         SERVER_SECURITY_MODE="safe-subdomains-fullreplay",
         USE_CHROME="True",
-        CHROME_BINARY=str(browser_runtime["chrome_binary"]),
         CHROME_HEADLESS="True",
         CHROME_SANDBOX="False",
         CHROME_ISOLATION="snapshot",
