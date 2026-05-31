@@ -211,36 +211,34 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
 
     def safe_update(self, update_fields: dict[str, Any], *, refresh: bool = True, extra_filter: dict[str, Any] | None = None) -> bool:
         """
-        Compare-and-swap update for short scheduler writes that must bypass save().
+        Atomic single-row UPDATE for scheduler writes that bypass save().
 
-        Use this only where save() side effects are intentionally deferred to
-        the runner/state machine. The modified_at predicate is the stale-write
-        guard for objects read from iterator scans; if another process touched
-        the row after this instance was loaded, the UPDATE affects zero rows.
+        The write is unconditional unless the caller passes extra_filter — the
+        previous implicit modified_at CAS predicate spuriously collided with
+        concurrent writers to unrelated fields (every save bumps modified_at),
+        which silently dropped state-machine transitions. Callers that need a
+        transition guard (only advance from state A to state B; only requeue a
+        row still holding lease X) pass extra_filter explicitly.
         """
         values = dict(update_fields)
         values.setdefault("modified_at", timezone.now())
-        queryset = type(self).objects.filter(pk=self.pk, modified_at=self.modified_at)
+        queryset = type(self).objects.filter(pk=self.pk)
         if extra_filter:
             queryset = queryset.filter(**extra_filter)
         updated = queryset.update(**values)
-        if updated != 1:
-            current = type(self).objects.filter(pk=self.pk).values("modified_at", self.state_field_name).first()
-            current_modified_at = current.get("modified_at") if current else "<deleted>"
+        if updated != 1 and extra_filter:
+            current = type(self).objects.filter(pk=self.pk).values(self.state_field_name).first()
             current_status = current.get(self.state_field_name) if current else "<deleted>"
-            logger.error(
-                "\nSafeUpdateCASMiss: %s row %s was modified by another process while writing; "
-                "loaded modified_at=%s loaded %s=%s current modified_at=%s current %s=%s update_fields=%s extra_filter=%s\n",
+            logger.info(
+                "SafeUpdateGuardMiss: %s row %s extra_filter=%s did not match (current %s=%s, loaded %s=%s); update_fields=%s skipped",
                 type(self).__name__,
                 self.pk,
-                self.modified_at,
-                self.state_field_name,
-                self.STATE,
-                current_modified_at,
+                extra_filter,
                 self.state_field_name,
                 current_status,
+                self.state_field_name,
+                self.STATE,
                 sorted(values),
-                extra_filter or {},
             )
         if refresh:
             try:

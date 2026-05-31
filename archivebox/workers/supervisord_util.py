@@ -308,6 +308,7 @@ def create_supervisord_config():
     PID_FILE = SOCK_FILE.parent / PID_FILE_NAME
     LOG_FILE = CONSTANTS.LOGS_DIR / LOG_FILE_NAME
 
+    CONSTANTS.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     config_content = f"""
 [supervisord]
 nodaemon = true
@@ -348,6 +349,14 @@ def create_worker_config(daemon):
     WORKERS_DIR = SOCK_FILE.parent / WORKERS_DIR_NAME
 
     Path.mkdir(WORKERS_DIR, exist_ok=True, parents=True)
+    for logfile_key in ("stdout_logfile", "stderr_logfile"):
+        logfile = daemon.get(logfile_key)
+        if not logfile:
+            continue
+        logfile_path = Path(logfile)
+        if not logfile_path.is_absolute():
+            logfile_path = CONSTANTS.DATA_DIR / logfile_path
+        logfile_path.parent.mkdir(parents=True, exist_ok=True)
 
     name = daemon["name"]
     worker_conf = WORKERS_DIR / f"{name}.conf"
@@ -358,6 +367,10 @@ def create_worker_config(daemon):
     for key, value in daemon.items():
         if key == "name":
             continue
+        if key in ("stdout_logfile", "stderr_logfile"):
+            logfile_path = Path(value)
+            if not logfile_path.is_absolute():
+                value = str(CONSTANTS.DATA_DIR / logfile_path)
         worker_str += f"{key}={value}\n"
     worker_str += "\n"
 

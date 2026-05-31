@@ -5,6 +5,8 @@ import pytest
 from django.contrib.auth import get_user_model
 
 from archivebox.api.auth import get_or_create_api_token
+from archivebox.cli.archivebox_add import add
+from archivebox.cli.archivebox_run import run_runner
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
 
@@ -60,16 +62,15 @@ def test_rest_crawl_delete_removes_crawl_and_snapshot_output_dirs(client):
     token = _admin_token()
     url = "https://example.com/delete-path-crawl"
 
-    response = client.post(
-        "/api/v1/crawls/crawls",
-        data=json.dumps({"urls": [url], "max_depth": 0, "max_urls": 1}),
-        content_type="application/json",
-        **_api_headers(token),
+    crawl, _snapshots = add(
+        urls=[url],
+        depth=0,
+        max_urls=1,
+        plugins="__archivebox_test_no_plugins__",
+        bg=True,
     )
-    assert response.status_code == 200, response.content.decode()
-
-    crawl = Crawl.objects.get(urls__contains=url)
-    snapshot = crawl.snapshot_set.get(url=url)
+    assert run_runner(daemon=False, crawl_id=str(crawl.id)) == 0
+    snapshot = Snapshot.objects.get(crawl=crawl, url=url)
     crawl_dir = Path(crawl.output_dir)
     snapshot_dir = Path(snapshot.output_dir)
     crawl_dir.mkdir(parents=True, exist_ok=True)
