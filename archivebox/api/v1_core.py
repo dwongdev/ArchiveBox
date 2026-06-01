@@ -273,7 +273,7 @@ def _parse_archiveresult_output_json(output_json: str | None) -> dict[str, Any] 
 
 
 def _get_archiveresult_upload_data(request: HttpRequest):
-    cached = getattr(request, "_archiveresult_upload_data", None)
+    cached = request.__dict__.get("_archiveresult_upload_data")
     if cached is not None:
         return cached
 
@@ -468,12 +468,7 @@ def _write_archiveresult_files(
             )
 
         guessed_mime = mimetypes.guess_type(relative_output_path)[0]
-        output_mime_type = (
-            (mime_types[0] if mime_types else "")
-            or getattr(uploaded_file, "content_type", None)
-            or guessed_mime
-            or "application/octet-stream"
-        )
+        output_mime_type = (mime_types[0] if mime_types else "") or uploaded_file.content_type or guessed_mime or "application/octet-stream"
         output_files[relative_output_path] = {
             "extension": PurePosixPath(relative_output_path).suffix.lower().lstrip("."),
             "mimetype": output_mime_type,
@@ -501,7 +496,7 @@ def _write_archiveresult_files(
         guessed_mime = mimetypes.guess_type(saved_output_path)[0]
         output_mime_type = (
             (mime_types[index] if index < len(mime_types) else "")
-            or getattr(uploaded_file, "content_type", None)
+            or uploaded_file.content_type
             or guessed_mime
             or "application/octet-stream"
         )
@@ -702,7 +697,7 @@ class SnapshotSchema(Schema):
 
     @staticmethod
     def resolve_archiveresults(obj, context):
-        if bool(getattr(context["request"], "with_archiveresults", False)):
+        if bool(context["request"].__dict__.get("with_archiveresults", False)):
             return obj.archiveresult_set.all().distinct()
         return ArchiveResult.objects.none()
 
@@ -883,7 +878,7 @@ def get_snapshots(request: HttpRequest, filters: Query[SnapshotFilterSchema], wi
     if not query:
         return queryset
 
-    runtime_config = getattr(request, "archivebox_config", None)
+    runtime_config = request.archivebox_config
     search_mode = get_search_mode(filters.search_mode, config=runtime_config)
     try:
         return apply_snapshot_search(
@@ -1081,7 +1076,7 @@ class TagSchema(Schema):
     def resolve_created_by_username(obj):
         user_model = get_user_model()
         user = user_model.objects.get(id=obj.created_by_id)
-        username = getattr(user, "username", None)
+        username = user.username
         return username if isinstance(username, str) else str(user)
 
     @staticmethod
@@ -1090,7 +1085,7 @@ class TagSchema(Schema):
 
     @staticmethod
     def resolve_snapshots(obj, context):
-        if bool(getattr(context["request"], "with_snapshots", False)):
+        if bool(context["request"].__dict__.get("with_snapshots", False)):
             return obj.snapshot_set.all().distinct()
         return Snapshot.objects.none()
 
@@ -1294,8 +1289,8 @@ def _public_tag_listing_enabled() -> bool:
 
 
 def _request_has_tag_autocomplete_access(request: HttpRequest) -> bool:
-    user = getattr(request, "user", None)
-    if getattr(user, "is_authenticated", False):
+    user = request.user
+    if user.is_authenticated:
         return True
 
     token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key")
@@ -1315,7 +1310,7 @@ def tags_autocomplete(request: HttpRequest, q: str = ""):
     if not _request_has_tag_autocomplete_access(request):
         raise HttpError(401, "Authentication required")
 
-    public_only = not getattr(request.user, "is_authenticated", False) and not getattr(request, "_api_token", None)
+    public_only = not request.user.is_authenticated and not request.__dict__.get("_api_token")
     queryset = get_matching_tags(q)
     public_snapshots = public_snapshots_queryset(Snapshot.objects.all())
     if public_only:
@@ -1324,7 +1319,7 @@ def tags_autocomplete(request: HttpRequest, q: str = ""):
     add_snapshot_counts(tags, snapshot_queryset=public_snapshots if public_only else None)
 
     return {
-        "tags": [{"id": tag.pk, "name": tag.name, "num_snapshots": getattr(tag, "num_snapshots", 0)} for tag in tags],
+        "tags": [{"id": tag.pk, "name": tag.name, "num_snapshots": tag.__dict__.get("num_snapshots", 0)} for tag in tags],
     }
 
 

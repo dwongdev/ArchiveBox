@@ -139,9 +139,9 @@ class ArchiveBoxGroup(click.Group):
 
         # print(f'LAZY LOADING {import_path}')
         mod = import_module(modname)
-        func = getattr(mod, funcname)
+        func = vars(mod)[funcname]
 
-        if not hasattr(func, "__doc__"):
+        if func.__doc__ is None:
             raise ValueError(f"lazy loading of {import_path} failed - no docstring found on method")
 
         # if not isinstance(cmd, click.BaseCommand):

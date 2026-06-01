@@ -119,7 +119,7 @@ def CacheControlMiddleware(get_response):
 
         if "/archive/" in request.path or "/static/" in request.path or snapshot_path_re.match(request.path):
             if not response.get("Cache-Control"):
-                config = getattr(request, "archivebox_config", None)
+                config = request.__dict__.get("archivebox_config")
                 if config is None:
                     config = get_config(resolve_plugins=False)
                     request.archivebox_config = config
@@ -136,7 +136,7 @@ def ServerSecurityModeMiddleware(get_response):
     allowed_methods = {"GET", "HEAD", "OPTIONS"}
 
     def middleware(request):
-        config = getattr(request, "archivebox_config", None)
+        config = request.__dict__.get("archivebox_config")
         if config is None:
             config = get_config(resolve_plugins=False)
             request.archivebox_config = config
@@ -169,7 +169,7 @@ def HostRoutingMiddleware(get_response):
             return get_response(request)
 
         request_host = (request.get_host() or "").lower()
-        config = getattr(request, "archivebox_config", None)
+        config = request.__dict__.get("archivebox_config")
         if config is None:
             config = get_config(resolve_plugins=False)
             request.archivebox_config = config
@@ -323,7 +323,7 @@ class ReverseProxyAuthMiddleware(RemoteUserMiddleware):
     header = "HTTP_REMOTE_USER"
 
     def process_request(self, request):
-        config = getattr(request, "archivebox_config", None)
+        config = request.__dict__.get("archivebox_config")
         if config is None:
             config = get_config(resolve_plugins=False)
             request.archivebox_config = config

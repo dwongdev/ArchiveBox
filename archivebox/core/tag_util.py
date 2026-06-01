@@ -246,7 +246,7 @@ def _build_snapshot_preview_map(
 
 
 def build_tag_card(tag: Tag, snapshot_previews: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    count = getattr(tag, "num_snapshots", None)
+    count = tag.__dict__.get("num_snapshots")
     if count is None:
         count = tag.snapshot_set.count()
     return {

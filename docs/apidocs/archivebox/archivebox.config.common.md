@@ -1357,7 +1357,7 @@ Bases: {py:obj}`archivebox.config.common.ShellConfig`, {py:obj}`archivebox.confi
 
 ````
 
-````{py:function} get_config(defaults: archivebox.config.common.ConfigOverrides | None = None, overrides: archivebox.config.common.ConfigOverrides | None = None, base_config: archivebox.config.common.ArchiveBoxBaseConfig | collections.abc.Mapping[str, object] | None = None, persona: typing.Any = None, user: typing.Any = None, crawl: typing.Any = None, snapshot: typing.Any = None, archiveresult: typing.Any = None, machine: typing.Any = None, include_machine: bool = True, resolve_plugins: bool = True) -> archivebox.config.common.ArchiveBoxBaseConfig
+````{py:function} get_config(defaults: archivebox.config.common.ConfigOverrides | None = None, overrides: archivebox.config.common.ConfigOverrides | None = None, base_config: archivebox.config.common.ArchiveBoxBaseConfig | collections.abc.Mapping[str, object] | None = None, persona: typing.Any = None, crawl: typing.Any = None, snapshot: typing.Any = None, machine: typing.Any = None, include_machine: bool = True, resolve_plugins: bool = True) -> archivebox.config.common.ArchiveBoxBaseConfig
 :canonical: archivebox.config.common.get_config
 
 ```{autodoc2-docstring} archivebox.config.common.get_config

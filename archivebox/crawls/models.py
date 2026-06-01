@@ -109,11 +109,10 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
         template = self.template
         label = template.label or self.label
         persona = template.persona if template.persona_id else None
-        user = template.created_by if template.created_by_id else None
 
         return Crawl.objects.create(
             urls=template.urls,
-            config=build_crawl_config_snapshot(user=user, persona=persona, overrides=self.config or {}),
+            config=build_crawl_config_snapshot(persona=persona, overrides=self.config or {}),
             max_depth=template.max_depth,
             tags_str=template.tags_str,
             persona_id=template.persona_id,
@@ -197,9 +196,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return f"[...{short_id}] {first_url[:120]}"
 
     def get_delete_after_config_value(self):
-        from archivebox.config.common import get_config
+        from archivebox.config.common import resolve_delete_after_config_value
 
-        return get_config(crawl=self).DELETE_AFTER
+        return resolve_delete_after_config_value(self.config)
 
     def pause(self, *, save: bool = True) -> bool:
         return super().pause(save=save)
@@ -286,15 +285,14 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         config = dict(self.config or {})
         is_new = self._state.adding or old_crawl is None
         persona = self.persona if self.persona_id else None
-        user = self.created_by if self.created_by_id else None
         if is_new:
             from archivebox.config.common import build_crawl_config_snapshot
 
-            config = build_crawl_config_snapshot(user=user, persona=persona, overrides=config)
+            config = build_crawl_config_snapshot(persona=persona, overrides=config)
         if str(config.get("PERMISSIONS") or "").strip().lower() not in PERMISSIONS_VALUES:
             from archivebox.config.common import get_config
 
-            config["PERMISSIONS"] = normalize_permissions(get_config(persona=persona, user=user, include_machine=True).PERMISSIONS)
+            config["PERMISSIONS"] = normalize_permissions(get_config(persona=persona, include_machine=True).PERMISSIONS)
         if "CRAWL_MAX_CONCURRENT_SNAPSHOTS" in config:
             raw_concurrency = config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]
             if raw_concurrency in (None, ""):
@@ -469,11 +467,8 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         )
         return crawl
 
-    def output_dir_for_config(self, runtime_config: Mapping[str, Any] | Any) -> Path:
-        """
-        Construct output directory: archive/users/{username}/crawls/{YYYYMMDD}/{domain}/{crawl-id}
-        Domain is extracted from the first URL in the crawl.
-        """
+    @property
+    def output_dir(self) -> Path:
         from archivebox.config import CONSTANTS
         from archivebox.core.models import Snapshot
 
@@ -486,14 +481,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 break
         domain = Snapshot.extract_domain_from_url(first_url) if first_url else "unknown"
 
-        users_dir = Path(runtime_config["USERS_DIR"]) if isinstance(runtime_config, Mapping) else runtime_config.USERS_DIR
-        return users_dir / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
-
-    @property
-    def output_dir(self) -> Path:
-        from archivebox.config.common import get_config
-
-        output_dir = self.output_dir_for_config(get_config(resolve_plugins=False))
+        output_dir = CONSTANTS.USERS_DIR / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
         hyphen_dir = output_dir.with_name(str(uuid.UUID(hex=self.id.hex)))
         return output_dir if output_dir.exists() or not hyphen_dir.exists() else hyphen_dir
 
@@ -783,7 +771,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     def _config_value(config: Mapping[str, Any] | Any, key: str, default: Any = None) -> Any:
         if isinstance(config, Mapping):
             return config.get(key, default)
-        return getattr(config, key, default)
+        return config[key] if key in config else default
 
     @classmethod
     def create_scheduler_row(cls, **kwargs) -> "Crawl":
@@ -794,17 +782,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         kwargs.setdefault("created_at", now)
         kwargs.setdefault("modified_at", now)
         config = normalize_config_json_values(kwargs.get("config") or {})
-        user = kwargs.get("created_by")
         persona = kwargs.get("persona")
-        if user is None and kwargs.get("created_by_id"):
-            from django.contrib.auth import get_user_model
-
-            user = get_user_model().objects.filter(pk=kwargs["created_by_id"]).first()
         if persona is None and kwargs.get("persona_id"):
             from archivebox.personas.models import Persona
 
             persona = Persona.objects.filter(pk=kwargs["persona_id"]).first()
-        kwargs["config"] = build_crawl_config_snapshot(user=user, persona=persona, overrides=config)
+        kwargs["config"] = build_crawl_config_snapshot(persona=persona, overrides=config)
         crawl = cls(**kwargs)
         if crawl.delete_at is None:
             crawl.set_delete_at_from_config()
@@ -820,18 +803,20 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     ) -> str:
         from abx_dl.limits import CrawlLimitState
 
+        if output_dir is None:
+            output_dir = self.output_dir
         if config is None:
             from archivebox.config.common import get_config
 
-            config = get_config(crawl=self, include_machine=False)
-        if output_dir is None:
-            output_dir = self.output_dir
+            config = get_config(crawl=self, include_machine=False).for_crawl_runtime(
+                crawl=self,
+                persona=self.resolve_persona(),
+                crawl_output_dir=output_dir,
+            )
 
         limits_path = output_dir / ".abx-dl" / "limits.json"
         if limits_path.exists():
-            config_with_crawl_dir = {**dict(config.items())} if isinstance(config, Mapping) else config
-            config_with_crawl_dir["CRAWL_DIR"] = str(output_dir)
-            stop_reason = CrawlLimitState.from_config(config_with_crawl_dir).get_stop_reason()
+            stop_reason = CrawlLimitState.from_config(config).get_stop_reason()
             if stop_reason:
                 return stop_reason
 
@@ -1302,10 +1287,11 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         from archivebox.machine.models import Binary, Machine
 
         def get_runtime_config():
-            config = get_config(crawl=self)
-            if persona_runtime_overrides:
-                config.update(persona_runtime_overrides)
-            return config
+            return get_config(crawl=self).for_crawl_runtime(
+                crawl=self,
+                persona=persona,
+                runtime_overrides=persona_runtime_overrides,
+            )
 
         system_task = self.get_system_task()
         if system_task == "archivebox://update":

@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 
 from django.db import migrations
 from django.db.models import Q
@@ -7,31 +8,6 @@ from django.db.models import Q
 
 VALID_PERMISSIONS = {"public", "unlisted", "private"}
 BATCH_SIZE = 1000
-
-
-def legacy_bool(value):
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def permissions_from_legacy_public_flags(config):
-    if str(config.get("PERMISSIONS") or "").strip():
-        return None
-    public_snapshots = legacy_bool(config.get("PUBLIC_SNAPSHOTS"))
-    public_index = legacy_bool(config.get("PUBLIC_INDEX"))
-    if public_snapshots is False:
-        return "private"
-    if public_index is False:
-        return "unlisted"
-    if public_snapshots is True or public_index is True:
-        return "public"
-    return None
 
 
 def normalize_permissions(value, default):
@@ -59,22 +35,19 @@ def raw_base_config(apps):
 
 
 def resolve_permissions(config, default):
+    from archivebox.config.common import permissions_from_legacy_public_flags
+
     explicit = str(config.get("PERMISSIONS") or "").strip().lower()
     if explicit in VALID_PERMISSIONS:
         return explicit
     return permissions_from_legacy_public_flags(config) or default
 
 
-def model_has_config(model):
-    try:
-        model._meta.get_field("config")
-    except Exception:
-        return False
-    return True
-
-
 def id_values(pk):
-    return str(pk), getattr(pk, "hex", str(pk).replace("-", ""))
+    if isinstance(pk, uuid.UUID):
+        return str(pk), pk.hex
+    pk_str = str(pk)
+    return pk_str, pk_str.replace("-", "")
 
 
 def flush_batch(cursor, table_name, batch):
@@ -125,8 +98,6 @@ def _ensure_permissions_column(cursor):
 
 def hydrate_crawl_permissions(apps, schema_editor):
     Crawl = apps.get_model("crawls", "Crawl")
-    User = apps.get_model("auth", "User")
-    user_has_config = model_has_config(User)
     base_config = raw_base_config(apps)
     default_permissions = resolve_permissions(base_config, "public")
     table_name = schema_editor.quote_name(Crawl._meta.db_table)
@@ -135,17 +106,13 @@ def hydrate_crawl_permissions(apps, schema_editor):
     batch = []
     missing_permissions = Q(permissions__isnull=True) | (Q(permissions__isnull=False) & ~Q(permissions__in=VALID_PERMISSIONS))
 
-    for crawl in Crawl.objects.filter(missing_permissions).select_related("persona", "created_by").iterator(chunk_size=BATCH_SIZE):
+    for crawl in Crawl.objects.filter(missing_permissions).select_related("persona").iterator(chunk_size=BATCH_SIZE):
         config = dict(crawl.config or {})
         resolved = dict(base_config)
         if crawl.persona_id:
             persona_config = crawl.persona.config or {}
             if isinstance(persona_config, dict):
                 resolved.update(persona_config)
-        if user_has_config:
-            user_config = crawl.created_by.config or {}
-            if isinstance(user_config, dict):
-                resolved.update(user_config)
         resolved.update(config)
         config["PERMISSIONS"] = resolve_permissions(resolved, default_permissions)
         batch.append((crawl.id, config))

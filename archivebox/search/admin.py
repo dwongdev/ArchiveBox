@@ -19,8 +19,8 @@ class SearchResultsChangeList(ChangeList):
 
     def __init__(self, request, *args, **kwargs):
         """Capture normalized search mode before Django builds results."""
-        self.search_mode = get_search_mode(request.GET.get("search_mode"), config=getattr(request, "archivebox_config", None))
-        self.search_mode_backend = get_search_mode_backend(self.search_mode, config=getattr(request, "archivebox_config", None))
+        self.search_mode = get_search_mode(request.GET.get("search_mode"), config=request.archivebox_config)
+        self.search_mode_backend = get_search_mode_backend(self.search_mode, config=request.archivebox_config)
         super().__init__(request, *args, **kwargs)
         self.embedded_changelist = request.GET.get("_embedded") == "crawl"
 
@@ -31,7 +31,7 @@ class SearchResultsChangeList(ChangeList):
             self.opts.model_name == "snapshot"
             and self.query
             and self.result_count == 0
-            and get_search_mode_base(self.search_mode, config=getattr(request, "archivebox_config", None)) == "deep"
+            and get_search_mode_base(self.search_mode, config=request.archivebox_config) == "deep"
             and self.search_mode_backend,
         )
 
@@ -55,13 +55,11 @@ class SearchResultsAdminMixin(admin.ModelAdmin):
 
     def get_default_search_mode(self):
         """Return the default search mode for the current request config."""
-        request = getattr(self, "request", None)
-        return get_default_search_mode(config=getattr(request, "archivebox_config", None))
+        return get_default_search_mode(config=self.request.archivebox_config)
 
     def get_search_mode_options(self):
         """Return selector options for the current request config."""
-        request = getattr(self, "request", None)
-        return get_search_mode_options(config=getattr(request, "archivebox_config", None))
+        return get_search_mode_options(config=self.request.archivebox_config)
 
     def get_search_results(self, request, queryset, search_term: str):
         """Apply admin search semantics to a changelist queryset."""
@@ -69,14 +67,14 @@ class SearchResultsAdminMixin(admin.ModelAdmin):
         search_term = search_term.strip()
         if not search_term:
             return super().get_search_results(request, queryset, search_term)
-        search_mode = get_search_mode(request.GET.get("search_mode"), config=getattr(request, "archivebox_config", None))
+        search_mode = get_search_mode(request.GET.get("search_mode"), config=request.archivebox_config)
         if queryset.model._meta.label_lower == "core.snapshot" and request.GET.get("_embedded") != "crawl":
             cached_ids = get_cached_admin_search_ids(request)
             if cached_ids is not None:
                 return queryset.filter(pk__in=cached_ids) if cached_ids else queryset.none(), False
             return queryset.none(), False
 
-        if get_search_mode_base(search_mode, config=getattr(request, "archivebox_config", None)) == "meta":
+        if get_search_mode_base(search_mode, config=request.archivebox_config) == "meta":
             qs, use_distinct = super().get_search_results(request, queryset, search_term)
             return qs, use_distinct
         if request.GET.get("_embedded") == "crawl":
@@ -85,7 +83,7 @@ class SearchResultsAdminMixin(admin.ModelAdmin):
                     pk__in=query_search_index(
                         search_term,
                         search_mode=search_mode,
-                        config=getattr(request, "archivebox_config", None),
+                        config=request.archivebox_config,
                     ).values("pk"),
                 ), False
             except Exception as err:

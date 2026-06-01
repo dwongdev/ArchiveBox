@@ -129,6 +129,7 @@ def test_snapshot_payload_uses_crawl_persona_runtime_dirs():
     assert Path(config["CHROME_DOWNLOADS_DIR"]).is_relative_to(crawl.output_dir)
     assert Path(config["CHROME_USER_DATA_DIR"]).name == "chrome_profile"
     assert Path(config["CHROME_DOWNLOADS_DIR"]).name == "chrome_downloads"
+    assert config["ACTIVE_PERSONA"] == "RuntimePersona"
     assert Path(config["CRAWL_DIR"]) == crawl.output_dir
     assert Path(config["SNAP_DIR"]) == snapshot.output_dir
 
@@ -163,6 +164,18 @@ def test_ensure_background_runner_skips_with_real_running_orchestrator_record():
     assert process.status == Process.StatusChoices.RUNNING
 
 
+@pytest.mark.django_db(transaction=True)
+def test_ensure_background_runner_does_not_spawn_runner_without_supervisord():
+    from archivebox.services.runner import ensure_background_runner
+    from archivebox.workers.supervisord_util import get_existing_supervisord_process, stop_existing_supervisord_process
+
+    stop_existing_supervisord_process()
+    assert get_existing_supervisord_process(quiet=True) is None
+
+    assert ensure_background_runner(allow_under_pytest=True) is False
+    assert get_existing_supervisord_process(quiet=True) is None
+
+
 def test_runner_task_context_clears_inherited_abxbus_handler_context(tmp_path):
     from abx_dl.events import CrawlEvent, MachineEvent
     from abx_dl.orchestrator import create_bus
@@ -174,7 +187,7 @@ def test_runner_task_context_clears_inherited_abxbus_handler_context(tmp_path):
 
     async def emit_from_runner_task():
         observations.append(("in_handler_context", in_handler_context()))
-        machine_event = bus.emit(MachineEvent(config={"ABX_RUNTIME": "archivebox"}, config_type="user"))
+        machine_event = bus.emit(MachineEvent(config={"TIMEOUT": "30"}, config_type="user"))
         await machine_event.now()
         observations.append(("machine_event_path", bool(machine_event.event_path)))
 
@@ -405,7 +418,6 @@ def test_machine_service_persists_only_derived_config_events(tmp_path, hermetic_
                     config={
                         "CHROME_ISOLATION": "snapshot",
                         "CHROME_USER_DATA_DIR": "/tmp/stale-profile",
-                        "ABX_RUNTIME": "archivebox",
                     },
                     config_type="user",
                 ),
@@ -569,7 +581,7 @@ def test_crawl_runner_empty_plugin_selection_emits_lifecycle_and_seals_crawl(tmp
     assert runner.bus.event_is_child_of(completed_events[0], crawl_events[0])
     assert runner.bus.event_is_child_of(snapshot_events[0], start_events[0])
     assert runner.bus.event_is_child_of(snapshot_completed_events[0], snapshot_events[0])
-    assert any(event.config_type == "user" and event.config.get("ABX_RUNTIME") == "archivebox" for event in machine_events)
+    assert any(event.config_type == "user" for event in machine_events)
 
     crawl.refresh_from_db()
     snapshot = Snapshot.objects.get(crawl=crawl)

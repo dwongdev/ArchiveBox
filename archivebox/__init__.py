@@ -79,16 +79,10 @@ def __getattr__(name: str):
         return VERSION
     if name in ("BUILTIN_PLUGINS_DIR", "USER_PLUGINS_DIR", "ALL_PLUGINS", "LOADED_PLUGINS"):
         from abx_plugins import get_plugins_dir
+        from .config.constants import CONSTANTS
 
         builtin_plugins_dir = Path(get_plugins_dir()).resolve()
-        user_plugins_dir = (
-            Path(
-                os.environ.get("ARCHIVEBOX_USER_PLUGINS_DIR")
-                or os.environ.get("USER_PLUGINS_DIR")
-                or os.environ.get("DATA_DIR", os.getcwd()),
-            )
-            / "custom_plugins"
-        )
+        user_plugins_dir = CONSTANTS.USER_PLUGINS_DIR
         plugins = {
             "builtin": builtin_plugins_dir,
             "user": user_plugins_dir,

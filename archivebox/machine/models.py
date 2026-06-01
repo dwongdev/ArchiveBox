@@ -19,6 +19,7 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django.utils.functional import cached_property
 
+from archivebox.config import CONSTANTS
 from archivebox.config.common import rprint
 from archivebox.base_models.models import ModelWithDeleteAfter, ModelWithHealthStats, normalize_config_json_values
 from archivebox.workers.models import BaseStateMachine, ModelWithStateMachine
@@ -442,7 +443,7 @@ class NetworkInterface(ModelWithHealthStats):
             if refresh or timezone.now() >= _CURRENT_INTERFACE.modified_at + timedelta(seconds=NETWORK_INTERFACE_RECHECK_INTERVAL):
                 updates = ["modified_at"]
                 for key, value in net_info.items():
-                    if getattr(_CURRENT_INTERFACE, key) != value:
+                    if _CURRENT_INTERFACE.__dict__.get(key) != value:
                         setattr(_CURRENT_INTERFACE, key, value)
                         updates.append(key)
                 if len(updates) > 1:
@@ -581,10 +582,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         Get output directory for this binary's hook logs.
         Path: data/machines/{machine_uuid}/binaries/{binary_name}/{binary_uuid}
         """
-        from archivebox.config.common import get_config
-
-        data_dir = get_config().DATA_DIR
-        return data_dir / "machines" / str(self.machine_id) / "binaries" / self.name / str(self.id)
+        return CONSTANTS.DATA_DIR / "machines" / str(self.machine_id) / "binaries" / self.name / str(self.id)
 
     def to_json(self) -> dict:
         """
@@ -1144,15 +1142,13 @@ class Process(ModelWithDeleteAfter, models.Model):
         return f"Process[{self.id}] {cmd_str} ({self.status})"
 
     def get_delete_after_config_value(self):
-        from archivebox.config.common import get_config
-
         value = self.env.get("DELETE_AFTER")
         if value not in (None, ""):
             return value
         value = (self.machine.config or {}).get("DELETE_AFTER")
         if value not in (None, ""):
             return value
-        return get_config(include_machine=False).DELETE_AFTER
+        return "0"
 
     @classmethod
     def missing_delete_at_candidates(cls):
@@ -1174,17 +1170,18 @@ class Process(ModelWithDeleteAfter, models.Model):
     @property
     def plugin(self) -> str:
         """Get plugin name from associated ArchiveResult (if any)."""
-        if hasattr(self, "archiveresult"):
-            # Inline import to avoid circular dependency
+        try:
             return self.archiveresult.plugin
-        return ""
+        except Process.archiveresult.RelatedObjectDoesNotExist:
+            return ""
 
     @property
     def hook_name(self) -> str:
         """Get hook name from associated ArchiveResult (if any)."""
-        if hasattr(self, "archiveresult"):
+        try:
             return self.archiveresult.hook_name
-        return ""
+        except Process.archiveresult.RelatedObjectDoesNotExist:
+            return ""
 
     def to_json(self) -> dict:
         """
@@ -2449,16 +2446,14 @@ class Process(ModelWithDeleteAfter, models.Model):
         """
         import subprocess
         from importlib.resources import files
-        from archivebox.config.common import get_config
 
         chrome_utils = files("abx_plugins.plugins.chrome").joinpath("chrome_utils.js")
         if not chrome_utils.exists():
             return 0
 
-        config = get_config()
         crawl_roots = [
             crawls_dir
-            for user_dir in config.USERS_DIR.iterdir()
+            for user_dir in CONSTANTS.USERS_DIR.iterdir()
             if user_dir.is_dir()
             for crawls_dir in [user_dir / "crawls"]
             if crawls_dir.is_dir()

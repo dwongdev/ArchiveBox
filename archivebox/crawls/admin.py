@@ -605,9 +605,7 @@ class CrawlAdminForm(forms.ModelForm):
         if commit:
             instance.save()
             instance.apply_crawl_config_filters()
-            save_m2m = getattr(self, "_save_m2m", None)
-            if callable(save_m2m):
-                save_m2m()
+            self._save_m2m()
         return instance
 
 
@@ -729,7 +727,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         super().__init__(model, admin_site)
         self.crawl_admin_base_config = None
         self.stop_reason_cache = {}
-        self.persona_limit_config_cache = {}
 
     class Media:
         css = {"all": ("admin/crawls/crawl_change.css",)}
@@ -739,9 +736,8 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         self.request = request
         self.crawl_admin_base_config = request.archivebox_config
         self.stop_reason_cache = {}
-        self.persona_limit_config_cache = {}
         response = super().changelist_view(request, extra_context)
-        cl = getattr(response, "context_data", {}).get("cl") if hasattr(response, "context_data") else None
+        cl = response.context_data.get("cl")
         if cl is not None and not self.should_annotate_snapshot_counts(request):
             self.hydrate_visible_snapshot_counts(cl.result_list)
         return response
@@ -790,7 +786,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         self.request = request
         self.crawl_admin_base_config = request.archivebox_config
         self.stop_reason_cache = {}
-        self.persona_limit_config_cache = {}
         crawl = self.get_object(request, object_id)
         if crawl:
             self.hydrate_visible_snapshot_counts([crawl])
@@ -982,7 +977,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         if obj.pk in self.stop_reason_cache:
             return self.stop_reason_cache[obj.pk]
 
-        output_dir = obj.output_dir_for_config(self.crawl_admin_base_config)
+        output_dir = obj.output_dir
         config = self.limit_config_for_crawl(obj, output_dir)
         reason = obj.stop_reason(
             config=config,
@@ -994,22 +989,13 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         return reason
 
     def limit_config_for_crawl(self, obj, output_dir):
-        config = {
-            "CRAWL_DIR": str(output_dir),
-            "CRAWL_MAX_URLS": self.crawl_admin_base_config.CRAWL_MAX_URLS,
-            "CRAWL_MAX_SIZE": self.crawl_admin_base_config.CRAWL_MAX_SIZE,
-            "CRAWL_TIMEOUT": self.crawl_admin_base_config.CRAWL_TIMEOUT,
-            "SNAPSHOT_MAX_SIZE": self.crawl_admin_base_config.SNAPSHOT_MAX_SIZE,
-        }
-        if obj.persona_id:
-            if obj.persona_id not in self.persona_limit_config_cache:
-                self.persona_limit_config_cache[obj.persona_id] = {
-                    key: value for key, value in obj.persona.get_derived_config().items() if key in config
-                }
-            config.update(self.persona_limit_config_cache[obj.persona_id])
-        if obj.config:
-            config.update({key: value for key, value in obj.config.items() if key in config})
-        return config
+        from archivebox.config.common import get_config
+
+        return get_config(crawl=obj).for_crawl_runtime(
+            crawl=obj,
+            persona=obj.resolve_persona(),
+            crawl_output_dir=output_dir,
+        )
 
     @admin.display(description="Status", ordering="status")
     def status_with_stop_reason(self, obj):
@@ -1106,12 +1092,10 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="Snapshots")
     def snapshots_changelist(self, obj):
-        request = getattr(self, "request", None)
+        request = self.request
         snapshot_changelist = reverse("admin:core_snapshot_changelist")
         scoped_params = {"crawl_id": str(obj.pk)}
         full_url = f"{snapshot_changelist}?{urlencode(scoped_params)}"
-        if request is None:
-            return format_html('<a class="button" href="{}">Open snapshots changelist</a>', full_url)
 
         snapshot_admin = self.admin_site._registry[Snapshot]
         changelist_request = copy(request)
@@ -1305,7 +1289,7 @@ class CrawlScheduleAdmin(BaseModelAdmin):
         return self.fieldsets
 
     def save_model(self, request, obj, form, change):
-        if not obj.created_by_id and getattr(request, "user", None) and request.user.is_authenticated:
+        if not obj.created_by_id and request.user.is_authenticated:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
 
@@ -1315,14 +1299,14 @@ class CrawlScheduleAdmin(BaseModelAdmin):
 
     @admin.display(description="# Crawls", ordering="crawl_count")
     def num_crawls(self, obj):
-        count = getattr(obj, "crawl_count", None)
+        count = obj.__dict__.get("crawl_count")
         if count is None:
             count = obj.crawl_set.count()
         return count
 
     @admin.display(description="# Snapshots", ordering="snapshot_count")
     def num_snapshots(self, obj):
-        count = getattr(obj, "snapshot_count", None)
+        count = obj.__dict__.get("snapshot_count")
         if count is None:
             count = Snapshot.objects.filter(crawl__schedule=obj).count()
         return count
@@ -1338,7 +1322,7 @@ class CrawlScheduleAdmin(BaseModelAdmin):
         crawl_ids = obj.crawl_set.values_list("pk", flat=True)
         return render_snapshots_list(
             Snapshot.objects.filter(crawl_id__in=crawl_ids),
-            request=getattr(self, "request", None),
+            request=self.request,
             prefix="schedule_snapshots",
         )
 

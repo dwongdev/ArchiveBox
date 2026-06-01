@@ -218,7 +218,7 @@ def test_get_config_treats_missing_persona_id_as_null(initialized_archive):
     assert payload["persona_id"] == "None"
 
 
-def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(initialized_archive):
+def test_get_config_resolves_parent_scopes_for_snapshot_runtime(initialized_archive):
     script = textwrap.dedent(
         """
         import json
@@ -237,6 +237,7 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
         from archivebox.crawls.models import Crawl
         from archivebox.machine.models import Machine
         from archivebox.personas.models import Persona
+        from archivebox.services.runner import CrawlRunner
 
         CONSTANTS.CONFIG_FILE.write_text('[ARCHIVING_CONFIG]\\nTIMEOUT=11\\nCHROME_BINARY=file-chrome\\n')
 
@@ -254,6 +255,8 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
             persona_id=persona.id,
             config={'TIMEOUT': 44, 'CHROME_BINARY': 'crawl-chrome'},
         )
+        persona.config = {'TIMEOUT': 99, 'CHROME_BINARY': 'persona-chrome-updated'}
+        persona.save(update_fields=['config'])
         snapshot = Snapshot.objects.create(
             url='https://example.com',
             crawl=crawl,
@@ -262,7 +265,6 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
         result = ArchiveResult.objects.create(
             snapshot=snapshot,
             plugin='title',
-            config={'TIMEOUT': 66, 'CHROME_BINARY': 'archiveresult-chrome'},
         )
 
         env_config = get_config(include_machine=False)
@@ -270,8 +272,10 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
         persona_config = get_config(persona=persona)
         crawl_config = get_config(crawl=crawl)
         snapshot_config = get_config(snapshot=snapshot)
-        result_config = get_config(archiveresult=result)
-        override_config = get_config(archiveresult=result, overrides={'TIMEOUT': 77, 'CHROME_BINARY': 'override-chrome'})
+        override_config = get_config(snapshot=snapshot, overrides={'TIMEOUT': 77, 'CHROME_BINARY': 'override-chrome'})
+        runner = CrawlRunner(crawl, selected_plugins=['title'], show_progress=False)
+        runner.load_run_state()
+        runtime_config = runner.load_snapshot_payload(str(snapshot.id))['config']
 
         print(json.dumps({
             'env': [env_config.TIMEOUT, env_config.CHROME_BINARY],
@@ -279,13 +283,12 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
             'persona': [persona_config.TIMEOUT, persona_config.CHROME_BINARY],
             'crawl': [crawl_config.TIMEOUT, crawl_config.CHROME_BINARY],
             'snapshot': [snapshot_config.TIMEOUT, snapshot_config.CHROME_BINARY],
-            'archiveresult': [result_config.TIMEOUT, result_config.CHROME_BINARY],
             'override': [override_config.TIMEOUT, override_config.CHROME_BINARY],
-            'snap_dir': str(result_config.SNAP_DIR),
+            'snap_dir': str(runtime_config['SNAP_DIR']),
             'expected_snap_dir': str(snapshot.output_dir),
-            'crawl_dir': str(result_config.CRAWL_DIR),
+            'crawl_dir': str(runtime_config['CRAWL_DIR']),
             'expected_crawl_dir': str(crawl.output_dir),
-            'active_persona': result_config.ACTIVE_PERSONA,
+            'active_persona': runtime_config['ACTIVE_PERSONA'],
         }, default=str))
         """,
     )
@@ -296,11 +299,10 @@ def test_get_config_resolves_parent_scopes_when_only_archiveresult_is_passed(ini
     payload = json.loads(stdout.strip().splitlines()[-1])
     assert payload["env"] == [22, "env-chrome"]
     assert payload["machine"] == [22, "machine-chrome"]
-    assert payload["persona"] == [33, "persona-chrome"]
-    assert payload["crawl"] == [44, "crawl-chrome"]
-    assert payload["snapshot"] == [55, "snapshot-chrome"]
-    assert payload["archiveresult"] == [66, "archiveresult-chrome"]
-    assert payload["override"] == [77, "override-chrome"]
+    assert payload["persona"] == [99, "persona-chrome-updated"]
+    assert payload["crawl"] == [44, "persona-chrome-updated"]
+    assert payload["snapshot"] == [55, "persona-chrome-updated"]
+    assert payload["override"] == [77, "persona-chrome-updated"]
     assert payload["snap_dir"] == payload["expected_snap_dir"]
     assert payload["crawl_dir"] == payload["expected_crawl_dir"]
     assert payload["active_persona"] == "StackPersona"

@@ -5,9 +5,7 @@ import os
 import posixpath
 from glob import glob, escape
 from django.utils import timezone
-import inspect
 from typing import cast
-from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -30,7 +28,17 @@ from admin_data_views.utils import render_with_table_view, render_with_item_view
 from abx_plugins.plugins.archivewebpage import replay_preview as archivewebpage_replay
 
 from archivebox.config import CONSTANTS, CONSTANTS_CONFIG, VERSION
-from archivebox.config.common import SENSITIVE_CONFIG_VALUE_REDACTED, get_config, get_all_configs, redact_sensitive_config
+from archivebox.config.common import (
+    SENSITIVE_CONFIG_VALUE_REDACTED,
+    find_config_default,
+    find_config_section,
+    find_config_source,
+    find_config_type,
+    get_config,
+    get_all_configs,
+    get_request_config,
+    redact_sensitive_config,
+)
 from archivebox.config.configset import BaseConfigSet
 from archivebox.misc.paginators import CountlessPaginator
 from archivebox.misc.util import (
@@ -80,16 +88,6 @@ from archivebox.plugins.views import get_config_definition_link
 from archivebox.progressmonitor.views import live_progress_view, progress_endpoint
 
 
-def _get_request_config(request: HttpRequest, *, resolve_plugins: bool = False):
-    request_config = getattr(request, "archivebox_config", None)
-    request_config_resolves_plugins = bool(getattr(request, "_archivebox_config_resolves_plugins", False))
-    if request_config is None or (resolve_plugins and not request_config_resolves_plugins):
-        request_config = get_config(resolve_plugins=resolve_plugins)
-        request.archivebox_config = request_config
-        request._archivebox_config_resolves_plugins = resolve_plugins
-    return request_config
-
-
 def _files_index_target(snapshot: Snapshot, archivefile: str | None) -> str:
     target = archivefile or ""
     if target == "index.html":
@@ -122,14 +120,14 @@ def _find_snapshot_by_ref(snapshot_ref: str) -> Snapshot | None:
 
 
 def _admin_login_redirect_or_forbidden(request: HttpRequest):
-    if _get_request_config(request).CONTROL_PLANE_ENABLED:
+    if get_request_config(request).CONTROL_PLANE_ENABLED:
         return redirect(f"/admin/login/?next={request.path}")
     return HttpResponseForbidden("ArchiveBox is running with the control plane disabled in this security mode.")
 
 
 class HomepageView(View):
     def get(self, request):
-        request_config = _get_request_config(request)
+        request_config = get_request_config(request)
         if request.user.is_authenticated and request_config.CONTROL_PLANE_ENABLED:
             return redirect("/admin/core/snapshot/")
 
@@ -200,7 +198,7 @@ class SnapshotView(View):
 
         # Reuse the middleware-attached config; never re-bootstrap from env + plugin
         # schemas just to render a snapshot page (that pays ~30ms for no reason).
-        runtime_config = _get_request_config(request)
+        runtime_config = get_request_config(request)
         snapshot._runtime_config = runtime_config
         snapshot_permissions = get_snapshot_permissions(snapshot)
         hidden_card_plugins = {"archivedotorg", "favicon", "title"}
@@ -734,7 +732,7 @@ def _replay_path_visible(request: HttpRequest, path: Path) -> bool:
     snapshot = Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").first()
     if not snapshot or not can_view_snapshot(request, snapshot):
         return False
-    request.archivebox_config = _get_request_config(request, resolve_plugins=False)
+    request.archivebox_config = get_request_config(request, resolve_plugins=False)
     return True
 
 
@@ -845,11 +843,14 @@ def _serve_responses_path(request, responses_root: Path, rel_path: str, show_ind
 
 
 def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str = ""):
-    request_config = _get_request_config(request, resolve_plugins=False)
+    rel_path = path or ""
+    request_config = get_request_config(
+        request,
+        resolve_plugins=rel_path.startswith("replay/") or rel_path == "replay",
+    )
     request.archivebox_config = request_config
     request.archivebox_snapshot_url = snapshot.url
     snapshot._runtime_config = request_config
-    rel_path = path or ""
 
     if rel_path.startswith("replay/") or rel_path == "replay":
         response = archivewebpage_replay.serve_replay_asset_response(rel_path, request_config, HttpResponse)
@@ -899,7 +900,8 @@ def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str =
 
 
 def _serve_original_domain_replay(request: HttpRequest, domain: str, path: str = ""):
-    request_config = _get_request_config(request)
+    request_config = get_request_config(request, resolve_plugins=False)
+    request.archivebox_config = request_config
     requested_root_index = path in ("", "index.html") or path.endswith("/")
     rel_path = path or ""
     if not rel_path or rel_path.endswith("/"):
@@ -909,13 +911,13 @@ def _serve_original_domain_replay(request: HttpRequest, domain: str, path: str =
         raise Http404
 
     domain = domain.lower()
-    match = _latest_response_match(request, domain, rel_path, data_root=request_config.USERS_DIR)
+    match = _latest_response_match(request, domain, rel_path, data_root=CONSTANTS.USERS_DIR)
     if not match and "." not in Path(rel_path).name:
         index_path = f"{rel_path.rstrip('/')}/index.html"
-        match = _latest_response_match(request, domain, index_path, data_root=request_config.USERS_DIR)
+        match = _latest_response_match(request, domain, index_path, data_root=CONSTANTS.USERS_DIR)
     if not match and "." not in Path(rel_path).name:
         html_path = f"{rel_path}.html"
-        match = _latest_response_match(request, domain, html_path, data_root=request_config.USERS_DIR)
+        match = _latest_response_match(request, domain, html_path, data_root=CONSTANTS.USERS_DIR)
 
     show_indexes = bool(request.GET.get("files"))
     if match:
@@ -924,7 +926,7 @@ def _serve_original_domain_replay(request: HttpRequest, domain: str, path: str =
         if response is not None:
             return response
 
-    responses_root = _latest_responses_root(request, domain, data_root=request_config.USERS_DIR)
+    responses_root = _latest_responses_root(request, domain, data_root=CONSTANTS.USERS_DIR)
     if responses_root:
         response = _serve_responses_path(request, responses_root, rel_path, show_indexes)
         if response is not None:
@@ -946,7 +948,7 @@ class SnapshotHostView(View):
     """Serve snapshot directory contents on <snapshot-subdomain>.<listen_host>/<path>."""
 
     def get(self, request, snapshot_id: str, path: str = ""):
-        request_config = _get_request_config(request)
+        request_config = get_request_config(request)
         snapshot = _find_snapshot_by_ref(snapshot_id)
 
         if not snapshot:
@@ -998,15 +1000,15 @@ class PublicIndexView(ListView):
     paginator_class = CountlessPaginator
 
     def get_paginate_by(self, queryset):
-        runtime_config = getattr(self, "runtime_config", None)
+        runtime_config = self.__dict__.get("runtime_config")
         if runtime_config is None:
-            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=False)
+            self.runtime_config = runtime_config = get_request_config(self.request, resolve_plugins=False)
         return runtime_config.SNAPSHOTS_PER_PAGE
 
     def get_context_data(self, **kwargs):
-        runtime_config = getattr(self, "runtime_config", None)
+        runtime_config = self.__dict__.get("runtime_config")
         if runtime_config is None:
-            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=False)
+            self.runtime_config = runtime_config = get_request_config(self.request, resolve_plugins=False)
         search_mode = get_search_mode(self.request.GET.get("search_mode"), config=runtime_config)
         search_mode_backend = get_search_mode_backend(search_mode, config=runtime_config)
         context = {
@@ -1023,7 +1025,7 @@ class PublicIndexView(ListView):
             self.request.GET.get("q")
             and get_search_mode_base(search_mode, config=runtime_config) == "deep"
             and search_mode_backend
-            and getattr(context.get("paginator"), "count", 0) == 0,
+            and context["paginator"].count == 0,
         )
         snapshots = list(context.get("object_list") or ())
         icons_by_snapshot: dict[str, set[str]] = {str(snapshot.id): set() for snapshot in snapshots}
@@ -1086,7 +1088,7 @@ class PublicIndexView(ListView):
         if not query:
             return qs
 
-        runtime_config = getattr(self, "runtime_config", None)
+        runtime_config = self.__dict__.get("runtime_config")
         search_mode = get_search_mode(self.request.GET.get("search_mode"), config=runtime_config)
         try:
             return apply_snapshot_search(
@@ -1105,7 +1107,7 @@ class PublicIndexView(ListView):
     def get(self, *args, **kwargs):
         if self.request.user.is_authenticated:
             return redirect("/admin/core/snapshot/")
-        if _get_request_config(self.request).PUBLIC_INDEX:
+        if get_request_config(self.request).PUBLIC_INDEX:
             response = super().get(*args, **kwargs)
             return response
         else:
@@ -1132,7 +1134,7 @@ class AddView(UserPassesTestMixin, FormView):
         return kwargs
 
     def test_func(self):
-        return _get_request_config(self.request).PUBLIC_ADD_VIEW or self.request.user.is_authenticated
+        return get_request_config(self.request).PUBLIC_ADD_VIEW or self.request.user.is_authenticated
 
     def _can_override_crawl_config(self) -> bool:
         return is_admin_user(self.request)
@@ -1146,11 +1148,11 @@ class AddView(UserPassesTestMixin, FormView):
         if not self._can_override_crawl_config():
             return {}
 
-        return custom_config
+        return {str(key): value for key, value in custom_config.items() if not str(key).endswith("_BINARY")}
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        request_config = _get_request_config(self.request, resolve_plugins=True)
+        request_config = get_request_config(self.request, resolve_plugins=True)
         required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
         can_override_crawl_config = self._can_override_crawl_config()
         plugin_configs = discover_plugin_configs() if can_override_crawl_config else {}
@@ -1252,7 +1254,7 @@ class AddView(UserPassesTestMixin, FormView):
 
                 created_by_id = get_or_create_system_user_pk()
 
-        created_by_name = getattr(self.request.user, "username", "web") if self.request.user.is_authenticated else "web"
+        created_by_name = self.request.user.username if self.request.user.is_authenticated else "web"
 
         # 1. save the provided urls to sources/2024-11-05__23-59-59__web_ui_add_by_user_<user_pk>.txt
         sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__web_ui_add_by_user_{created_by_id}.txt"
@@ -1267,8 +1269,7 @@ class AddView(UserPassesTestMixin, FormView):
         config = {}
         if plugins:
             config["PLUGINS"] = plugins
-        request_user = self.request.user if self.request.user.is_authenticated else None
-        effective_config = get_config(persona=persona, user=request_user) if persona else get_config(user=request_user)
+        effective_config = get_config(persona=persona) if persona else get_config()
         if crawl_max_concurrent_snapshots != int(effective_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS):
             config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
         if delete_after != str(effective_config.DELETE_AFTER):
@@ -1378,11 +1379,7 @@ class WebAddView(AddView):
                 return redirect(f"/{snapshot.url_path}")
 
         request_host = (request.get_host() or "").lower()
-        if (
-            request.user.is_authenticated
-            and not _get_request_config(request).PUBLIC_ADD_VIEW
-            and host_matches(request_host, get_web_host())
-        ):
+        if request.user.is_authenticated and not get_request_config(request).PUBLIC_ADD_VIEW and host_matches(request_host, get_web_host()):
             return redirect(build_admin_url(request.get_full_path(), request=request))
 
         if not self.test_func():
@@ -1461,79 +1458,11 @@ class HealthCheckView(View):
         return HttpResponse("OK", content_type="text/plain", status=200)
 
 
-def find_config_section(key: str) -> str:
-    CONFIGS = get_all_configs()
-
-    if key in CONSTANTS_CONFIG:
-        return "CONSTANT"
-    matching_sections = [section_id for section_id, section in CONFIGS.items() if key in dict(section)]
-    section = matching_sections[0] if matching_sections else "DYNAMIC"
-    return section
-
-
-def find_config_default(key: str) -> str:
-    CONFIGS = get_all_configs()
-
-    if key in CONSTANTS_CONFIG:
-        return str(CONSTANTS_CONFIG[key])
-
-    default_val = None
-
-    for config in CONFIGS.values():
-        if key in dict(config):
-            default_val = type(config).model_fields[key].default
-            break
-
-    if isinstance(default_val, Callable):
-        default_val = inspect.getsource(default_val).split("lambda", 1)[-1].split(":", 1)[-1].replace("\n", " ").strip()
-        if default_val.count(")") > default_val.count("("):
-            default_val = default_val[:-1]
-    else:
-        default_val = str(default_val)
-
-    return default_val
-
-
-def find_config_type(key: str) -> str:
-    CONFIGS = get_all_configs()
-
-    for config in CONFIGS.values():
-        if key in type(config).model_fields:
-            annotation = type(config).model_fields[key].annotation
-            return getattr(annotation, "__name__", str(annotation))
-    return "str"
-
-
-def find_config_source(key: str, merged_config: dict) -> str:
-    """Determine where a config value comes from."""
-    from archivebox.machine.models import Machine
-
-    # Environment variables override all persistent config sources.
-    if key in os.environ:
-        return "Environment"
-
-    # Machine.config overrides ArchiveBox.conf.
-    try:
-        machine = Machine.current()
-        if machine.config and key in machine.config:
-            return "Machine"
-    except Exception:
-        pass
-
-    # Check if it's from archivebox.config.file
-    file_config = BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE)
-    if key in file_config:
-        return "Config File"
-
-    # Otherwise it's using the default
-    return "Default"
-
-
 @render_with_table_view
 def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
     CONFIGS = get_all_configs()
 
-    assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
+    assert request.user.is_superuser, "Must be a superuser to view configuration settings."
 
     merged_config = get_config(redact_sensitive=True)
 
@@ -1555,12 +1484,12 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
             rows["Type"].append(format_html("<code>{}</code>", find_config_type(key)))
 
             # Use merged config value (includes machine overrides)
-            actual_value = merged_config.get(key, getattr(section, key, None))
+            actual_value = merged_config.get(key, dict(section)[key])
             rows["Value"].append(mark_safe(f"<code>{actual_value}</code>"))
 
             # Show where the value comes from
             source = find_config_source(key, merged_config)
-            source_colors = {"Machine": "purple", "Environment": "blue", "Config File": "green", "Default": "gray"}
+            source_colors = {"Machine": "purple", "Environment": "blue", "File": "green", "Plugin Default": "teal", "Default": "gray"}
             rows["Source"].append(format_html('<code style="color: {}">{}</code>', source_colors.get(source, "gray"), source))
 
             rows["Default"].append(
@@ -1575,7 +1504,7 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
     for key in CONSTANTS_CONFIG.keys():
         rows["Section"].append(section)  # section.replace('_', ' ').title().replace(' Config', '')
         rows["Key"].append(ItemLink(key, key=key))
-        rows["Type"].append(format_html("<code>{}</code>", getattr(type(CONSTANTS_CONFIG[key]), "__name__", str(CONSTANTS_CONFIG[key]))))
+        rows["Type"].append(format_html("<code>{}</code>", type(CONSTANTS_CONFIG[key]).__name__))
         rows["Value"].append(format_html("<code>{}</code>", redact_sensitive_config(CONSTANTS_CONFIG).get(key)))
         rows["Source"].append(mark_safe('<code style="color: gray">Constant</code>'))
         rows["Default"].append(
@@ -1598,16 +1527,12 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
 
     CONFIGS = get_all_configs()
 
-    assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
+    assert request.user.is_superuser, "Must be a superuser to view configuration settings."
 
     merged_config = get_config(redact_sensitive=True)
 
     # Determine all sources for this config value
     sources_info = []
-
-    # Environment variable
-    if key in os.environ:
-        sources_info.append(("Environment", redact_sensitive_config(os.environ).get(key), "blue"))
 
     # Machine config
     machine = None
@@ -1620,11 +1545,15 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
     except Exception:
         pass
 
+    # Environment variable
+    if key in os.environ:
+        sources_info.append(("Environment", redact_sensitive_config(os.environ).get(key), "blue"))
+
     # Config file value
     if CONSTANTS.CONFIG_FILE.exists():
         file_config = BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE)
         if key in file_config:
-            sources_info.append(("Config File", redact_sensitive_config(file_config).get(key), "green"))
+            sources_info.append(("File", redact_sensitive_config(file_config).get(key), "green"))
 
     # Default value
     default_val = find_config_default(key)

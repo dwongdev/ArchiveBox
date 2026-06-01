@@ -1,7 +1,7 @@
 """
 Database utility functions for ArchiveBox.
 
-Post-bootstrap: requires archivebox.config (DATA_DIR) and uses Django lazily
+Post-bootstrap: requires archivebox.config constants and uses Django lazily
 (``from django.db import ...`` inside functions). Not safe to import pre-bootstrap.
 """
 
@@ -17,7 +17,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from sqlite3 import OperationalError as SQLiteOperationalError
 
-from archivebox.config import DATA_DIR
+from archivebox.config import CONSTANTS
 from archivebox.misc.util import enforce_types
 
 
@@ -79,7 +79,7 @@ def run_db_analyze_batch(
         return []
 
     next_table, *rest = remaining
-    raw_conn = getattr(connection, "connection", None)
+    raw_conn = connection.connection
     progress_handler_set = False
     if raw_conn is not None and max_seconds_per_table > 0:
         deadline = time.monotonic() + max_seconds_per_table
@@ -117,7 +117,7 @@ def compact_command(cmdline: list[str] | None, fallback: str = "") -> str:
     return " ".join([Path(parts[0]).name, *parts[1:]])[:220]
 
 
-def sqlite_lock_holders(db_path: Path = DATA_DIR / "index.sqlite3") -> list[str]:
+def sqlite_lock_holders(db_path: Path = CONSTANTS.DATABASE_FILE) -> list[str]:
     import psutil
 
     db_path = db_path.resolve()
@@ -146,7 +146,7 @@ def sqlite_lock_holders(db_path: Path = DATA_DIR / "index.sqlite3") -> list[str]
     return holders
 
 
-def log_sqlite_lock_holders(console: Any, *, db_path: Path = DATA_DIR / "index.sqlite3", limit: int = 8) -> None:
+def log_sqlite_lock_holders(console: Any, *, db_path: Path = CONSTANTS.DATABASE_FILE, limit: int = 8) -> None:
     holders = sqlite_lock_holders(db_path)
     if holders:
         console.print("[yellow]    DB holders:[/yellow]")
@@ -346,7 +346,7 @@ HISTORICAL_GHOST_MIGRATIONS: frozenset[tuple[str, str]] = frozenset(
 
 
 @enforce_types
-def migration_state(out_dir: Path = DATA_DIR) -> tuple[list[str], list[str], dict[str, str]]:
+def migration_state(out_dir: Path = CONSTANTS.DATA_DIR) -> tuple[list[str], list[str], dict[str, str]]:
     """Cheaply compare migration files to django_migrations without invoking migrate."""
     from django.apps import apps
     from django.db import connection
@@ -373,7 +373,7 @@ def migration_state(out_dir: Path = DATA_DIR) -> tuple[list[str], list[str], dic
     loader.load_disk()
     for (app_label, migration_name), migration in loader.disk_migrations.items():
         disk_migrations.add((app_label, migration_name))
-        for replaced_app, replaced_name in getattr(migration, "replaces", ()) or ():
+        for replaced_app, replaced_name in migration.replaces or ():
             squashed_replaced.add((replaced_app, replaced_name))
 
     applied = {(app, name) for app, name in applied if app in app_labels}
@@ -392,14 +392,19 @@ def migration_state(out_dir: Path = DATA_DIR) -> tuple[list[str], list[str], dic
 
 
 @enforce_types
-def pending_migrations(out_dir: Path = DATA_DIR) -> list[str]:
+def pending_migrations(out_dir: Path = CONSTANTS.DATA_DIR) -> list[str]:
     """Return migration files on disk that have not been applied yet."""
     pending, _missing_from_code, _rollback_targets = migration_state(out_dir=out_dir)
     return pending
 
 
 @enforce_types
-def apply_migrations(out_dir: Path = DATA_DIR, stdout: TextIO | None = None, stderr: TextIO | None = None, verbosity: int = 1) -> list[str]:
+def apply_migrations(
+    out_dir: Path = CONSTANTS.DATA_DIR,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    verbosity: int = 1,
+) -> list[str]:
     """Apply pending Django migrations"""
     from django.core.management import call_command
 

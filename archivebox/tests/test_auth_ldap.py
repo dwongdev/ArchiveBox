@@ -117,14 +117,14 @@ class TestLDAPAuthBackend:
         """Test that ArchiveBoxLDAPBackend class is defined."""
         from archivebox.ldap.auth import ArchiveBoxLDAPBackend
 
-        assert hasattr(ArchiveBoxLDAPBackend, "authenticate_ldap_user")
+        assert ArchiveBoxLDAPBackend.authenticate_ldap_user is not None
 
     def test_ldap_backend_inherits_correctly(self):
         """Test that ArchiveBoxLDAPBackend has correct inheritance."""
         from archivebox.ldap.auth import ArchiveBoxLDAPBackend
 
         # Should have authenticate_ldap_user method (from base or overridden)
-        assert callable(getattr(ArchiveBoxLDAPBackend, "authenticate_ldap_user", None))
+        assert callable(ArchiveBoxLDAPBackend.authenticate_ldap_user)
 
 
 class TestArchiveBoxWithLDAP:

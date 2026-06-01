@@ -372,7 +372,7 @@ def create_personas(
         if not is_tty:
             write_record(
                 {
-                    "id": str(persona.id) if hasattr(persona, "id") else None,
+                    "id": str(persona.id),
                     "name": persona.name,
                     "path": str(persona.path),
                     "CHROME_USER_DATA_DIR": persona.CHROME_USER_DATA_DIR,
@@ -424,7 +424,7 @@ def list_personas(
         else:
             write_record(
                 {
-                    "id": str(persona.id) if hasattr(persona, "id") else None,
+                    "id": str(persona.id),
                     "name": persona.name,
                     "path": str(persona.path),
                     "CHROME_USER_DATA_DIR": persona.CHROME_USER_DATA_DIR,
@@ -500,7 +500,7 @@ def update_personas(name: str | None = None) -> int:
             if not is_tty:
                 write_record(
                     {
-                        "id": str(persona.id) if hasattr(persona, "id") else None,
+                        "id": str(persona.id),
                         "name": persona.name,
                         "path": str(persona.path),
                     },

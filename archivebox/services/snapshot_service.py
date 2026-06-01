@@ -11,7 +11,12 @@ from abx_dl.limits import CrawlLimitState
 from abx_dl.services.base import BaseService
 
 
-def finalize_completed_snapshot(snapshot_id: str) -> None:
+def finalize_completed_snapshot(
+    snapshot_id: str,
+    *,
+    output_dir=None,
+    crawl_limit_stop_reason: str | None = None,
+) -> None:
     from archivebox.core.models import Snapshot
 
     snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_id).first()
@@ -22,7 +27,7 @@ def finalize_completed_snapshot(snapshot_id: str) -> None:
         snapshot.downloaded_at = timezone.now()
         snapshot.save(update_fields=["downloaded_at", "modified_at"])
 
-    stop_reason = _crawl_limit_stop_reason(snapshot.crawl)
+    stop_reason = crawl_limit_stop_reason if crawl_limit_stop_reason is not None else _crawl_limit_stop_reason(snapshot.crawl)
     if snapshot.crawl_id and stop_reason in ("crawl_max_size", "crawl_timeout"):
         Snapshot.objects.filter(
             crawl_id=snapshot.crawl_id,
@@ -40,14 +45,17 @@ def finalize_completed_snapshot(snapshot_id: str) -> None:
         snapshot.sm.seal()
         snapshot.refresh_from_db()
 
-    snapshot.write_index_jsonl()
+    snapshot.write_index_jsonl(output_dir=output_dir)
 
 
 def _crawl_limit_stop_reason(crawl) -> str:
     from archivebox.config.common import get_config
 
-    config = get_config(crawl=crawl, include_machine=False)
-    config["CRAWL_DIR"] = str(crawl.output_dir)
+    config_model = get_config(crawl=crawl)
+    config = config_model.for_crawl_runtime(
+        crawl=crawl,
+        persona=crawl.resolve_persona(),
+    )
     return CrawlLimitState.from_config(config).get_stop_reason()
 
 

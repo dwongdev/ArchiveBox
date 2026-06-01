@@ -12,16 +12,16 @@ _search_backends_cache: dict | None = None
 
 @contextmanager
 def search_backend_env(config: dict[str, Any] | None = None, **config_kwargs: Any):
-    """Temporarily expose resolved config through os.environ for backend code."""
+    """Temporarily expose resolved search config through os.environ for backend code."""
     config = config or get_config(**config_kwargs)
     updates = {}
     for key, value in config.items():
+        if not str(key).startswith("SEARCH_BACKEND_"):
+            continue
         if value is None:
             continue
         if isinstance(value, (str, int, float, bool, os.PathLike)):
             updates[str(key)] = str(value)
-    updates["DATA_DIR"] = str(config.DATA_DIR)
-    updates["SNAP_DIR"] = str(config.USERS_DIR)
     previous = {key: os.environ.get(key) for key in updates}
     os.environ.update(updates)
     try:

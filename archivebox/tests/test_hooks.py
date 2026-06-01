@@ -45,10 +45,11 @@ def create_test_plugin_structure(plugins_dir: Path) -> None:
 
 def run_plugin_discovery_subprocess(tmp_path: Path, plugins_dir: Path, script: str):
     env = os.environ.copy()
-    env["ARCHIVEBOX_USER_PLUGINS_DIR"] = str(plugins_dir)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    env["DATA_DIR"] = str(data_dir)
+    cwd_plugins_dir = data_dir / "custom_plugins"
+    if plugins_dir != cwd_plugins_dir:
+        shutil.copytree(plugins_dir, cwd_plugins_dir)
     env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     subprocess_script = "\n".join(
         [
@@ -205,7 +206,7 @@ class TestRequiredBinaryConfigHandling:
         assert binary_name == "wget2"
 
     def test_binary_env_var_empty_default(self):
-        """Empty configured values should fall back to config defaults."""
+        """Empty configured binary values should keep the schema default."""
         configured_binary = ""
         if configured_binary:
             binary_name = configured_binary
@@ -736,7 +737,6 @@ print(json.dumps({
         hook_path,
         output_dir,
         config={
-            "DATA_DIR": str(tmp_path),
             "LIB_DIR": str(lib_dir),
             "NODE_PATH": configured_node_path,
         },

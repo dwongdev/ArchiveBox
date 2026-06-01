@@ -1,7 +1,7 @@
 __package__ = "archivebox"
 
 # Post-bootstrap CLI logging helpers (event loggers, progress bars, formatters).
-# Requires archivebox.config to be loaded — imports DATA_DIR, get_config, and
+# Requires archivebox.config to be loaded — imports CONSTANTS/get_config and
 # references Django ORM types. For pre-bootstrap logging primitives use
 # misc/logging.py, which has no archivebox or Django dependencies.
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 from rich import print
 from rich.panel import Panel
 
-from archivebox.config import DATA_DIR, VERSION
+from archivebox.config import CONSTANTS, VERSION
 from archivebox.config.common import get_config
 from archivebox.misc.util import enforce_types
 from archivebox.misc.logging import ANSI
@@ -171,7 +171,9 @@ def log_list_finished(snapshots):
 
 
 def log_removal_started(snapshots, yes: bool):
-    count = snapshots.count() if hasattr(snapshots, "count") else len(snapshots)
+    from django.db.models import QuerySet
+
+    count = snapshots.count() if isinstance(snapshots, QuerySet) else len(snapshots)
     print(f"[yellow3][i] Found {count} matching URLs to remove.[/]")
     file_counts = [s.num_outputs for s in snapshots if os.access(s.output_dir, os.R_OK)]
     print(
@@ -203,7 +205,7 @@ def log_removal_finished(remaining_links: int, removed_links: int):
 
 
 @enforce_types
-def pretty_path(path: Path | str, pwd: Path | str = DATA_DIR, color: bool = True) -> str:
+def pretty_path(path: Path | str, pwd: Path | str = CONSTANTS.DATA_DIR, color: bool = True) -> str:
     """convert paths like .../ArchiveBox/archivebox/../output/abc into output/abc"""
     pwd = str(Path(pwd))  # .resolve()
     path = str(path)

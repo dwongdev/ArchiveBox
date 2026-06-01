@@ -345,9 +345,7 @@ def live_progress_view(request):
         persona_objects_by_id = {}
         persona_objects_by_name = {}
         persona_ids = {crawl["persona_id"] for crawl in active_crawls_list if crawl["persona_id"]}
-        persona_names = {
-            str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default") for crawl in active_crawls_list if not crawl["persona_id"]
-        }
+        persona_names = {"Default"} if any(not crawl["persona_id"] for crawl in active_crawls_list) else set()
         if persona_ids or persona_names:
             from archivebox.personas.models import Persona
 
@@ -813,7 +811,7 @@ def live_progress_view(request):
             urls_preview = crawl["urls"][:60] if crawl["urls"] else None
             crawl_tags = [tag.strip() for tag in (crawl["tags_str"] or "").replace("\n", ",").split(",") if tag.strip()]
             persona_details = persona_details_by_id.get(str(crawl["persona_id"])) if crawl["persona_id"] else None
-            persona_name = persona_details["name"] if persona_details else str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default")
+            persona_name = persona_details["name"] if persona_details else "Default"
             persona_details = persona_details or persona_details_by_name.get(persona_name)
             crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
             avg_snapshot_size = int(crawl_output_size / completed_snapshots) if completed_snapshots else 0

@@ -248,10 +248,8 @@ def iter_query_search_ids(
             backend = backends[backend_name]
             try:
                 with search_backend_env(config=config):
-                    if hasattr(backend, "iter_search"):
+                    if backend_name == "ripgrep":
                         ids = backend.iter_search(query, search_mode=search_mode_base)
-                    elif backend_name == "ripgrep":
-                        ids = backend.search(query, search_mode=search_mode_base)
                     else:
                         ids = backend.search(query)
                     for snapshot_id in ids:

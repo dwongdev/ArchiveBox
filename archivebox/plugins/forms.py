@@ -9,7 +9,7 @@ from typing import Any
 from django import forms
 from django.utils.html import format_html
 
-from archivebox.config.common import get_config
+from archivebox.config.common import ArchiveBoxConfig, get_config
 from archivebox.plugins.discovery import discover_plugin_configs, get_plugin_icon, get_plugins
 
 
@@ -250,6 +250,7 @@ def _coerce_plugin_config_value(raw_value: Any, schema: Mapping[str, Any]) -> An
 
 class PluginConfigFormMixin:
     plugin_groups: list[dict[str, Any]]
+    allow_crawl_execution_config_fields = True
 
     def build_plugin_groups(self, runtime_config: Mapping[str, Any] | None = None) -> None:
         all_plugins = get_plugins()
@@ -314,7 +315,10 @@ class PluginConfigFormMixin:
             config_fields = [
                 self._build_plugin_config_field(str(plugin_name), str(config_key), prop_schema, runtime_config)
                 for config_key, prop_schema in properties.items()
-                if isinstance(prop_schema, dict)
+                if (
+                    isinstance(prop_schema, dict)
+                    and (self.allow_crawl_execution_config_fields or ArchiveBoxConfig.scope_for_key(str(config_key)) == "crawl_frozen")
+                )
             ]
             cards.append(
                 {
@@ -426,6 +430,8 @@ class PluginConfigFormMixin:
 
                 input_name = _plugin_config_input_name(plugin_name, config_key)
                 if input_name not in self.data:
+                    continue
+                if not self.allow_crawl_execution_config_fields and ArchiveBoxConfig.scope_for_key(str(config_key)) != "crawl_frozen":
                     continue
 
                 raw_value: Any = self.data.get(input_name)
@@ -595,5 +601,6 @@ def get_plugin_config_binary_urls(runtime_config: Mapping[str, Any]) -> dict[str
             )
         if binary is None and name != value:
             binary = Binary.objects.get_valid_binary(name, machine=machine)
-        urls[key] = get_installed_binary_change_url(getattr(binary, "name", name), binary) or get_environment_binary_url(name)
+        binary_name = binary.name if binary is not None else name
+        urls[key] = get_installed_binary_change_url(binary_name, binary) or get_environment_binary_url(name)
     return urls

@@ -47,7 +47,7 @@ class CustomUserAdmin(UserAdmin):
 
     def snapshot_count_badge(self, obj):
         snapshots_url = f"/admin/core/snapshot/?created_by__id__exact={obj.pk}"
-        snapshot_count = getattr(obj, "snapshot_count", 0)
+        snapshot_count = obj.__dict__.get("snapshot_count", 0)
         snapshot_label = "snapshot" if snapshot_count == 1 else "snapshots"
         return format_html(
             (

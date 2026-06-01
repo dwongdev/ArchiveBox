@@ -401,7 +401,7 @@ def update(
                 resume = None
     except (KeyboardInterrupt, asyncio.CancelledError) as err:
         exit_code = 130
-        exact_resume = getattr(err, "archivebox_resume", None)
+        exact_resume = err.__dict__.get("archivebox_resume")
         resume_cmd = ["archivebox", "update"]
         if migrate_only:
             resume_cmd.append("--migrate-only")
@@ -464,7 +464,7 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
     1:1 mapping between DB and filesystem.
     """
     from archivebox.core.models import Snapshot
-    from archivebox.config.common import get_config
+    from archivebox.config import CONSTANTS
     from archivebox.crawls.models import Crawl
     from django.utils import timezone
 
@@ -473,8 +473,7 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
     crawl_url_sets: dict[str, set[str]] = {}
     dirty_crawl_ids: set[str] = set()
 
-    runtime_config = get_config()
-    archive_dir = runtime_config.ARCHIVE_DIR
+    archive_dir = CONSTANTS.ARCHIVE_DIR
     if not archive_dir.exists():
         return stats
 

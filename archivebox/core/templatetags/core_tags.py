@@ -76,6 +76,12 @@ def _normalize_output_files(output_files: Any) -> dict[str, dict[str, Any]]:
     return {}
 
 
+def _snapshot_id(value: Any) -> Any:
+    from archivebox.core.models import Snapshot
+
+    return value.id if isinstance(value, Snapshot) else value
+
+
 def _coerce_output_file_size(value: Any) -> int | None:
     try:
         return max(int(value or 0), 0)
@@ -85,7 +91,7 @@ def _coerce_output_file_size(value: Any) -> int | None:
 
 def _count_media_files(result) -> int:
     try:
-        output_files = _normalize_output_files(getattr(result, "output_files", None) or {})
+        output_files = _normalize_output_files(result.output_files or {})
     except Exception:
         output_files = {}
 
@@ -121,7 +127,7 @@ def _list_media_files(result) -> list[dict]:
     except Exception:
         return media_files
 
-    output_files = _normalize_output_files(getattr(result, "output_files", None) or {})
+    output_files = _normalize_output_files(result.output_files or {})
     candidates: list[tuple[Path, int | None]] = []
     if output_files:
         for path, metadata in output_files.items():
@@ -300,7 +306,7 @@ def result_list(context, cl):
     """
     num_sorted_fields = 0
     request = context.get("request")
-    config = getattr(request, "archivebox_config", None) or context.get("CONFIG")
+    config = request.__dict__.get("archivebox_config") if request is not None else context.get("CONFIG")
     results = cl.result_list
     if config is not None:
         for obj in results:
@@ -443,7 +449,7 @@ def _unconfigured_banner_context(request) -> dict:
     # operator's clipboard already aligned with subdomain routing. The config
     # parser strips the leading ``*.`` so users can paste it verbatim.
     suggested_base_url = f"{scheme}://*.{canonical_host}" if canonical_host else ""
-    user = getattr(request, "user", None)
+    user = request.user
     is_superuser = bool(user and user.is_authenticated and user.is_superuser)
     machine_admin_url = ""
     if is_superuser:
@@ -496,19 +502,19 @@ def public_base_url(context) -> str:
 
 @register.simple_tag(takes_context=True)
 def snapshot_base_url(context, snapshot) -> str:
-    snapshot_id = getattr(snapshot, "id", snapshot)
+    snapshot_id = _snapshot_id(snapshot)
     return get_snapshot_base_url(str(snapshot_id), request=context.get("request"), config=context.get("CONFIG"))
 
 
 @register.simple_tag(takes_context=True)
 def snapshot_url(context, snapshot, path: str = "") -> str:
-    snapshot_id = getattr(snapshot, "id", snapshot)
+    snapshot_id = _snapshot_id(snapshot)
     return build_snapshot_url(str(snapshot_id), path, request=context.get("request"), config=context.get("CONFIG"))
 
 
 @register.simple_tag(takes_context=True)
 def snapshot_preview_url(context, snapshot, path: str = "") -> str:
-    snapshot_id = getattr(snapshot, "id", snapshot)
+    snapshot_id = _snapshot_id(snapshot)
     return _build_snapshot_preview_url(str(snapshot_id), path, request=context.get("request"), config=context.get("CONFIG"))
 
 
@@ -538,16 +544,18 @@ def plugin_card(context, result) -> str:
         - output_path: Path to output relative to snapshot dir (from embed_path())
         - plugin: Plugin base name
     """
-    if result is None or not hasattr(result, "plugin"):
+    from archivebox.core.models import ArchiveResult
+
+    if result is None or not isinstance(result, ArchiveResult):
         return ""
 
     plugin = get_plugin_name(result.plugin)
     template_str = get_plugin_template(plugin, "card")
 
     # Use embed_path() for the display path
-    raw_output_path = result.embed_path() if hasattr(result, "embed_path") else ""
+    raw_output_path = result.embed_path() or ""
     output_url = build_snapshot_url(
-        str(getattr(result, "snapshot_id", "")),
+        str(result.snapshot_id),
         raw_output_path or "",
         request=context.get("request"),
         config=context.get("CONFIG"),
@@ -558,7 +566,7 @@ def plugin_card(context, result) -> str:
     media_file_count = _count_media_files(result) if plugin_lower in ("ytdlp", "yt-dlp", "youtube-dl") else 0
     media_files = _list_media_files(result) if plugin_lower in ("ytdlp", "yt-dlp", "youtube-dl") else []
     if media_files:
-        snapshot_id = str(getattr(result, "snapshot_id", ""))
+        snapshot_id = str(result.snapshot_id)
         request = context.get("request")
         config = context.get("CONFIG")
         for item in media_files:
@@ -592,7 +600,7 @@ def plugin_card(context, result) -> str:
         pass
 
     if force_text_preview:
-        preview = _render_text_file_preview(getattr(result, "snapshot_dir", None), raw_output_path, plugin, icon_html)
+        preview = _render_text_file_preview(result.snapshot_dir, raw_output_path, plugin, icon_html)
         if preview:
             return mark_safe(preview)
 
@@ -608,7 +616,7 @@ def plugin_card(context, result) -> str:
 def output_card(snapshot, output_path: str, plugin: str) -> str:
     plugin_name = get_plugin_name(plugin)
     icon_html = get_plugin_icon(plugin_name)
-    preview = _render_text_file_preview(getattr(snapshot, "output_dir", None), output_path, plugin_name, icon_html)
+    preview = _render_text_file_preview(snapshot.output_dir, output_path, plugin_name, icon_html)
     if preview:
         return mark_safe(preview)
 
@@ -624,7 +632,9 @@ def plugin_full(context, result) -> str:
 
     Usage: {% plugin_full result %}
     """
-    if result is None or not hasattr(result, "plugin"):
+    from archivebox.core.models import ArchiveResult
+
+    if result is None or not isinstance(result, ArchiveResult):
         return ""
 
     plugin = get_plugin_name(result.plugin)
@@ -634,14 +644,13 @@ def plugin_full(context, result) -> str:
         return ""
 
     raw_output_path = ""
-    if hasattr(result, "embed_path_db"):
-        raw_output_path = result.embed_path_db() or ""
-    if not raw_output_path and hasattr(result, "embed_path"):
+    raw_output_path = result.embed_path_db() or ""
+    if not raw_output_path:
         raw_output_path = result.embed_path() or ""
     if _is_root_snapshot_output_path(raw_output_path):
         return ""
     output_url = build_snapshot_url(
-        str(getattr(result, "snapshot_id", "")),
+        str(result.snapshot_id),
         raw_output_path,
         request=context.get("request"),
         config=context.get("CONFIG"),
@@ -685,7 +694,7 @@ def api_token(context) -> str:
     from archivebox.api.auth import get_or_create_api_token
 
     request = context.get("request")
-    user = getattr(request, "user", None)
+    user = request.user
     if not user or not user.is_authenticated:
         return ""
 

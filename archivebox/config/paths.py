@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 #############################################################################################
 
 PACKAGE_DIR: Path = Path(__file__).resolve().parent.parent  # archivebox source code dir
-DATA_DIR: Path = Path(os.environ.get("DATA_DIR", os.getcwd())).resolve()  # archivebox user data dir
+DATA_DIR: Path = Path(os.getcwd()).resolve()  # archivebox user data dir
 
 
 def _env_path(key: str, default: Path) -> Path:
@@ -29,8 +29,8 @@ def _env_path(key: str, default: Path) -> Path:
     return path.resolve()
 
 
-ARCHIVE_DIR: Path = _env_path("ARCHIVE_DIR", DATA_DIR / "archive")  # archivebox snapshot data dir
-USERS_DIR: Path = _env_path("USERS_DIR", ARCHIVE_DIR / "users")  # archivebox user-scoped crawl/snapshot data dir
+ARCHIVE_DIR: Path = DATA_DIR / "archive"  # archivebox snapshot data dir
+USERS_DIR: Path = ARCHIVE_DIR / "users"  # archivebox user-scoped crawl/snapshot data dir
 
 IN_DOCKER = os.environ.get("IN_DOCKER", False) in ("1", "true", "True", "TRUE", "yes")
 
@@ -290,20 +290,20 @@ def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
                 "is_mount": os.path.ismount(DATABASE_FILE.resolve()),
             },
             "ARCHIVE_DIR": {
-                "path": config.ARCHIVE_DIR.resolve(),
+                "path": CONSTANTS.ARCHIVE_DIR.resolve(),
                 "enabled": True,
-                "is_valid": os.path.isdir(config.ARCHIVE_DIR)
-                and os.access(config.ARCHIVE_DIR, os.R_OK)
-                and os.access(config.ARCHIVE_DIR, os.W_OK),
-                "is_mount": os.path.ismount(config.ARCHIVE_DIR.resolve()),
+                "is_valid": os.path.isdir(CONSTANTS.ARCHIVE_DIR)
+                and os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK)
+                and os.access(CONSTANTS.ARCHIVE_DIR, os.W_OK),
+                "is_mount": os.path.ismount(CONSTANTS.ARCHIVE_DIR.resolve()),
             },
             "USERS_DIR": {
-                "path": config.USERS_DIR.resolve(),
-                "enabled": os.path.isdir(config.USERS_DIR),
-                "is_valid": os.path.isdir(config.USERS_DIR)
-                and os.access(config.USERS_DIR, os.R_OK)
-                and os.access(config.USERS_DIR, os.W_OK),
-                "is_mount": os.path.ismount(config.USERS_DIR.resolve()),
+                "path": CONSTANTS.USERS_DIR.resolve(),
+                "enabled": os.path.isdir(CONSTANTS.USERS_DIR),
+                "is_valid": os.path.isdir(CONSTANTS.USERS_DIR)
+                and os.access(CONSTANTS.USERS_DIR, os.R_OK)
+                and os.access(CONSTANTS.USERS_DIR, os.W_OK),
+                "is_mount": os.path.ismount(CONSTANTS.USERS_DIR.resolve()),
             },
             "SOURCES_DIR": {
                 "path": CONSTANTS.SOURCES_DIR.resolve(),
@@ -366,9 +366,9 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
                 "is_valid": os.access(CONSTANTS.STATIC_DIR, os.R_OK) and os.access(CONSTANTS.STATIC_DIR, os.X_OK),  # read + list
             },
             "CUSTOM_TEMPLATES_DIR": {
-                "path": config.CUSTOM_TEMPLATES_DIR.resolve(),
-                "enabled": os.path.isdir(config.CUSTOM_TEMPLATES_DIR),
-                "is_valid": os.path.isdir(config.CUSTOM_TEMPLATES_DIR) and os.access(config.CUSTOM_TEMPLATES_DIR, os.R_OK),  # read
+                "path": CONSTANTS.CUSTOM_TEMPLATES_DIR.resolve(),
+                "enabled": os.path.isdir(CONSTANTS.CUSTOM_TEMPLATES_DIR),
+                "is_valid": os.path.isdir(CONSTANTS.CUSTOM_TEMPLATES_DIR) and os.access(CONSTANTS.CUSTOM_TEMPLATES_DIR, os.R_OK),  # read
             },
             "USER_PLUGINS_DIR": {
                 "path": CONSTANTS.USER_PLUGINS_DIR.resolve(),

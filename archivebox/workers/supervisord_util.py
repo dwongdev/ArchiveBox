@@ -159,7 +159,7 @@ RUNNER_WORKER = {
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", "--daemon"]),
     "autostart": "false",
     "autorestart": "unexpected",
-    "environment": 'PYTHONUNBUFFERED="1",COLUMNS="200"',
+    "environment": 'PYTHONUNBUFFERED="1",COLUMNS="200",ARCHIVEBOX_RUNNER_DAEMON="1"',
     "stopasgroup": "true",
     "killasgroup": "true",
     "stopwaitsecs": "30",
@@ -171,6 +171,7 @@ RUNNER_ONCE_WORKER = lambda args, name="worker_runner_once": {
     **RUNNER_WORKER,
     "name": name,
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", *args]),
+    "environment": 'PYTHONUNBUFFERED="1",COLUMNS="200"',
     "autorestart": "false",
     "stopwaitsecs": "1",
     "stdout_logfile": f"logs/{name}.log",
@@ -671,7 +672,7 @@ def stop_existing_supervisord_process():
             pass
 
 
-def stop_own_supervisord_process():
+def stop_own_supervisord_process(*, record_exit: bool = True):
     """Stop only the supervisord child started by this Python process."""
 
     global _supervisord_proc
@@ -702,19 +703,20 @@ def stop_own_supervisord_process():
             except psutil.NoSuchProcess:
                 pass
         wait_popen_and_kill_children(_supervisord_proc, children, timeout=2.0, kill_timeout=1.0)
-        try:
-            from archivebox.machine.models import Machine, Process
+        if record_exit:
+            try:
+                from archivebox.machine.models import Machine, Process
 
-            for process in Process.objects.filter(
-                machine=Machine.current(),
-                process_type=Process.TypeChoices.SUPERVISORD,
-                status=Process.StatusChoices.RUNNING,
-                pwd=str(CONSTANTS.DATA_DIR),
-                pid=stopped_pid,
-            ).iterator(chunk_size=10):
-                process.mark_exited(exit_code=0)
-        except Exception:
-            pass
+                for process in Process.objects.filter(
+                    machine=Machine.current(),
+                    process_type=Process.TypeChoices.SUPERVISORD,
+                    status=Process.StatusChoices.RUNNING,
+                    pwd=str(CONSTANTS.DATA_DIR),
+                    pid=stopped_pid,
+                ).iterator(chunk_size=10):
+                    process.mark_exited(exit_code=0)
+            except Exception:
+                pass
     except (BrokenPipeError, OSError, psutil.TimeoutExpired):
         pass
     finally:
@@ -970,10 +972,10 @@ def build_server_worker_plan(*, config, host: str, port: str, debug: bool, reloa
         except Exception:
             current_sonic = None
             supervisor_pid = None
-        sonic_host = str(getattr(config, "SEARCH_BACKEND_SONIC_HOST_NAME", "127.0.0.1") or "127.0.0.1")
+        sonic_host = str(config.SEARCH_BACKEND_SONIC_HOST_NAME or "127.0.0.1")
         if sonic_host.strip().lower() == "localhost":
             sonic_host = "127.0.0.1"
-        sonic_port = int(getattr(config, "SEARCH_BACKEND_SONIC_PORT"))
+        sonic_port = int(config.SEARCH_BACKEND_SONIC_PORT)
         if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")):
             stop_stale_sonic_processes(sonic_worker, supervisor_pid=supervisor_pid, host=sonic_host, port=sonic_port)
         if not (isinstance(current_sonic, dict) and current_sonic.get("statename") in ("STARTING", "RUNNING")) and is_port_in_use(
@@ -1304,11 +1306,15 @@ def start_server_workers(
                 raise
             STDERR.print(f"\n[🛑] Got {e.__class__.__name__} exception, stopping gracefully...")
     finally:
-        if not daemonize and (should_stop_supervisord is None or should_stop_supervisord()):
+        signal_shutdown_requested = bool(shutdown_state and shutdown_state.signal_name)
+        if not daemonize and (signal_shutdown_requested or should_stop_supervisord is None or should_stop_supervisord()):
             # Ensure supervisord and all children are stopped only while this
             # foreground parent is still the active server parent. Standby
-            # parents must not tear down a newer leader's services.
-            stop_own_supervisord_process()
+            # parents must not tear down a newer leader's services. If this
+            # foreground parent itself received an OS shutdown signal, always
+            # stop the supervisord child it owns; stop_own_supervisord_process()
+            # does not target supervisord processes owned by other parents.
+            stop_own_supervisord_process(record_exit=not signal_shutdown_requested)
     return tail_result
 
 

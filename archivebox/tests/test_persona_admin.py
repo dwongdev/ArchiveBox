@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import UserManager
 from django.urls import reverse
 
+from archivebox.config.common import ArchiveBoxConfig
 from archivebox.personas.importers import (
     discover_persona_template_profiles,
     import_persona_from_source,
@@ -175,20 +176,20 @@ def test_persona_admin_add_post_runs_shared_importer(client, admin_user):
 
 
 def test_persona_admin_saves_typed_plugin_config(client, admin_user):
-    from archivebox.config.common import get_config
-
     client.login(username="personaadmin", password="testpassword")
     add_response = client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_HOST)
     add_form = add_response.context["adminform"].form
-    personas_dir_fields = [
-        field
-        for group in add_form.plugin_groups
-        for card in group["plugins"]
-        for field in card["config_fields"]
-        if field["key"] == "PERSONAS_DIR"
-    ]
-    assert personas_dir_fields
-    assert {field["value"] for field in personas_dir_fields} == {str(get_config().PERSONAS_DIR)}
+    exposed_config_keys = {field["key"] for group in add_form.plugin_groups for card in group["plugins"] for field in card["config_fields"]}
+    assert not {key for key in exposed_config_keys if ArchiveBoxConfig.scope_for_key(key) == "crawl_execution"}
+    assert (
+        not {
+            "ARCHIVE_DIR",
+            "USERS_DIR",
+            "PERSONAS_DIR",
+            "CUSTOM_TEMPLATES_DIR",
+        }
+        & exposed_config_keys
+    )
 
     response = client.post(
         reverse("admin:personas_persona_add"),
@@ -216,7 +217,6 @@ def test_persona_config_save_heals_json_encoded_string_values(admin_user):
         name="QuotedConfigPersona",
         created_by=admin_user,
         config={
-            "PERSONAS_DIR": '"/data/personas"',
             "EXTRA_CONTEXT": 'prefix "inner" suffix',
             "USER_AGENT": '"ArchiveBox \\"Quoted\\" Agent"',
         },
@@ -224,6 +224,5 @@ def test_persona_config_save_heals_json_encoded_string_values(admin_user):
 
     persona.refresh_from_db()
 
-    assert persona.config["PERSONAS_DIR"] == "/data/personas"
     assert persona.config["EXTRA_CONTEXT"] == 'prefix "inner" suffix'
     assert persona.config["USER_AGENT"] == 'ArchiveBox "Quoted" Agent'

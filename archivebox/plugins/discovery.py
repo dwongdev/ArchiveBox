@@ -1,7 +1,6 @@
 __package__ = "archivebox.plugins"
 
 import json
-import os
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -26,9 +25,7 @@ class PluginSpecialConfig(TypedDict):
 
 
 BUILTIN_PLUGINS_DIR = Path(get_plugins_dir()).resolve()
-USER_PLUGINS_DIR = Path(
-    os.environ.get("ARCHIVEBOX_USER_PLUGINS_DIR") or str(CONSTANTS.USER_PLUGINS_DIR),
-).expanduser()
+USER_PLUGINS_DIR = CONSTANTS.USER_PLUGINS_DIR
 
 
 def iter_plugin_dirs() -> list[Path]:
@@ -167,7 +164,7 @@ def discover_plugins_that_provide_interface(
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
 
-                if not all(hasattr(module, attr) for attr in required_attrs):
+                if not all(attr in vars(module) for attr in required_attrs):
                     continue
 
                 if plugin_prefix:

@@ -15,8 +15,6 @@ from contextlib import contextmanager
 #############################################################################################
 
 DATA_DIR = Path(os.getcwd())
-if os.environ.get("DATA_DIR") and Path(os.environ["DATA_DIR"]).resolve() != DATA_DIR.resolve():
-    raise SystemExit(f"[X] DATA_DIR={os.environ['DATA_DIR']} must equal cwd={DATA_DIR}; cd into the data dir before running archivebox")
 
 try:
     DATA_DIR_STAT = DATA_DIR.stat()

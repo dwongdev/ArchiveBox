@@ -32,7 +32,6 @@ def _format_binary_abspath(
         (lib_dir, "LIB_DIR/"),
         (Path(os.environ.get("LIB_DIR", "")), "LIB_DIR/") if os.environ.get("LIB_DIR") else (Path(), ""),
         (personas_dir, "PERSONAS_DIR/"),
-        (Path(os.environ.get("PERSONAS_DIR", "")), "PERSONAS_DIR/") if os.environ.get("PERSONAS_DIR") else (Path(), ""),
         (home, "~/"),
     )
 
@@ -155,7 +154,7 @@ def version(
     )
     prnt()
 
-    if not (os.access(config.ARCHIVE_DIR, os.R_OK) and os.access(CONSTANTS.CONFIG_FILE, os.R_OK)):
+    if not (os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) and os.access(CONSTANTS.CONFIG_FILE, os.R_OK)):
         PANEL_TEXT = "\n".join(
             (
                 "",
@@ -219,7 +218,7 @@ def version(
                             installed.abspath,
                             pwd=Path.cwd(),
                             lib_dir=config.LIB_DIR,
-                            personas_dir=config.PERSONAS_DIR,
+                            personas_dir=CONSTANTS.PERSONAS_DIR,
                             home=Path.home(),
                         )
                         if compact_paths
@@ -275,7 +274,7 @@ def version(
             prnt(f"  [red]Error getting code locations: {e}[/red]")
 
         prnt()
-        if os.access(config.ARCHIVE_DIR, os.R_OK) or os.access(CONSTANTS.CONFIG_FILE, os.R_OK):
+        if os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) or os.access(CONSTANTS.CONFIG_FILE, os.R_OK):
             prnt("[bright_yellow][i] Data locations:[/bright_yellow]")
             try:
                 for name, path in get_data_locations().items():

@@ -12,6 +12,7 @@ from collections.abc import Iterable
 import rich_click as click
 from rich import print
 
+from archivebox.config import CONSTANTS
 from archivebox.misc.util import docstring, enforce_types
 
 
@@ -259,8 +260,6 @@ def server(
     host, port = _parse_and_validate_bind_spec(bind_spec)
 
     if daemonize and os.environ.get("ARCHIVEBOX_SERVER_DAEMON_CHILD") != "1":
-        from archivebox.config import CONSTANTS
-
         log_path = CONSTANTS.LOGS_DIR / "server.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         daemon_env = os.environ.copy()
@@ -337,21 +336,25 @@ def server(
     runtime_config = get_config()
     _print_server_startup_warnings(runtime_config, host, port)
     bind_url = f"http://{host}:{port}"
-    command = current_command(Process.TypeChoices.SERVER, data_dir=config.DATA_DIR, url=bind_url)
+    command = current_command(Process.TypeChoices.SERVER, data_dir=CONSTANTS.DATA_DIR, url=bind_url)
 
     def still_owns_runtime_stack() -> bool:
         from django.db import connections
 
         try:
-            return command_owns_runtime_stack(command, data_dir=config.DATA_DIR)
+            return command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR)
         finally:
             connections.close_all()
 
+    shutdown_state = None
     try:
-        with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=os.environ.get("ARCHIVEBOX_SERVER_DAEMON_CHILD") != "1"):
+        with (
+            foreground_shutdown_signals() as shutdown_state,
+            foreground_parent_watchdog(enabled=os.environ.get("ARCHIVEBOX_SERVER_DAEMON_CHILD") != "1"),
+        ):
             while True:
-                standby_result = standby_until_runtime_stack_needed(command, data_dir=config.DATA_DIR)
-                older_owner = runtime_stack_owner(data_dir=config.DATA_DIR, exclude_id=command.id)
+                standby_result = standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+                older_owner = runtime_stack_owner(data_dir=CONSTANTS.DATA_DIR, exclude_id=command.id)
                 takeover_components = active_supervisord_runtime_components(config=config)
                 if older_owner and takeover_components:
                     print(
@@ -386,7 +389,8 @@ def server(
     except KeyboardInterrupt:
         pass
     finally:
-        command.mark_exited()
+        if not shutdown_state or not shutdown_state.signal_name:
+            command.mark_exited()
     print("\n[i][green][🟩] ArchiveBox server shut down gracefully.[/green][/i]")
 
 

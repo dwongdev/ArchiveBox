@@ -58,7 +58,7 @@ class CrawlSchema(Schema):
     def resolve_created_by_username(obj):
         user_model = get_user_model()
         user = user_model.objects.get(id=obj.created_by_id)
-        username = getattr(user, "username", None)
+        username = user.username
         return username if isinstance(username, str) else str(user)
 
     @staticmethod
@@ -71,7 +71,7 @@ class CrawlSchema(Schema):
 
     @staticmethod
     def resolve_snapshots(obj, context):
-        if bool(getattr(context["request"], "with_snapshots", False)):
+        if bool(context["request"].__dict__.get("with_snapshots", False)):
             return obj.snapshot_set.all().distinct()
         return Snapshot.objects.none()
 
@@ -122,8 +122,7 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
 
     tags = normalize_tag_list(data.tags, data.tags_str)
     config = dict(data.config or {})
-    request_user = request.user if request.user.is_authenticated else None
-    config.setdefault("PERMISSIONS", str(get_config(user=request_user).PERMISSIONS))
+    config.setdefault("PERMISSIONS", str(get_config().PERMISSIONS))
     crawl = Crawl.objects.create(
         urls="\n".join(urls),
         max_depth=data.max_depth,
@@ -164,8 +163,8 @@ def crawl_file(request: HttpRequest, crawl_id: str, path: str):
     # Determine the effective viewer: session user takes precedence, otherwise
     # fall back to an API token passed via ?api_key=, X-ArchiveBox-API-Key, or
     # Authorization: Bearer ... (so that programmatic clients still work).
-    user = getattr(request, "user", None)
-    is_authenticated = bool(getattr(user, "is_authenticated", False) and getattr(user, "is_active", False))
+    user = request.user
+    is_authenticated = bool(user.is_authenticated and user.is_active)
     if not is_authenticated:
         token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key")
         auth_header = request.headers.get("Authorization", "")
@@ -183,7 +182,7 @@ def crawl_file(request: HttpRequest, crawl_id: str, path: str):
     # must be PUBLIC or UNLISTED. Don't disclose existence of private crawls.
     if not is_admin_user(request):
         permissions = normalize_permissions(crawl.permissions)
-        is_owner = bool(is_authenticated and getattr(crawl, "created_by_id", None) == getattr(user, "id", None))
+        is_owner = bool(is_authenticated and crawl.created_by_id == user.id)
         if not is_owner and permissions not in {PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED}:
             raise HttpError(404, "Crawl not found")
 

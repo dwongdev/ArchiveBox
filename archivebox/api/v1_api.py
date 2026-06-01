@@ -68,14 +68,14 @@ class NinjaAPIWithIOCapture(NinjaAPI):
         # response['X-ArchiveBox-View'] = self.get_openapi_operation_id(request) or 'Unknown'
 
         # Add Auth Headers to response
-        api_token_attr = getattr(request, "_api_token", None)
+        api_token_attr = request.__dict__.get("_api_token")
         api_token = api_token_attr if isinstance(api_token_attr, APIToken) else None
         token_expiry = api_token.expires.isoformat() if api_token and api_token.expires else "Never"
 
-        response["X-ArchiveBox-Auth-Method"] = str(getattr(request, "_api_auth_method", "None"))
+        response["X-ArchiveBox-Auth-Method"] = str(request.__dict__.get("_api_auth_method", "None"))
         response["X-ArchiveBox-Auth-Expires"] = token_expiry
         response["X-ArchiveBox-Auth-Token-Id"] = str(api_token.id) if api_token else "None"
-        response["X-ArchiveBox-Auth-User-Id"] = str(request.user.pk) if getattr(request.user, "pk", None) else "None"
+        response["X-ArchiveBox-Auth-User-Id"] = str(request.user.pk) if request.user.pk else "None"
         response["X-ArchiveBox-Auth-User-Username"] = request.user.username if isinstance(request.user, User) else "None"
 
         # import ipdb; ipdb.set_trace()

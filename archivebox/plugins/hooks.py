@@ -46,7 +46,7 @@ import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeGuard
+from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeGuard, runtime_checkable
 
 from archivebox.config.constants import CONSTANTS
 from archivebox.config.version import VERSION
@@ -62,12 +62,13 @@ if TYPE_CHECKING:
     from archivebox.machine.models import Process
 
 
+@runtime_checkable
 class ConfigDump(Protocol):
     def as_dict(self) -> dict[str, Any]: ...
 
 
 def _has_config_dump(config: object) -> TypeGuard[ConfigDump]:
-    return callable(getattr(config, "as_dict", None))
+    return isinstance(config, ConfigDump)
 
 
 def _config_to_overrides(config: ConfigLookup | Mapping[str, Any] | None) -> dict[str, Any]:
@@ -259,13 +260,13 @@ def run_hook(
     This is the low-level hook executor that creates a Process record and
     uses Process.launch() for subprocess management.
 
-    Config is passed to hooks via environment variables. Caller MUST use
-    get_config() to merge all sources (file, env, machine, crawl, snapshot).
+    Config is passed to hooks via environment variables. Crawl/snapshot callers
+    should pass the runtime config produced by for_crawl_runtime().
 
     Args:
         script: Path to the hook script (.sh, .py, or .js)
         output_dir: Working directory for the script (where output files go)
-        config: Optional pre-merged config dict from get_config(crawl=..., snapshot=...).
+        config: Optional runtime config dict from for_crawl_runtime().
                 If omitted, pass scope/override args using kwargs prefixed with config_.
         timeout: Maximum execution time in seconds
                  If None, auto-detects from PLUGINNAME_TIMEOUT config (fallback to TIMEOUT, default 300)
@@ -277,18 +278,22 @@ def run_hook(
 
     Example:
         from archivebox.config.common import get_config
-        config = get_config(crawl=my_crawl, snapshot=my_snapshot)
+        config = get_config(crawl=my_crawl, snapshot=my_snapshot).for_crawl_runtime(crawl=my_crawl, snapshot=my_snapshot)
         process = run_hook(hook_path, output_dir, config=config, url=url, snapshot_id=id)
         if process.status == 'exited':
             records = process.get_records()  # Get parsed JSONL output
     """
     from archivebox.machine.models import Process, Machine, NetworkInterface
-    from archivebox.config.common import get_config
+    from archivebox.config.common import get_config, normalize_runtime_config
     import sys
 
     config_scope = {key.removeprefix("config_"): kwargs.pop(key) for key in list(kwargs) if key.startswith("config_")}
-    resolved_config = get_config(overrides=_config_to_overrides(config), **config_scope)
-    hook_config = resolved_config.for_crawl_execution()
+    config_overrides = _config_to_overrides(config)
+    resolved_config = get_config(overrides=config_overrides, **config_scope)
+    hook_config = normalize_runtime_config(
+        config_overrides if config is not None else resolved_config.for_crawl(),
+        json_safe=False,
+    )
 
     # Auto-detect timeout from plugin config if not explicitly provided
     if timeout is None:
@@ -363,30 +368,15 @@ def run_hook(
 
     # Set up environment with base paths
     env = os.environ.copy()
-    env["DATA_DIR"] = str(resolved_config.DATA_DIR)
-    env["ARCHIVE_DIR"] = str(resolved_config.ARCHIVE_DIR)
-    env["ABX_RUNTIME"] = "archivebox"
+    env["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
     env["LIBRARY_VERSION"] = VERSION
     env.setdefault("MACHINE_ID", os.environ.get("MACHINE_ID", CONSTANTS.MACHINE_ID))
-
-    resolved_output_dir = output_dir.resolve()
-    snap_dir = _model_output_dir_from_child_path(resolved_output_dir, CONSTANTS.SNAPSHOTS_DIR_NAME)
-    crawl_dir = _model_output_dir_from_child_path(resolved_output_dir, CONSTANTS.CRAWLS_DIR_NAME)
+    snap_dir = hook_config.get("SNAP_DIR") or _model_output_dir_from_child_path(output_dir, CONSTANTS.SNAPSHOTS_DIR_NAME)
+    crawl_dir = hook_config.get("CRAWL_DIR") or _model_output_dir_from_child_path(output_dir, CONSTANTS.CRAWLS_DIR_NAME)
     if snap_dir:
         env["SNAP_DIR"] = str(snap_dir)
     if crawl_dir:
         env["CRAWL_DIR"] = str(crawl_dir)
-
-    crawl_id = kwargs.get("_crawl_id") or kwargs.get("crawl_id")
-    if crawl_id:
-        try:
-            from archivebox.crawls.models import Crawl
-
-            crawl = Crawl.objects.filter(id=crawl_id).first()
-            if crawl:
-                env["CRAWL_DIR"] = str(crawl.output_dir)
-        except Exception:
-            pass
 
     # Export runtime library roots; abx-dl/abxpkg own executable lookup env.
     lib_dir = resolved_config.LIB_DIR
@@ -423,7 +413,6 @@ def run_hook(
         "NODE_MODULES_DIR",
         "NODE_MODULE_DIR",
         "DATA_DIR",
-        "ARCHIVE_DIR",
         "MACHINE_ID",
         "SNAP_DIR",
         "CRAWL_DIR",

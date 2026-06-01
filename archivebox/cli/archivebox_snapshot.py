@@ -313,13 +313,7 @@ def list_snapshots(
         for snapshot in queryset.iterator(chunk_size=500):
             if set(cols).issubset(simple_cols):
                 rows.append(
-                    ",".join(
-                        to_json(
-                            value.isoformat() if hasattr((value := getattr(snapshot, col, "")), "isoformat") else value,
-                            indent=None,
-                        )
-                        for col in cols
-                    ),
+                    ",".join(to_json(snapshot.serializable_value(col), indent=None) for col in cols),
                 )
             else:
                 rows.append(snapshot.to_csv(cols=cols, separator=","))

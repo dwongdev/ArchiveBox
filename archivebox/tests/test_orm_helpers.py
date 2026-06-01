@@ -17,23 +17,20 @@ def use_archivebox_db(path: str | Path = ".") -> Iterator[None]:
     original_name = connection.settings_dict["NAME"]
     original_database_name = connections.databases["default"]["NAME"]
     original_setting_name = settings.DATABASES["default"]["NAME"]
-    original_connection = getattr(connections._connections, "default", None)
+    original_connection = connections._connections.default
     db_path = str(archivebox_db_path(path))
 
     connection.close()
     connection.settings_dict["NAME"] = db_path
     connections.databases["default"]["NAME"] = db_path
     settings.DATABASES["default"]["NAME"] = db_path
-    if original_connection is not None:
-        delattr(connections._connections, "default")
+    del connections._connections.default
     try:
         yield
     finally:
         connections["default"].close()
         connections.databases["default"]["NAME"] = original_database_name
         settings.DATABASES["default"]["NAME"] = original_setting_name
-        if hasattr(connections._connections, "default"):
-            delattr(connections._connections, "default")
-        if original_connection is not None:
-            original_connection.settings_dict["NAME"] = original_name
-            setattr(connections._connections, "default", original_connection)
+        del connections._connections.default
+        original_connection.settings_dict["NAME"] = original_name
+        connections._connections.default = original_connection

@@ -12,7 +12,7 @@ import rich_click as click
 from django.db import OperationalError
 from django.db.models import QuerySet
 
-from archivebox.config import DATA_DIR
+from archivebox.config import CONSTANTS
 from archivebox.config.django import setup_django
 from archivebox.misc.util import enforce_types, docstring
 from archivebox.misc.checks import check_data_folder
@@ -33,7 +33,7 @@ def remove(
     after: float | None = None,
     before: float | None = None,
     yes: bool = False,
-    out_dir: Path = DATA_DIR,
+    out_dir: Path = CONSTANTS.DATA_DIR,
 ) -> QuerySet:
     """Remove the specified URLs from the archive"""
 

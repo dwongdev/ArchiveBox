@@ -78,7 +78,7 @@ dependencies = [
     "w3lib>=2.2.1",          # used for parsing content-type encoding from http response headers & html tags
     ### Extractor dependencies (optional binaries detected at runtime via shutil.which)
     ### Binary/Package Management
-    "abxbus==2.5.8",          # EventBus API
+    "abxbus==2.5.9",          # EventBus API
     "abxpkg>=1.11.141",        # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
     "abx-plugins>=1.11.144",  # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
     "abx-dl>=1.11.144",       # shared ArchiveBox downloader package with blocking install preflight

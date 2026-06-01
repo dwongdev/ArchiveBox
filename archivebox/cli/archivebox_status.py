@@ -8,7 +8,7 @@ import rich_click as click
 from rich import print
 
 from archivebox.misc.util import enforce_types, docstring
-from archivebox.config import DATA_DIR, CONSTANTS
+from archivebox.config import CONSTANTS
 from archivebox.config.common import get_config
 from archivebox.misc.system import get_dir_size
 from archivebox.misc.logging_util import printable_filesize
@@ -18,7 +18,7 @@ MAX_STATUS_FS_DIR_SCAN = 5000
 
 
 @enforce_types
-def status(out_dir: Path = DATA_DIR) -> None:
+def status(out_dir: Path = CONSTANTS.DATA_DIR) -> None:
     """Print out some info and statistics about the archive collection"""
 
     from django.contrib.auth import get_user_model
@@ -38,7 +38,7 @@ def status(out_dir: Path = DATA_DIR) -> None:
 
     snapshots_qs = Snapshot.objects.all()
     num_sql_links = snapshots_qs.count()
-    archive_dir = config.ARCHIVE_DIR
+    archive_dir = CONSTANTS.ARCHIVE_DIR
     legacy_snapshot_dirs = []
     if archive_dir.exists():
         legacy_snapshot_dirs = [
@@ -48,7 +48,7 @@ def status(out_dir: Path = DATA_DIR) -> None:
     print(f"    > JSON Link Details: {len(legacy_snapshot_dirs)} links".ljust(36), f"(found in {archive_dir.name}/*/index.json)")
     print()
     print("[green]\\[*] Scanning archive data directories...[/green]")
-    users_dir = config.USERS_DIR
+    users_dir = CONSTANTS.USERS_DIR
     scan_roots = [root for root in (archive_dir, users_dir) if root.exists()]
     scan_roots_display = ", ".join(str(root) for root in scan_roots) if scan_roots else str(archive_dir)
     print(f"[yellow]   {scan_roots_display}[/yellow]")

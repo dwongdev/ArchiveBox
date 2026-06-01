@@ -46,21 +46,15 @@ def test_init_creates_archive_directory(tmp_path):
     assert archive_dir.is_dir()
 
 
-def test_init_respects_configured_archive_and_users_dirs(tmp_path):
-    """Test that init creates configured archive/users storage roots."""
+def test_init_uses_cwd_archive_and_users_dirs(tmp_path):
+    """Test that init creates archive/users storage roots under cwd."""
     os.chdir(tmp_path)
-    archive_dir = tmp_path / "mounted_archive"
-    users_dir = archive_dir / "custom_users"
-    env = os.environ.copy()
-    env["ARCHIVE_DIR"] = str(archive_dir)
-    env["USERS_DIR"] = str(users_dir)
 
-    result = subprocess.run(["archivebox", "init"], env=env, capture_output=True)
+    result = subprocess.run(["archivebox", "init"], capture_output=True)
 
     assert result.returncode == 0
-    assert archive_dir.is_dir()
-    assert users_dir.is_dir()
-    assert not (tmp_path / "archive").exists()
+    assert (tmp_path / "archive").is_dir()
+    assert (tmp_path / "archive" / "users").is_dir()
 
 
 def test_init_creates_sources_directory(tmp_path):

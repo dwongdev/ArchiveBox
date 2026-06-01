@@ -113,11 +113,9 @@ def add(
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
-    from django.contrib.auth import get_user_model
     from django.utils import timezone
 
     created_by_id = created_by_id or get_or_create_system_user_pk()
-    created_by = get_user_model().objects.filter(pk=created_by_id).first()
     started_at = timezone.now()
 
     if isinstance(urls, str):
@@ -151,7 +149,7 @@ def add(
     plugins = plugins or ""
     persona_obj, _ = Persona.objects.get_or_create(name=persona_name)
     persona_obj.ensure_dirs()
-    effective_persona_config = get_config(persona=persona_obj, user=created_by)
+    effective_persona_config = get_config(persona=persona_obj)
 
     crawl_config = {
         "PERMISSIONS": str(effective_persona_config.PERMISSIONS),
@@ -172,9 +170,8 @@ def add(
         **({"URL_DENYLIST": url_denylist} if url_denylist else {}),
     }
     # Caller-supplied overrides (e.g. {"ONLY_NEW": False}) are the highest
-    # priority — they win over persona/plugin/env defaults and get stamped
-    # directly onto crawl.config so the runtime resolution and admin UI both
-    # reflect them faithfully.
+    # priority for crawl-frozen keys. Runtime-derived execution keys are
+    # stripped by Crawl.save() and rederived when hooks run.
     crawl_config.update(config_overrides)
 
     crawl = Crawl.objects.create(

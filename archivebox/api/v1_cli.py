@@ -150,8 +150,8 @@ def cli_add(request: HttpRequest, args: AddCommandSchema):
         "snapshot_ids": snapshot_ids,
         "queued_urls": args.urls,
     }
-    stdout = getattr(request, "stdout", None)
-    stderr = getattr(request, "stderr", None)
+    stdout = request.__dict__.get("stdout")
+    stderr = request.__dict__.get("stderr")
 
     return {
         "success": True,
@@ -177,8 +177,8 @@ def cli_update(request: HttpRequest, args: UpdateCommandSchema):
         continuous=args.continuous,
         stop_daemon_stack=False,
     )
-    stdout = getattr(request, "stdout", None)
-    stderr = getattr(request, "stderr", None)
+    stdout = request.__dict__.get("stdout")
+    stderr = request.__dict__.get("stderr")
     return {
         "success": True,
         "errors": [],
@@ -211,8 +211,8 @@ def cli_schedule(request: HttpRequest, args: ScheduleCommandSchema):
         config=config_overrides or None,
     )
 
-    stdout = getattr(request, "stdout", None)
-    stderr = getattr(request, "stderr", None)
+    stdout = request.__dict__.get("stdout")
+    stderr = request.__dict__.get("stderr")
     return {
         "success": True,
         "errors": [],
@@ -249,8 +249,8 @@ def cli_search(request: HttpRequest, args: ListCommandSchema):
     elif args.as_csv:
         result_format = "csv"
 
-    stdout = getattr(request, "stdout", None)
-    stderr = getattr(request, "stderr", None)
+    stdout = request.__dict__.get("stdout")
+    stderr = request.__dict__.get("stderr")
     return {
         "success": True,
         "errors": [],
@@ -290,8 +290,8 @@ def cli_remove(request: HttpRequest, args: RemoveCommandSchema):
         "removed_snapshot_ids": removed_snapshot_ids,
         "remaining_snapshots": Snapshot.objects.count(),
     }
-    stdout = getattr(request, "stdout", None)
-    stderr = getattr(request, "stderr", None)
+    stdout = request.__dict__.get("stdout")
+    stderr = request.__dict__.get("stderr")
     return {
         "success": True,
         "errors": [],

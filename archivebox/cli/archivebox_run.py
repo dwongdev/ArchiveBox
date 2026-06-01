@@ -40,12 +40,21 @@ Examples:
 __package__ = "archivebox.cli"
 __command__ = "archivebox run"
 
-import sys
 import asyncio
+import os
+import signal
+import sys
 from collections import defaultdict
 
 import rich_click as click
 from rich import print as rprint
+
+
+RUNNER_DAEMON_ENV = "ARCHIVEBOX_RUNNER_DAEMON"
+
+
+def _exit_daemon_runner_on_signal(sig: signal.Signals) -> None:
+    os._exit(128 + int(sig))
 
 
 def process_stdin_records() -> int:
@@ -281,8 +290,16 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
     # hook, continue/retry, second Ctrl+C exits" flow. Server/update/run owned
     # orchestrators should shut down immediately and cleanly on the first signal.
     interactive_interrupts = current.root.process_type == Process.TypeChoices.ADD
+    if daemon:
+        os.environ[RUNNER_DAEMON_ENV] = "1"
     try:
-        with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
+        with (
+            foreground_shutdown_signals(
+                on_signal=_exit_daemon_runner_on_signal if daemon else None,
+                raise_on_first_signal=not daemon,
+            ),
+            foreground_parent_watchdog(enabled=not daemon),
+        ):
             run_pending_crawls(
                 daemon=daemon,
                 crawl_id=crawl_id,
@@ -322,7 +339,14 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintena
 
     if daemon and not snapshot_id and not binary_id and not crawl_id:
         try:
-            with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=False):
+            os.environ[RUNNER_DAEMON_ENV] = "1"
+            with (
+                foreground_shutdown_signals(
+                    on_signal=_exit_daemon_runner_on_signal,
+                    raise_on_first_signal=False,
+                ),
+                foreground_parent_watchdog(enabled=False),
+            ):
                 sys.exit(run_runner(daemon=True, maintenance_only=maintenance_only))
         except KeyboardInterrupt:
             sys.exit(0)

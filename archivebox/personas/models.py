@@ -16,6 +16,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
 
 from django.db import models
 from django.db.models.fields.json import KT
@@ -59,6 +60,26 @@ VOLATILE_PROFILE_FILE_NAMES = {
 }
 
 
+def derive_persona_config(*, name: str, config: Mapping[str, Any] | None, persona_dir: Path) -> dict[str, Any]:
+    derived = dict(config or {})
+
+    if "CHROME_USER_DATA_DIR" not in derived:
+        derived["CHROME_USER_DATA_DIR"] = str(persona_dir / "chrome_profile")
+    if "CHROME_DOWNLOADS_DIR" not in derived:
+        derived["CHROME_DOWNLOADS_DIR"] = str(persona_dir / "chrome_downloads")
+
+    cookies_path = persona_dir / "cookies.txt"
+    if "COOKIES_FILE" not in derived and cookies_path.exists():
+        derived["COOKIES_FILE"] = str(cookies_path)
+
+    auth_path = persona_dir / "auth.json"
+    if "AUTH_STORAGE_FILE" not in derived and auth_path.exists():
+        derived["AUTH_STORAGE_FILE"] = str(auth_path)
+
+    derived["ACTIVE_PERSONA"] = name
+    return derived
+
+
 class Persona(ModelWithConfig):
     """
     Browser persona/profile for archiving sessions.
@@ -99,8 +120,7 @@ class Persona(ModelWithConfig):
         if str(config.get("PERMISSIONS") or "").strip().lower() not in PERMISSIONS_VALUES:
             from archivebox.config.common import get_config
 
-            user = self.created_by if self.created_by_id else None
-            config["PERMISSIONS"] = normalize_permissions(get_config(user=user, include_machine=True).PERMISSIONS)
+            config["PERMISSIONS"] = normalize_permissions(get_config(include_machine=True).PERMISSIONS)
             self.config = config
             update_fields = kwargs.get("update_fields")
             if update_fields is not None:
@@ -151,22 +171,7 @@ class Persona(ModelWithConfig):
         - AUTH_STORAGE_FILE (derived from persona path, if file exists)
         - ACTIVE_PERSONA (set to this persona's name)
         """
-        derived = dict(self.config or {})
-
-        # Add derived paths (don't override if explicitly set in config)
-        if "CHROME_USER_DATA_DIR" not in derived:
-            derived["CHROME_USER_DATA_DIR"] = self.CHROME_USER_DATA_DIR
-        if "CHROME_DOWNLOADS_DIR" not in derived:
-            derived["CHROME_DOWNLOADS_DIR"] = self.CHROME_DOWNLOADS_DIR
-        if "COOKIES_FILE" not in derived and self.COOKIES_FILE:
-            derived["COOKIES_FILE"] = self.COOKIES_FILE
-        if "AUTH_STORAGE_FILE" not in derived and self.AUTH_STORAGE_FILE:
-            derived["AUTH_STORAGE_FILE"] = self.AUTH_STORAGE_FILE
-
-        # Always set ACTIVE_PERSONA to this persona's name
-        derived["ACTIVE_PERSONA"] = self.name
-
-        return derived
+        return derive_persona_config(name=self.name, config=self.config, persona_dir=self.path)
 
     def ensure_dirs(self) -> None:
         """Create persona directories if they don't exist."""

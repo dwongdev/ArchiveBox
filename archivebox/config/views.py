@@ -24,7 +24,7 @@ INSTALLED_BINARIES_BASE_URL = "/admin/machine/binary/"
 
 
 def is_superuser(request: HttpRequest) -> bool:
-    return bool(getattr(request.user, "is_superuser", False))
+    return bool(request.user.is_superuser)
 
 
 def format_parsed_datetime(value: object) -> str:
@@ -44,7 +44,7 @@ def get_installed_binary_change_url(name: str, binary: Binary | None) -> str | N
     if binary is None or not binary.id:
         return None
 
-    base_url = getattr(binary, "admin_change_url", None) or f"{INSTALLED_BINARIES_BASE_URL}{binary.id}/change/"
+    base_url = binary.admin_change_url
     changelist_filters = urlencode({"q": name})
     return f"{base_url}?{urlencode({'_changelist_filters': changelist_filters})}"
 
@@ -158,7 +158,7 @@ def binaries_list_view(request: HttpRequest, **kwargs) -> TableContext:
 
     for name in all_binary_names:
         binary = db_binaries.get(name)
-        binary_is_valid = bool(binary and getattr(binary, "is_valid", getattr(binary, "abspath", None)))
+        binary_is_valid = bool(binary and binary.is_valid)
 
         rows["Binary Name"].append(ItemLink(name, key=name))
 
@@ -185,9 +185,9 @@ def binary_detail_view(request: HttpRequest, key: str, **kwargs) -> ItemContext:
         "youtube-dl": "yt-dlp",
     }.get(key, key)
     db_binary = get_db_binaries_by_name().get(key)
-    binary_is_valid = bool(db_binary and getattr(db_binary, "is_valid", getattr(db_binary, "abspath", None)))
+    binary_is_valid = bool(db_binary and db_binary.is_valid)
     if binary_is_valid:
-        binary_data = db_binary.to_json() if hasattr(db_binary, "to_json") else db_binary.__dict__
+        binary_data = db_binary.to_json()
         section: SectionData = {
             "name": key,
             "description": mark_safe(render_binary_detail_description(key, binary_data, db_binary)),

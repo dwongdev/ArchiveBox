@@ -20,6 +20,8 @@ from django.conf import settings
 
 from django_stubs_ext.db.models import TypedModelMeta
 
+from archivebox.config import CONSTANTS
+
 
 def normalize_config_json_values(config: Any) -> Any:
     if not isinstance(config, dict):
@@ -165,7 +167,7 @@ class ModelWithDeleteAfter(models.Model):
     def get_delete_after_config_value(self):
         from archivebox.config.common import get_config
 
-        return get_config(include_machine=False).DELETE_AFTER
+        return get_config(include_machine=False, resolve_plugins=False).DELETE_AFTER
 
     def set_delete_at_from_config(self, config_value=None) -> bool:
         if self.delete_at is not None:
@@ -253,9 +255,7 @@ class ModelWithOutputDir(ModelWithUUID):
 
     @classmethod
     def validate_output_paths_for_delete(cls, paths) -> tuple[Path, ...]:
-        from archivebox.config.common import get_config
-
-        data_dir = get_config().DATA_DIR.resolve()
+        data_dir = CONSTANTS.DATA_DIR.resolve()
         safe_paths = []
         for raw_path in paths:
             path = Path(raw_path)

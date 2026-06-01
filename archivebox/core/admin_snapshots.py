@@ -200,7 +200,6 @@ class SnapshotResultHealthListFilter(admin.SimpleListFilter):
             ("failed", ">50% failed"),
             ("running", ">50% running"),
             ("pending", ">50% queued"),
-            ("backoff", ">50% waiting to retry"),
             ("noresults", ">50% noresults"),
         )
 
@@ -216,7 +215,7 @@ class SnapshotResultHealthListFilter(admin.SimpleListFilter):
                 "succeeded": ArchiveResult.StatusChoices.SUCCEEDED,
                 "failed": ArchiveResult.StatusChoices.FAILED,
                 "running": ArchiveResult.StatusChoices.STARTED,
-                "pending": ArchiveResult.StatusChoices.QUEUED,
+                "pending": (ArchiveResult.StatusChoices.QUEUED, ArchiveResult.StatusChoices.BACKOFF),
                 "backoff": ArchiveResult.StatusChoices.BACKOFF,
                 "noresults": ArchiveResult.StatusChoices.NORESULTS,
             }
@@ -226,21 +225,28 @@ class SnapshotResultHealthListFilter(admin.SimpleListFilter):
                     # "succeeded" is overwhelmingly common in large collections.
                     # Scan Snapshots in admin order and do indexed per-snapshot
                     # probes so page 1 can stop after list_per_page matches.
-                    return queryset.alias(
+                    queryset = queryset.alias(
                         total_results=ArchiveResult.snapshot_count_expr(),
                         matching_results=ArchiveResult.snapshot_count_expr(status=status),
                     ).filter(matching_results__gt=F("total_results") / 2)
+                    queryset._archivebox_count_hint = "model_estimate"
+                    queryset.query._archivebox_count_hint = queryset._archivebox_count_hint
+                    return queryset
 
                 # Rare statuses are faster status-first: use the
                 # (status, snapshot_id) index to find candidate snapshots.
-                return queryset.filter(pk__in=ArchiveResult.snapshot_ids_with_majority_status(status))
+                snapshot_ids = ArchiveResult.cached_snapshot_ids_with_majority_status(status)
+                queryset = queryset.filter(pk__in=snapshot_ids)
+                queryset._archivebox_count_hint = len(snapshot_ids)
+                queryset.query._archivebox_count_hint = queryset._archivebox_count_hint
+                return queryset
         return queryset
 
 
 class SnapshotChangeList(SearchResultsChangeList):
     def __init__(self, request, *args, **kwargs):
         super().__init__(request, *args, **kwargs)
-        resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
+        resolver_name = request.resolver_match.url_name
         self.embedded_changelist = request.GET.get("_embedded") == "crawl"
         self.snapshot_is_grid_view = not self.embedded_changelist and (
             resolver_name == "grid" or request.path.rstrip("/").endswith("/grid")
@@ -323,9 +329,7 @@ class SnapshotAdminForm(forms.ModelForm):
         # Handle tags_editor field
         if commit:
             instance.save()
-            save_m2m = getattr(self, "_save_m2m", None)
-            if callable(save_m2m):
-                save_m2m()
+            self._save_m2m()
 
             # Parse and save tags from tags_editor
             tags_str = self.cleaned_data.get("tags_editor", "")
@@ -489,7 +493,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         return super().get_ordering(request)
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
-        request.archivebox_config = getattr(request, "archivebox_config", None) or get_config()
+        self.request = request
         extra_context = extra_context or {}
         extra_context["CONFIG"] = request.archivebox_config
         snapshot = self.get_object(request, object_id)
@@ -504,7 +508,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     def changelist_view(self, request, extra_context=None):
         self.request = request
-        request.archivebox_config = getattr(request, "archivebox_config", None) or get_config()
         saved_list_per_page = self.list_per_page
         embedded_changelist = request.GET.get("_embedded") == "crawl"
         if embedded_changelist:
@@ -540,12 +543,12 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         return super().lookup_allowed(lookup, value, request=request)
 
     def get_snapshot_view_url(self, obj: Snapshot) -> str:
-        request = getattr(self, "request", None)
-        return build_snapshot_url(str(obj.id), request=request, config=getattr(request, "archivebox_config", None))
+        request = self.request
+        return build_snapshot_url(str(obj.id), request=request, config=request.archivebox_config)
 
     def get_snapshot_files_url(self, obj: Snapshot) -> str:
-        request = getattr(self, "request", None)
-        return f"{build_snapshot_url(str(obj.id), request=request, config=getattr(request, 'archivebox_config', None))}/?files=1"
+        request = self.request
+        return f"{build_snapshot_url(str(obj.id), request=request, config=request.archivebox_config)}/?files=1"
 
     def get_snapshot_zip_url(self, obj: Snapshot) -> str:
         return f"{self.get_snapshot_files_url(obj)}&download=zip"
@@ -650,7 +653,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         ordering_fields = self._get_ordering_fields(request)
         needs_files_sort = "files" in ordering_fields
         needs_tags_sort = "tags_inline" in ordering_fields
-        is_change_view = getattr(getattr(request, "resolver_match", None), "url_name", "") == "core_snapshot_change"
+        is_change_view = request.resolver_match.url_name == "core_snapshot_change"
         prefetches = ["tags"]
         if is_change_view:
             prefetches.append(
@@ -702,7 +705,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="👁", ordering="permissions")
     def permissions_badge(self, obj):
-        permissions = getattr(obj, "snapshot_permissions", None)
+        permissions = obj.__dict__.get("snapshot_permissions")
         if permissions is None:
             if obj.permissions:
                 permissions = obj.permissions
@@ -872,8 +875,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         )
 
     def status_info(self, obj):
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         favicon_url = build_snapshot_url(str(obj.id), "favicon.ico", request=request, config=config)
         return format_html(
             """
@@ -890,16 +893,16 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="Archive Results")
     def archiveresults_list(self, obj):
-        request = getattr(self, "request", None)
-        return render_archiveresults_list(obj.archiveresult_set.all(), limit=8, config=getattr(request, "archivebox_config", None))
+        request = self.request
+        return render_archiveresults_list(obj.archiveresult_set.all(), limit=8, config=request.archivebox_config)
 
     @admin.display(
         description="Title",
         ordering="title",
     )
     def title_str(self, obj):
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         title_raw = (obj.title or "").strip()
         url_raw = (obj.url or "").strip()
         title_normalized = title_raw.lower()
@@ -952,8 +955,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         return mark_safe(f'<span class="tags-inline-editor">{tags_html}</span>')
 
     def _get_preview_data(self, obj):
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         results = self._get_prefetched_results(obj)
         if results is not None:
             has_screenshot = any(r.plugin == "screenshot" for r in results)
@@ -1005,8 +1008,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if not preview:
             return ""
 
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         favicon_url = build_snapshot_url(str(obj.id), "favicon/favicon.ico", request=request, config=config)
         fallback_list = ",".join([build_snapshot_url(str(obj.id), "favicon.ico", request=request, config=config)])
         onerror_js = (
@@ -1044,8 +1047,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description=" ", empty_value="")
     def snapshot_summary(self, obj):
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         preview = self._get_preview_data(obj)
         stats = self._get_progress_stats(obj)
         archive_size = stats["output_size"] or 0
@@ -1109,8 +1112,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         )
         visible_results = sorted_results[:14]
         output = []
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         for result in visible_results:
             icon = mark_safe(get_plugin_icon(result.plugin))
             if not icon.strip():
@@ -1141,8 +1144,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         # ordering='archiveresult_count'
     )
     def size(self, obj):
-        request = getattr(self, "request", None)
-        config = getattr(request, "archivebox_config", None)
+        request = self.request
+        config = request.archivebox_config
         archive_size = self._get_progress_stats(obj)["output_size"] or 0
         if archive_size:
             size_txt = printable_filesize(archive_size)
@@ -1256,7 +1259,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         )
 
     def _get_progress_stats(self, obj):
-        cached_stats = getattr(obj, "_admin_progress_stats", None)
+        cached_stats = obj.__dict__.get("_admin_progress_stats")
         if cached_stats is not None:
             return cached_stats
 
@@ -1302,31 +1305,31 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     def _get_prefetched_results(self, obj):
         if "_admin_archiveresults" in obj.__dict__:
             return obj.__dict__["_admin_archiveresults"]
-        if hasattr(obj, "_prefetched_objects_cache") and "archiveresult_set" in obj._prefetched_objects_cache:
+        if "archiveresult_set" in obj.__dict__.get("_prefetched_objects_cache", {}):
             return obj.archiveresult_set.all()
         return None
 
     def _get_expected_hook_total(self, obj) -> int:
         try:
-            request = getattr(self, "request", None)
-            if getattr(getattr(request, "resolver_match", None), "url_name", "") in {"core_snapshot_changelist", "core_snapshot_change"}:
+            request = self.request
+            if request.resolver_match.url_name in {"core_snapshot_changelist", "core_snapshot_change"}:
                 return 0
 
-            crawl = getattr(obj, "crawl", None)
-            snapshot_config = getattr(obj, "config", None) or {}
-            crawl_config = getattr(crawl, "config", None) or {}
+            crawl = obj.crawl
+            snapshot_config = obj.config or {}
+            crawl_config = crawl.config or {}
             has_scoped_config = bool(snapshot_config or crawl_config)
 
             if request is not None and not has_scoped_config:
-                cached_total = getattr(request, "archivebox_expected_snapshot_hook_total", None)
+                cached_total = request.__dict__.get("archivebox_expected_snapshot_hook_total")
                 if cached_total is None:
-                    config = getattr(request, "archivebox_config", None) or get_config()
+                    config = request.archivebox_config
                     cached_total = len(discover_hooks("Snapshot", config=config))
                     request.archivebox_expected_snapshot_hook_total = cached_total
                 return cached_total
 
             if request is not None:
-                scoped_cache = getattr(request, "archivebox_expected_snapshot_hook_totals_by_scope", None)
+                scoped_cache = request.__dict__.get("archivebox_expected_snapshot_hook_totals_by_scope")
                 if scoped_cache is None:
                     scoped_cache = {}
                     request.archivebox_expected_snapshot_hook_totals_by_scope = scoped_cache
@@ -1346,8 +1349,9 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             return 0
 
     def _get_prefetched_tags(self, obj):
-        if hasattr(obj, "_prefetched_objects_cache") and "tags" in obj._prefetched_objects_cache:
-            return list(obj._prefetched_objects_cache["tags"])
+        prefetched_cache = obj.__dict__.get("_prefetched_objects_cache", {})
+        if "tags" in prefetched_cache:
+            return list(prefetched_cache["tags"])
         return None
 
     def _get_ordering_fields(self, request):

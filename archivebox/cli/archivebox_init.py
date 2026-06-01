@@ -25,7 +25,7 @@ def _display_data_path(path: Path, data_dir: Path) -> str:
 def init(force: bool = False, quick: bool = False, install: bool = False) -> None:
     """Initialize a new ArchiveBox collection in the current directory"""
 
-    from archivebox.config import CONSTANTS, VERSION, DATA_DIR
+    from archivebox.config import CONSTANTS, VERSION
     from archivebox.config.common import get_config
     from archivebox.config.collection import write_config_file
     from archivebox.misc.db import apply_migrations
@@ -37,7 +37,7 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
     #     print("[red]:warning: This folder contains a JSON index. It is deprecated, and will no longer be kept up to date automatically.[/red]", file=sys.stderr)
     #     print("[red]    You can run `archivebox list --json --with-headers > static_index.json` to manually generate it.[/red]", file=sys.stderr)
 
-    is_empty = not len(set(os.listdir(DATA_DIR)) - CONSTANTS.ALLOWED_IN_DATA_DIR)
+    is_empty = not len(set(os.listdir(CONSTANTS.DATA_DIR)) - CONSTANTS.ALLOWED_IN_DATA_DIR)
     existing_index = os.path.isfile(CONSTANTS.DATABASE_FILE)
     if is_empty and not existing_index:
         print(f"[turquoise4][+] Initializing a new ArchiveBox v{VERSION} collection...[/turquoise4]")
@@ -65,23 +65,23 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
     else:
         print("\n[green][+] Building archive folder structure...[/green]")
 
-    archive_path = _display_data_path(config.ARCHIVE_DIR, DATA_DIR)
-    sources_path = _display_data_path(CONSTANTS.SOURCES_DIR, DATA_DIR)
-    logs_path = _display_data_path(CONSTANTS.LOGS_DIR, DATA_DIR)
+    archive_path = _display_data_path(CONSTANTS.ARCHIVE_DIR, CONSTANTS.DATA_DIR)
+    sources_path = _display_data_path(CONSTANTS.SOURCES_DIR, CONSTANTS.DATA_DIR)
+    logs_path = _display_data_path(CONSTANTS.LOGS_DIR, CONSTANTS.DATA_DIR)
     print(f"    + {archive_path}, {sources_path}, {logs_path}...")
     Path(CONSTANTS.SOURCES_DIR).mkdir(exist_ok=True)
-    config.ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    config.USERS_DIR.mkdir(parents=True, exist_ok=True)
+    CONSTANTS.ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    CONSTANTS.USERS_DIR.mkdir(parents=True, exist_ok=True)
     Path(CONSTANTS.LOGS_DIR).mkdir(exist_ok=True)
-    for path in (Path(CONSTANTS.SOURCES_DIR), config.ARCHIVE_DIR, config.USERS_DIR, Path(CONSTANTS.LOGS_DIR)):
+    for path in (Path(CONSTANTS.SOURCES_DIR), CONSTANTS.ARCHIVE_DIR, CONSTANTS.USERS_DIR, Path(CONSTANTS.LOGS_DIR)):
         path.chmod(int(config.OUTPUT_PERMISSIONS, base=8) | 0o111)
 
-    print(f"    + {_display_data_path(CONSTANTS.CONFIG_FILE, DATA_DIR)}...")
+    print(f"    + {_display_data_path(CONSTANTS.CONFIG_FILE, CONSTANTS.DATA_DIR)}...")
 
     # create the .archivebox_id file with a unique ID for this collection
     from archivebox.config.paths import _get_collection_id
 
-    _get_collection_id(DATA_DIR, force_create=True)
+    _get_collection_id(CONSTANTS.DATA_DIR, force_create=True)
 
     # create the ArchiveBox.conf file
     write_config_file({"SECRET_KEY": config.SECRET_KEY})
@@ -96,12 +96,12 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
     setup_django()
     check_migrations(blocking=True, auto_apply=False)
 
-    for migration_line in apply_migrations(DATA_DIR):
+    for migration_line in apply_migrations(CONSTANTS.DATA_DIR):
         sys.stdout.write(f"    {migration_line}\n")
 
     assert os.path.isfile(CONSTANTS.DATABASE_FILE) and os.access(CONSTANTS.DATABASE_FILE, os.R_OK)
     print()
-    print(f"    √ {_display_data_path(CONSTANTS.DATABASE_FILE, DATA_DIR)}")
+    print(f"    √ {_display_data_path(CONSTANTS.DATABASE_FILE, CONSTANTS.DATA_DIR)}")
 
     # from django.contrib.auth.models import User
     #     call_command("createsuperuser", interactive=True)

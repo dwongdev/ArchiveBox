@@ -4,7 +4,6 @@ import socket
 import subprocess
 import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -97,8 +96,6 @@ def test_search_backend_env_exposes_resolved_runtime_config(tmp_path):
     os.environ["SEARCH_BACKEND_SONIC_HOST_NAME"] = "old-host"
     config = AttrDict(
         {
-            "DATA_DIR": tmp_path,
-            "USERS_DIR": tmp_path / "archive" / "users",
             "SEARCH_BACKEND_ENGINE": "sonic",
             "SEARCH_BACKEND_SONIC_HOST_NAME": "sonic",
             "SEARCH_BACKEND_SONIC_PORT": 1491,
@@ -109,8 +106,6 @@ def test_search_backend_env_exposes_resolved_runtime_config(tmp_path):
 
     try:
         with search_backend_env(config=config):
-            assert os.environ["DATA_DIR"] == str(tmp_path)
-            assert os.environ["SNAP_DIR"] == str(Path(tmp_path) / "archive" / "users")
             assert os.environ["SEARCH_BACKEND_ENGINE"] == "sonic"
             assert os.environ["SEARCH_BACKEND_SONIC_HOST_NAME"] == "sonic"
             assert os.environ["SEARCH_BACKEND_SONIC_PORT"] == "1491"
@@ -465,7 +460,6 @@ class TestSearchBackendsE2E:
             merged_env = os.environ.copy()
             merged_env.update(
                 {
-                    "DATA_DIR": str(data_dir),
                     "USE_COLOR": "False",
                     "SHOW_PROGRESS": "False",
                     "SAVE_WARC": "False",
@@ -505,7 +499,6 @@ class TestSearchBackendsE2E:
         sonic_env = os.environ.copy()
         sonic_env.update(
             {
-                "DATA_DIR": str(data_dir),
                 "USE_COLOR": "False",
                 "SHOW_PROGRESS": "False",
                 "SEARCH_BACKEND_ENGINE": "sonic",

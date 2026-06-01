@@ -73,7 +73,7 @@ def _build_script(body: str) -> str:
     from archivebox.core.middleware import ADMIN_LOGIN_HINT_COOKIE
 
     def response_body(resp):
-        if getattr(resp, "streaming", False):
+        if resp.streaming:
             return b"".join(resp.streaming_content)
         return resp.content
 
@@ -761,13 +761,16 @@ class TestUrlRouting:
             },
         )
 
-    def test_subdomain_replay_assets_fall_back_to_chromewebstore_lib_dir(self) -> None:
+    def test_subdomain_replay_assets_use_derived_chromewebstore_extensions_dir(self) -> None:
         lib_dir = self.data_dir / "test-lib"
         self._run(
             """
             snapshot = get_snapshot()
             snapshot_host = get_snapshot_host(str(snapshot.id))
-            extension_dir = Path(SERVER_CONFIG.LIB_DIR) / "chromewebstore" / "extensions" / "test__archivewebpage"
+            expected_extensions_dir = Path(SERVER_CONFIG.LIB_DIR) / "chromewebstore" / "extensions"
+            assert Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR).resolve() == expected_extensions_dir.resolve()
+
+            extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
             extension_dir.mkdir(parents=True, exist_ok=True)
             (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui_from_lib__ = true;\\n", encoding="utf-8")
             (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw_from_lib__ = true;\\n", encoding="utf-8")
@@ -776,7 +779,6 @@ class TestUrlRouting:
             resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
             body = response_body(resp).decode("utf-8", "ignore")
 
-            assert SERVER_CONFIG.CHROME_EXTENSIONS_DIR == ""
             assert resp.status_code == 200
             assert resp["Content-Type"].startswith("application/javascript")
             assert "window.__archivebox_replay_ui_from_lib__" in body
@@ -788,7 +790,6 @@ class TestUrlRouting:
                 "BIND_ADDR": "127.0.0.1:8766",
                 "BASE_URL": "",
                 "LIB_DIR": str(lib_dir),
-                "CHROME_EXTENSIONS_DIR": "",
             },
         )
 

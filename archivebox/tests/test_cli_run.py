@@ -402,7 +402,7 @@ class TestRunDaemonMode:
 
         stdout = proc.stdout.read()
         stderr = proc.stderr.read()
-        assert proc.returncode == 0, stdout + stderr
+        assert proc.returncode == 143, stdout + stderr
         assert "No records to process" not in stderr
 
     def test_run_daemon_takeover_has_single_active_runner_gate(self, initialized_archive, db):

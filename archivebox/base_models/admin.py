@@ -5,7 +5,7 @@ __package__ = "archivebox.base_models"
 import json
 import uuid
 from collections.abc import Mapping
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from django import forms
 from django.contrib import admin
@@ -76,39 +76,23 @@ class KeyValueWidget(forms.Widget):
     def _get_config_options(self) -> dict[str, ConfigOption]:
         """Get available config options from plugins."""
         try:
-            from archivebox.config.common import ArchiveBoxConfig
-            from archivebox.plugins.discovery import discover_plugin_configs
+            from archivebox.config.common import config_field_metadata
 
             options: dict[str, ConfigOption] = {}
-            skipped_core_keys = {"ABX_RUNTIME", "DATA_DIR", "CRAWL_DIR", "SNAP_DIR"}
-            for key, field in ArchiveBoxConfig.model_fields.items():
-                if key in skipped_core_keys or key in ArchiveBoxConfig.computed_config_keys:
-                    continue
-                default = field.default
-                try:
-                    json.dumps(default)
-                except TypeError:
-                    default = str(default)
-                options[key] = {
-                    "plugin": "archivebox",
-                    "type": str(field.annotation),
-                    "default": default,
-                    "description": field.description or "",
+            for key, metadata in config_field_metadata().items():
+                option_type = metadata.get("type", "string")
+                option: ConfigOption = {
+                    "plugin": str(metadata.get("plugin", "archivebox")),
+                    "type": cast(str | list[str], option_type if isinstance(option_type, (str, list)) else str(option_type)),
+                    "default": metadata.get("default", ""),
+                    "description": str(metadata.get("description", "")),
                 }
-
-            plugin_configs = discover_plugin_configs()
-            for plugin_name, schema in plugin_configs.items():
-                for key, prop in schema.get("properties", {}).items():
-                    option: ConfigOption = {
-                        "plugin": plugin_name,
-                        "type": prop.get("type", "string"),
-                        "default": prop.get("default", ""),
-                        "description": prop.get("description", ""),
-                    }
+                schema = metadata.get("schema")
+                if isinstance(schema, Mapping):
                     for schema_key in ("enum", "pattern", "minimum", "maximum"):
-                        if schema_key in prop:
-                            option[schema_key] = prop[schema_key]
-                    options[key] = option
+                        if schema_key in schema:
+                            option[schema_key] = schema[schema_key]
+                options[key] = option
             return options
         except Exception:
             return {}
@@ -839,7 +823,7 @@ class ConfigEditorMixin(admin.ModelAdmin):
         """
         from archivebox.config.common import is_sensitive_config_key
 
-        if change and obj.pk and getattr(obj, "config", None) is not None:
+        if change and obj.pk and obj.config is not None:
             try:
                 stored = type(obj).objects.filter(pk=obj.pk).values_list("config", flat=True).first() or {}
             except Exception:

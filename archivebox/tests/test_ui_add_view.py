@@ -3,10 +3,11 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from archivebox.config.common import get_config
+from archivebox.config.common import ArchiveBoxConfig
 from archivebox.core.models import Snapshot, Tag
 from archivebox.crawls.models import Crawl
 from archivebox.personas.models import Persona
+from archivebox.services.runner import CrawlRunner
 from archivebox.workers.models import RETRY_AT_MAX
 
 
@@ -74,15 +75,28 @@ def test_add_view_admin_renders_plugin_config_grid(client, admin_user, monkeypat
     assert b">Docs</a>" in response.content
     assert b"https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/" in response.content
     assert b"https://archivebox.github.io/abx-plugins/#" in response.content
-    personas_dir_fields = [
-        field
+    assert not any(
+        field["key"].endswith("_BINARY") for group in form.plugin_groups for card in group["plugins"] for field in card["config_fields"]
+    )
+    assert not any(
+        field["key"] == f"{card['name'].upper()}_ENABLED"
         for group in form.plugin_groups
         for card in group["plugins"]
         for field in card["config_fields"]
-        if field["key"] == "PERSONAS_DIR"
-    ]
-    assert personas_dir_fields
-    assert {field["value"] for field in personas_dir_fields} == {str(get_config().PERSONAS_DIR)}
+    )
+    exposed_config_keys = {field["key"] for group in form.plugin_groups for card in group["plugins"] for field in card["config_fields"]}
+    assert not {key for key in exposed_config_keys if ArchiveBoxConfig.scope_for_key(key) == "crawl_execution"}
+    assert (
+        not {
+            "ARCHIVE_DIR",
+            "USERS_DIR",
+            "PERSONAS_DIR",
+            "CUSTOM_TEMPLATES_DIR",
+        }
+        & exposed_config_keys
+    )
+    assert b"plugin_config__chrome__CHROME_BINARY" not in response.content
+    assert b"plugin_config__wget__WGET_ENABLED" not in response.content
 
 
 def test_add_view_embeds_selected_persona_config_for_ui_hydration(client, admin_user, monkeypatch):
@@ -125,6 +139,20 @@ def test_add_view_public_only_lists_public_personas(client, admin_user, monkeypa
     assert secret_value.encode() not in response.content
     assert set(persona_config_map.keys()) == {"Default"}
     assert {"NODE_BINARY", "TWOCAPTCHA_API_KEY"}.isdisjoint(persona_config_map["Default"]["effective_config"])
+
+
+def test_persona_config_grid_allows_binary_fields(client, admin_user):
+    client.force_login(admin_user)
+    persona = Persona.objects.create(name="Binary Persona", created_by=admin_user)
+
+    response = client.get(
+        reverse("admin:personas_persona_change", args=[persona.pk]),
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 200
+    assert b"plugin_config__chrome__CHROME_BINARY" in response.content
+    assert b"plugin_config__wget__WGET_ENABLED" in response.content
 
 
 def test_add_view_hides_search_backend_plugins(client, monkeypatch):
@@ -253,11 +281,14 @@ def test_add_view_selected_persona_wins_over_stale_config_override(client, admin
     crawl = Crawl.objects.order_by("-created_at").first()
     assert crawl is not None
     assert crawl.persona_id == private_persona.id
-    assert crawl.config["ACTIVE_PERSONA"] == "Private"
+    assert "ACTIVE_PERSONA" not in crawl.config
     assert crawl.resolve_persona() == private_persona
-    runtime_config = get_config(crawl=crawl)
-    assert runtime_config.ACTIVE_PERSONA == "Private"
-    assert runtime_config.COOKIES_FILE == private_cookies_file
+    snapshot = Snapshot.objects.create(url="https://example.com/private", crawl=crawl)
+    runner = CrawlRunner(crawl, selected_plugins=["title"], show_progress=False)
+    runner.load_run_state()
+    runtime_config = runner.load_snapshot_payload(str(snapshot.id))["config"]
+    assert runtime_config["ACTIVE_PERSONA"] == "Private"
+    assert runtime_config["COOKIES_FILE"] == str(private_cookies_file)
 
 
 def test_add_view_applies_plugin_config_overrides(client, admin_user, monkeypatch):
@@ -282,9 +313,11 @@ def test_add_view_applies_plugin_config_overrides(client, admin_user, monkeypatc
             "permissions": "public",
             "start_paused": "",
             "main_plugins": ["wget"],
+            "plugin_config__wget__WGET_ENABLED": "false",
             "plugin_config__wget__WGET_TIMEOUT": "77",
             "plugin_config__wget__WGET_WARC_ENABLED": "false",
-            "config": "{}",
+            "plugin_config__chrome__CHROME_BINARY": "/tmp/malicious-chrome",
+            "config": '{"NODE_BINARY": "/tmp/malicious-node", "WGET_ENABLED": false}',
         },
         HTTP_HOST=ADMIN_HOST,
     )
@@ -296,6 +329,9 @@ def test_add_view_applies_plugin_config_overrides(client, admin_user, monkeypatc
     assert crawl.config["PLUGINS"] == "wget"
     assert crawl.config["WGET_TIMEOUT"] == 77
     assert crawl.config["WGET_WARC_ENABLED"] is False
+    assert "WGET_ENABLED" not in crawl.config
+    assert "CHROME_BINARY" not in crawl.config
+    assert "NODE_BINARY" not in crawl.config
 
 
 def test_add_view_public_submission_ignores_plugin_and_custom_config(client, admin_user, monkeypatch):

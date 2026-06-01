@@ -1,6 +1,6 @@
 # Configuration
 
-Configuration of ArchiveBox is done by using the `archivebox config` command, modifying the `ArchiveBox.conf` file in the data folder, or by using environment variables. All three methods work equivalently when using Docker as well.
+Configuration of ArchiveBox is done by using the `archivebox config` command, modifying the `ArchiveBox.conf` file in the data folder, or by setting environment variables as process defaults. All three methods work in Docker as well.
 
 *Some equivalent examples of setting some configuration options:*
 ```bash
@@ -11,7 +11,7 @@ echo "TIMEOUT=120" >> ArchiveBox.conf
 env TIMEOUT=120 archivebox add ~/Downloads/bookmarks_export.html
 ```
 
-Environment variables take precedence over the config file, which is useful if you only want to use a certain option temporarily during a single run. For more examples see [Usage: Configuration](Usage#run-archivebox-with-configuration-options)...
+Environment variables seed process-level defaults. Persisted Machine, Persona, Crawl, and Snapshot settings can override them depending on scope, and existing Crawl config is not silently overwritten by later environment changes. Runtime-derived values like crawl/snapshot output dirs are resolved fresh for each run instead of being stored in frozen crawl config. For more examples see [Usage: Configuration](Usage#run-archivebox-with-configuration-options)...
 
 <br/>
 
@@ -136,7 +136,7 @@ archivebox add --persona=personal https://members.example.com/feed
 <a id="active_persona"></a>
 #### `DEFAULT_PERSONA`
 **Possible Values:** [`Default`]/`personal`/`work`/...
-The persona profile used when no explicit persona is selected for a crawl. Personas bundle a Chrome user-data-dir, a `cookies.txt`, auth state, a user-agent, and any other per-identity config into a single named profile, letting you swap between archiving contexts (logged-out vs. signed-into-work-account vs. signed-into-personal-account) without manually juggling files.
+The persona profile used when no explicit persona is selected for a new crawl. The selected persona is stored on the Crawl row; `DEFAULT_PERSONA` is not duplicated into `Crawl.config`. Personas bundle a Chrome user-data-dir, a `cookies.txt`, auth state, a user-agent, and any other per-identity config into a single named profile, letting you swap between archiving contexts (logged-out vs. signed-into-work-account vs. signed-into-personal-account) without manually juggling files.
 
 ArchiveBox auto-creates the named persona on disk if it doesn't already exist. See the [Personas wiki page](https://github.com/ArchiveBox/ArchiveBox/wiki/Personas) for the full directory layout.
 
@@ -1061,7 +1061,6 @@ A handful of *core* options (documented above on this page) act as the **fallbac
 | [`USER_AGENT`](#user_agent) | [`WGET_USER_AGENT`](https://archivebox.github.io/abx-plugins/#wget), [`CHROME_USER_AGENT`](https://archivebox.github.io/abx-plugins/#chrome), [`SINGLEFILE_USER_AGENT`](https://archivebox.github.io/abx-plugins/#singlefile), ... |
 | [`COOKIES_FILE`](#cookies_file) | [`WGET_COOKIES_FILE`](https://archivebox.github.io/abx-plugins/#wget), [`YTDLP_COOKIES_FILE`](https://archivebox.github.io/abx-plugins/#ytdlp), [`GALLERYDL_COOKIES_FILE`](https://archivebox.github.io/abx-plugins/#gallerydl), [`SINGLEFILE_COOKIES_FILE`](https://archivebox.github.io/abx-plugins/#singlefile), ... |
 | [`RESOLUTION`](#resolution) | [`SCREENSHOT_RESOLUTION`](https://archivebox.github.io/abx-plugins/#screenshot), [`PDF_RESOLUTION`](https://archivebox.github.io/abx-plugins/#pdf), [`CHROME_RESOLUTION`](https://archivebox.github.io/abx-plugins/#chrome) |
-| [`DEFAULT_PERSONA`](#default_persona) | per-plugin persona scoping (browser profile / cookie jar selection) |
 
 > [!TIP]
 > The resolution order for any plugin-tunable option is always:

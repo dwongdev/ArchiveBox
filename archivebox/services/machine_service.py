@@ -40,19 +40,18 @@ class MachineService(BaseService):
         self.bus.on(MachineEvent, self.on_MachineEvent__save_to_db)
 
     async def on_MachineEvent__save_to_db(self, event: MachineEvent) -> None:
-        from archivebox.machine.models import Machine, _sanitize_machine_config
-        from archivebox.config.common import get_config
+        from archivebox.machine.models import Machine
 
         if event.config_type != "derived":
             return
 
         machine = await sync_to_async(Machine.current, thread_sensitive=True)()
-        lib_dir = await sync_to_async(lambda: get_config(include_machine=False).LIB_DIR, thread_sensitive=True)()
-        config = dict(machine.config or {})
+        old_config = dict(machine.config or {})
+        config = dict(old_config)
 
         if event.config is not None:
             binary_only = _strip_to_binary_keys(event.config)
-            config.update(_sanitize_machine_config(binary_only, lib_dir=lib_dir))
+            config.update(binary_only)
         elif event.method == "update":
             key = event.key.replace("config/", "", 1).strip()
             if key and _is_binary_event_key(key):
@@ -64,5 +63,7 @@ class MachineService(BaseService):
         else:
             return
 
-        machine.config = _sanitize_machine_config(config, lib_dir=lib_dir)
+        if config == old_config:
+            return
+        machine.config = config
         await machine.asave(update_fields=["config", "modified_at"])

@@ -31,6 +31,8 @@ DEPTH_CHOICES = (
 
 
 class AddLinkForm(PluginConfigFormMixin, forms.Form):
+    allow_crawl_execution_config_fields = False
+
     # Basic fields
     url = forms.CharField(
         label="URLs",

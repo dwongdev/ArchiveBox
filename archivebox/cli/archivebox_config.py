@@ -58,7 +58,7 @@ def config(
             ]
             matching_config = {key: FLAT_CONFIG[key] for key in config_options if key in FLAT_CONFIG}
             for config_section in CONFIGS.values():
-                aliases = getattr(config_section, "aliases", {})
+                aliases = {str(field.alias): field_name for field_name, field in type(config_section).model_fields.items() if field.alias}
 
                 for search_key in config_options:
                     # search all aliases in the section
@@ -90,7 +90,7 @@ def config(
 
         # Display core config sections
         for config_section in CONFIGS.values():
-            section_header = getattr(config_section, "toml_section_header", "")
+            section_header = config_section.toml_section_header
             if isinstance(section_header, str) and section_header:
                 print(f"[grey53]\\[{section_header}][/grey53]")
             else:

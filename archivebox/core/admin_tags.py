@@ -231,7 +231,7 @@ class TagAdmin(BaseModelAdmin):
 
     @admin.display(description="Snapshots", ordering="num_snapshots")
     def num_snapshots(self, tag: Tag):
-        count = getattr(tag, "num_snapshots", None)
+        count = tag.__dict__.get("num_snapshots")
         if count is None:
             count = tag.snapshot_set.count()
         return format_html(

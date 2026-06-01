@@ -4,6 +4,7 @@ from django.core.paginator import Paginator
 from django.core.paginator import Page
 from django.core.paginator import EmptyPage
 from django.db import connection
+from django.db.models import QuerySet
 from django.utils.functional import cached_property
 
 
@@ -19,9 +20,13 @@ class CountlessPage(Page):
 class CountlessPaginator(Paginator):
     has_exact_count = False
 
+    def __init__(self, *args, **kwargs):
+        self._count_hint = 0
+        super().__init__(*args, **kwargs)
+
     @cached_property
     def count(self):
-        return getattr(self, "_count_hint", 0)
+        return self._count_hint
 
     @cached_property
     def num_pages(self):
@@ -56,16 +61,29 @@ class AcceleratedPaginator(Paginator):
 
     @cached_property
     def count(self):
-        query = getattr(self.object_list, "query", None)
-        if query is not None and (getattr(query, "distinct", False) or getattr(getattr(query, "where", None), "children", None)):
+        if not isinstance(self.object_list, QuerySet):
+            return super().count
+
+        query = self.object_list.query
+        count_hint = self.object_list.__dict__.get("_archivebox_count_hint")
+        if count_hint is None:
+            count_hint = query.__dict__.get("_archivebox_count_hint")
+        if count_hint is not None:
+            model = self.object_list.model
+            if count_hint == "model_estimate":
+                return self._model_count_estimate(model)
+            if callable(count_hint):
+                return count_hint()
+            return count_hint
+
+        if query.distinct or query.where.children:
             # fallback to normal count method on filtered queryset
             return super().count
 
-        model = getattr(self.object_list, "model", None)
-        if model is None:
-            return super().count
-
         # otherwise count total rows in a separate fast query
+        return self._model_count_estimate(self.object_list.model)
+
+    def _model_count_estimate(self, model):
         if connection.vendor == "sqlite":
             table_name = model._meta.db_table
             with connection.cursor() as cursor:

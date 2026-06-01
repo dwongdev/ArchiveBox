@@ -66,7 +66,7 @@ def check_data_folder(config=None, **config_kwargs) -> None:
     from archivebox.config.paths import create_and_chown_dir, get_or_create_working_tmp_dir, get_or_create_working_lib_dir
 
     config = config or get_config(**config_kwargs)
-    archive_dir = config.ARCHIVE_DIR
+    archive_dir = CONSTANTS.ARCHIVE_DIR
     archive_dir_exists = os.path.isdir(archive_dir)
     if not archive_dir_exists:
         print("[red][X] No archivebox index found in the current directory.[/red]", file=sys.stderr)
@@ -82,7 +82,7 @@ def check_data_folder(config=None, **config_kwargs) -> None:
 
     # Create data dir subdirs
     create_and_chown_dir(CONSTANTS.SOURCES_DIR)
-    create_and_chown_dir(config.USERS_DIR)
+    create_and_chown_dir(CONSTANTS.USERS_DIR)
     create_and_chown_dir(CONSTANTS.PERSONAS_DIR / "Default")
     create_and_chown_dir(CONSTANTS.LOGS_DIR)
     # create_and_chown_dir(CONSTANTS.CACHE_DIR)
@@ -211,11 +211,10 @@ def check_not_inside_source_dir():
     """Prevent running ArchiveBox from inside its source directory (would pollute repo with data files)."""
     cwd = Path(os.getcwd()).resolve()
     is_source_dir = (cwd / "archivebox" / "__init__.py").exists() and (cwd / "pyproject.toml").exists()
-    data_dir_set_elsewhere = os.environ.get("DATA_DIR", "").strip() and Path(os.environ["DATA_DIR"]).resolve() != cwd
     is_testing = "pytest" in sys.modules or "unittest" in sys.modules
 
-    if is_source_dir and not data_dir_set_elsewhere and not is_testing:
-        raise SystemExit("[!] Cannot run from source dir, set DATA_DIR or cd to a data folder first")
+    if is_source_dir and not is_testing:
+        raise SystemExit("[!] Cannot run from source dir, cd to a data folder first")
 
 
 def check_data_dir_permissions(config=None, **config_kwargs):

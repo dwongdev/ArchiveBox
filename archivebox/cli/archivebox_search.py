@@ -12,7 +12,7 @@ import rich_click as click
 
 from django.db.models import Q, QuerySet
 
-from archivebox.config import DATA_DIR
+from archivebox.config import CONSTANTS
 from archivebox.config.common import get_config
 from archivebox.misc.logging import stderr
 from archivebox.misc.util import enforce_types, docstring
@@ -146,7 +146,7 @@ def get_snapshots(
     filter_type: str = "substring",
     after: float | None = None,
     before: float | None = None,
-    out_dir: Path = DATA_DIR,
+    out_dir: Path = CONSTANTS.DATA_DIR,
 ) -> QuerySet["Snapshot", "Snapshot"]:
     """Filter and return Snapshots matching the given criteria."""
     from archivebox.core.models import Snapshot

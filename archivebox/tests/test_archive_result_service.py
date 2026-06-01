@@ -22,15 +22,19 @@ def _create_snapshot():
     from archivebox.crawls.models import Crawl
     from archivebox.core.models import Snapshot
 
-    crawl = Crawl.objects.create(
+    crawl = Crawl(
         urls="https://example.com",
         created_by_id=get_or_create_system_user_pk(),
     )
-    return Snapshot.objects.create(
+    crawl.save()
+
+    snapshot = Snapshot(
         url="https://example.com",
         crawl=crawl,
         status=Snapshot.StatusChoices.STARTED,
     )
+    snapshot.save()
+    return snapshot
 
 
 def test_process_completed_projects_inline_archiveresult():
@@ -230,6 +234,42 @@ def test_snapshot_resolved_title_ignores_failed_title_output_str():
         output_str="No Chrome session found (chrome plugin must run first)",
     )
 
+    snapshot.refresh_from_db()
+    assert snapshot.title in (None, "")
+    assert snapshot.resolved_title == ""
+    _cleanup_machine_process_rows()
+
+
+def test_snapshot_title_ignores_noresults_title_output_str():
+    from archivebox.core.models import ArchiveResult
+    from archivebox.services.archive_result_service import ArchiveResultService
+    import asyncio
+
+    snapshot = _create_snapshot()
+    plugin_dir = Path(snapshot.output_dir) / "title"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    bus = create_bus(name="test_noresults_title_does_not_update_snapshot")
+    service = ArchiveResultService(bus)
+
+    event = ArchiveResultEvent(
+        snapshot_id=str(snapshot.id),
+        plugin="title",
+        hook_name="on_Snapshot__54_title.js",
+        status="noresults",
+        output_str="TimeoutError: Navigation timeout of 54172 ms exceeded",
+        start_ts="2026-03-22T12:00:00+00:00",
+        end_ts="2026-03-22T12:00:01+00:00",
+    )
+
+    async def emit_event() -> None:
+        await service.on_ArchiveResultEvent__save_to_db(event)
+
+    asyncio.run(emit_event())
+
+    result = ArchiveResult.objects.get(snapshot=snapshot, plugin="title", hook_name="on_Snapshot__54_title.js")
+    assert result.status == ArchiveResult.StatusChoices.NORESULTS
+    assert result.output_str == "TimeoutError: Navigation timeout of 54172 ms exceeded"
     snapshot.refresh_from_db()
     assert snapshot.title in (None, "")
     assert snapshot.resolved_title == ""

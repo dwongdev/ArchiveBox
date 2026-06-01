@@ -22,12 +22,11 @@ def install(binaries: tuple[str, ...] = (), binproviders: str = "*", dry_run: bo
     """
 
     from archivebox.config.permissions import IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
-    from archivebox.config.common import get_config
+    from archivebox.config import CONSTANTS
     from archivebox.misc.logging import stderr
     from archivebox.cli.archivebox_init import init
 
-    config = get_config()
-    archive_dir = config.ARCHIVE_DIR
+    archive_dir = CONSTANTS.ARCHIVE_DIR
 
     if dry_run:
         print("[dim]Dry run - would detect ArchiveBox dependencies and run the abx-dl install flow[/dim]")

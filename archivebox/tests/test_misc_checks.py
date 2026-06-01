@@ -1,6 +1,10 @@
 import os
 import signal
 
+import pytest
+
+from archivebox.core.shutdown_util import foreground_shutdown_signals
+from archivebox.core.shutdown_util import raise_if_shutdown_requested
 from archivebox.misc.checks import _migration_interrupt_message
 from archivebox.misc.checks import _exit_on_migration_interrupt
 
@@ -38,3 +42,16 @@ def test_migration_interrupt_handler_exits_for_sigint_and_sigterm(monkeypatch):
         else:
             raise AssertionError(f"{sig.name} should exit during migration auto-apply")
         assert signal.getsignal(sig) == previous_handler
+
+
+def test_nested_foreground_signal_state_propagates_to_outer_context():
+    with foreground_shutdown_signals(first_signal_message=None) as outer_state:
+        try:
+            with foreground_shutdown_signals(first_signal_message=None):
+                os.kill(os.getpid(), signal.SIGTERM)
+        except KeyboardInterrupt:
+            pass
+
+        assert outer_state.signal_name == "SIGTERM"
+        with pytest.raises(KeyboardInterrupt):
+            raise_if_shutdown_requested()

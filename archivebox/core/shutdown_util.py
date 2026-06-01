@@ -134,7 +134,10 @@ def foreground_shutdown_signals(
         # signal for hard foreground-command shutdown. Server/update/run and
         # other non-interactive commands raise immediately so their finally
         # blocks can stop owned children without prompting.
-        if raise_on_first_signal or already_requested:
+        if already_requested:
+            os.write(sys.stdout.fileno(), f"\n[🛑] Got {sig.name} again, exiting immediately.\n".encode())
+            os._exit(130)
+        if raise_on_first_signal:
             raise KeyboardInterrupt
 
     try:
@@ -143,6 +146,8 @@ def foreground_shutdown_signals(
             signal.signal(sig, raise_keyboard_interrupt)
         yield state
     finally:
+        if state.signal_name and previous_active_state is not None and not previous_active_state.signal_name:
+            previous_active_state.signal_name = state.signal_name
         _active_shutdown_state = previous_active_state
         for sig, previous_handler in previous_handlers.items():
             signal.signal(sig, previous_handler)

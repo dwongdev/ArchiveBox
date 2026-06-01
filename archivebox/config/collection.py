@@ -3,6 +3,7 @@ __package__ = "archivebox.config"
 import io
 import json
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from archivebox.config.constants import CONSTANTS
@@ -54,7 +55,7 @@ def _coerce_to_str_dict(config: Any) -> dict[str, str]:
     """
     if not config:
         return {}
-    if not hasattr(config, "items"):
+    if not isinstance(config, Mapping):
         return {}
     flat: dict[str, str] = {}
     for key, value in config.items():

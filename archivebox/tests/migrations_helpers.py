@@ -1023,7 +1023,6 @@ def seed_0_8_data(db_path: Path) -> dict[str, list[dict]]:
 def run_archivebox(data_dir: Path, args: list, timeout: int = 60, env: dict | None = None) -> subprocess.CompletedProcess:
     """Run archivebox command in subprocess with given data directory."""
     base_env = os.environ.copy()
-    base_env["DATA_DIR"] = str(data_dir)
     base_env["USE_COLOR"] = "False"
     base_env["SHOW_PROGRESS"] = "False"
     # Disable ALL extractors for faster tests (can be overridden by env parameter)

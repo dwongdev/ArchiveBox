@@ -18,15 +18,17 @@ def test_in_process_archivebox_config_uses_temp_data_dir():
     from archivebox.config import CONSTANTS
     from archivebox.config.common import get_config
 
-    data_dir = Path(os.environ["DATA_DIR"]).resolve()
+    data_dir = CONSTANTS.DATA_DIR.resolve()
     assert data_dir == Path.cwd().resolve()
     assert test_harness.REPO_ROOT not in data_dir.parents
     assert CONSTANTS.DATA_DIR != test_harness.REPO_ROOT
 
     config = get_config(include_machine=False)
-    assert config.DATA_DIR == data_dir
-    assert config.ARCHIVE_DIR == data_dir / "archive"
-    assert config.USERS_DIR == data_dir / "archive" / "users"
+    assert "DATA_DIR" not in config
+    assert "ARCHIVE_DIR" not in config
+    assert "USERS_DIR" not in config
+    assert CONSTANTS.ARCHIVE_DIR == data_dir / "archive"
+    assert CONSTANTS.USERS_DIR == data_dir / "archive" / "users"
 
 
 def test_cli_helpers_reject_repo_root_runtime_paths():

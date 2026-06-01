@@ -474,7 +474,7 @@ class ExtendedEncoder(pyjson.JSONEncoder):
     def default(self, o):
         cls_name = o.__class__.__name__
 
-        if hasattr(o, "_asdict"):
+        if isinstance(o, tuple) and "_asdict" in vars(type(o)):
             return o._asdict()
 
         elif isinstance(o, bytes):

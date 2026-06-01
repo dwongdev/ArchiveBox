@@ -174,9 +174,9 @@ except ImportError:
 
 STATIC_URL = "/static/"
 TEMPLATES_DIR_NAME = "templates"
-CUSTOM_TEMPLATES_ENABLED = os.path.isdir(CONFIG.CUSTOM_TEMPLATES_DIR) and os.access(CONFIG.CUSTOM_TEMPLATES_DIR, os.R_OK)
+CUSTOM_TEMPLATES_ENABLED = os.path.isdir(CONSTANTS.CUSTOM_TEMPLATES_DIR) and os.access(CONSTANTS.CUSTOM_TEMPLATES_DIR, os.R_OK)
 STATICFILES_DIRS = [
-    *([str(CONFIG.CUSTOM_TEMPLATES_DIR / "static")] if CUSTOM_TEMPLATES_ENABLED else []),
+    *([str(CONSTANTS.CUSTOM_TEMPLATES_DIR / "static")] if CUSTOM_TEMPLATES_ENABLED else []),
     # *[
     #     str(plugin_dir / 'static')
     #     for plugin_dir in PLUGIN_DIRS.values()
@@ -187,7 +187,7 @@ STATICFILES_DIRS = [
 ]
 
 TEMPLATE_DIRS = [
-    *([str(CONFIG.CUSTOM_TEMPLATES_DIR)] if CUSTOM_TEMPLATES_ENABLED else []),
+    *([str(CONSTANTS.CUSTOM_TEMPLATES_DIR)] if CUSTOM_TEMPLATES_ENABLED else []),
     # *[
     #     str(plugin_dir / 'templates')
     #     for plugin_dir in PLUGIN_DIRS.values()
@@ -334,7 +334,7 @@ STORAGES = {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
         "OPTIONS": {
             "base_url": "/archive/",
-            "location": CONFIG.ARCHIVE_DIR,
+            "location": CONSTANTS.ARCHIVE_DIR,
         },
     },
     # "snapshots": {

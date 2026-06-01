@@ -4,6 +4,8 @@ import json
 import re
 import hashlib
 from django import forms
+from django.db.models.manager import BaseManager
+from django.db.models.query import QuerySet
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
@@ -65,10 +67,12 @@ class TagEditorWidget(forms.Widget):
         # Parse value to get list of tag names
         tags = []
         if value:
-            if hasattr(value, "all"):  # QuerySet
+            if isinstance(value, (BaseManager, QuerySet)):
                 tags = sorted([tag.name for tag in value.all()])
             elif isinstance(value, (list, tuple)):
-                if value and hasattr(value[0], "name"):  # List of Tag objects
+                from archivebox.core.models import Tag
+
+                if value and isinstance(value[0], Tag):  # List of Tag objects
                     tags = sorted([tag.name for tag in value])
                 else:  # List of strings or IDs
                     # Could be tag IDs from form submission
@@ -675,12 +679,14 @@ class InlineTagEditorWidget(TagEditorWidget):
         # Parse value to get list of tag dicts with id and name
         tag_data = []
         if value:
-            if hasattr(value, "all"):  # QuerySet
+            if isinstance(value, (BaseManager, QuerySet)):
                 for tag in value.all():
                     tag_data.append({"id": tag.pk, "name": tag.name})
                 tag_data.sort(key=lambda x: x["name"].lower())
             elif isinstance(value, (list, tuple)):
-                if value and hasattr(value[0], "name"):
+                from archivebox.core.models import Tag
+
+                if value and isinstance(value[0], Tag):
                     for tag in value:
                         tag_data.append({"id": tag.pk, "name": tag.name})
                     tag_data.sort(key=lambda x: x["name"].lower())

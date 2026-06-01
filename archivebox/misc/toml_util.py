@@ -96,7 +96,7 @@ class JSONSchemaWithLambdas(GenerateJsonSchema):
 
 def better_toml_dump_str(val: Any) -> str:
     try:
-        dump_str = cast(Callable[[Any], str], getattr(toml.encoder, "_dump_str"))
+        dump_str = cast(Callable[[Any], str], toml.encoder._dump_str)
         return dump_str(val)
     except Exception:
         # if we hit any of toml's numerous encoding bugs,

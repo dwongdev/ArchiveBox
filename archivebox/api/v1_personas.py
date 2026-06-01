@@ -136,7 +136,7 @@ def sync_persona(request: HttpRequest, payload: PersonaSyncSchema):
     created = persona is None
     if persona is None:
         persona = Persona(name=name)
-        if getattr(request.user, "is_authenticated", False):
+        if request.user.is_authenticated:
             persona.created_by = request.user
 
     persona.config = {

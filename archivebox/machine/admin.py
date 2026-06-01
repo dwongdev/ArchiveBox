@@ -590,9 +590,10 @@ class ProcessAdmin(BaseModelAdmin):
 
     @admin.display(description="ArchiveResult", ordering="archiveresult__plugin")
     def archiveresult_link(self, process):
-        if not hasattr(process, "archiveresult"):
+        try:
+            ar = process.archiveresult
+        except Process.archiveresult.RelatedObjectDoesNotExist:
             return "-"
-        ar = process.archiveresult
         return format_html(
             '<a href="/admin/core/archiveresult/{}/change">{} ← <code>{}</code></a>',
             ar.id,
@@ -602,9 +603,9 @@ class ProcessAdmin(BaseModelAdmin):
 
     @admin.display(description="Snapshot", ordering="archiveresult__snapshot__id")
     def snapshot_link(self, process):
-        ar = getattr(process, "archiveresult", None)
-        snapshot = getattr(ar, "snapshot", None)
-        if not snapshot:
+        try:
+            snapshot = process.archiveresult.snapshot
+        except Process.archiveresult.RelatedObjectDoesNotExist:
             return "-"
         return format_html(
             '<a href="/admin/core/snapshot/{}/change"><code>{}</code></a>',
@@ -614,10 +615,9 @@ class ProcessAdmin(BaseModelAdmin):
 
     @admin.display(description="Crawl", ordering="archiveresult__snapshot__crawl__id")
     def crawl_link(self, process):
-        ar = getattr(process, "archiveresult", None)
-        snapshot = getattr(ar, "snapshot", None)
-        crawl = getattr(snapshot, "crawl", None)
-        if not crawl:
+        try:
+            crawl = process.archiveresult.snapshot.crawl
+        except Process.archiveresult.RelatedObjectDoesNotExist:
             return "-"
         return format_html(
             '<a href="/admin/crawls/crawl/{}/change"><code>{}</code></a>',
@@ -682,7 +682,10 @@ class ProcessAdmin(BaseModelAdmin):
 
     @admin.display(description="Output", ordering="archiveresult__output_size")
     def output_summary(self, process):
-        output_files = getattr(getattr(process, "archiveresult", None), "output_files", {}) or {}
+        try:
+            output_files = process.archiveresult.output_files or {}
+        except Process.archiveresult.RelatedObjectDoesNotExist:
+            output_files = {}
 
         if isinstance(output_files, str):
             try:

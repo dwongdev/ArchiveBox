@@ -2,6 +2,7 @@ import html
 import json
 import re
 import os
+import sys
 import stat
 import asyncio
 import posixpath
@@ -17,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from django import template
+from django.core.handlers.asgi import ASGIRequest
 from django.contrib.staticfiles import finders
 from django.template import TemplateDoesNotExist, loader
 from django.views import static
@@ -117,7 +119,7 @@ def _render_mhtml_preview_document(filename: str, output_path: str) -> str:
 
 
 def _format_direntry_timestamp(stat_result: os.stat_result) -> str:
-    timestamp = getattr(stat_result, "st_birthtime", None) or stat_result.st_mtime
+    timestamp = stat_result.st_birthtime if sys.platform == "darwin" else stat_result.st_mtime
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
 
 
@@ -333,7 +335,7 @@ mimetypes.add_type("multipart/related", ".mhtml")
 mimetypes.add_type("multipart/related", ".mht")
 
 try:
-    _markdown = getattr(importlib.import_module("markdown"), "markdown")
+    _markdown = importlib.import_module("markdown").markdown
 except ImportError:
     _markdown: Callable[..., str] | None = None
 
@@ -716,10 +718,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     https://github.com/satchamo/django/commit/2ce75c5c4bee2a858c0214d136bfcd351fcde11d
     """
     assert document_root
-    config = getattr(request, "archivebox_config", None)
-    if config is None:
-        config = get_config(resolve_plugins=False)
-        request.archivebox_config = config
+    config = request.archivebox_config
     fullpath, path = _resolve_archive_path(document_root, path)
     if os.access(fullpath, os.R_OK) and fullpath.is_dir():
         if request.GET.get("download") == "zip" and show_indexes:
@@ -727,7 +726,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 fullpath,
                 path,
                 is_archive_replay=is_archive_replay,
-                use_async_stream=hasattr(request, "scope"),
+                use_async_stream=isinstance(request, ASGIRequest),
                 config=config,
             )
         if show_indexes:
@@ -872,7 +871,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 fullpath.name,
                 raw_output_path,
                 wacz_path=fullpath,
-                fallback_url=getattr(request, "archivebox_snapshot_url", "") or "",
+                fallback_url=request.archivebox_snapshot_url or "",
                 last_modified=http_date(statobj.st_mtime),
                 etag=etag or "",
                 cache_control=(
@@ -978,7 +977,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     # setup response object
     ranged_file = RangedFileReader(open(fullpath, "rb"))
     response = StreamingHttpResponse(
-        _stream_ranged_file_async(ranged_file) if hasattr(request, "scope") else ranged_file,
+        _stream_ranged_file_async(ranged_file) if isinstance(request, ASGIRequest) else ranged_file,
         content_type=content_type,
     )
     response.headers["Last-Modified"] = http_date(statobj.st_mtime)

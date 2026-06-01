@@ -101,7 +101,8 @@ def iter_admin_backend_search_ids(iterator, queryset):
 def admin_snapshot_search_stream_view(model_admin, request):
     """Stream admin Snapshot search progress and cache matching IDs."""
     query = (request.GET.get("q") or "").strip()
-    search_mode = get_search_mode(request.GET.get("search_mode"), config=getattr(request, "archivebox_config", None))
+    config = request.archivebox_config
+    search_mode = get_search_mode(request.GET.get("search_mode"), config=config)
     if not query:
         return StreamingHttpResponse((), content_type="text/plain")
 
@@ -115,12 +116,12 @@ def admin_snapshot_search_stream_view(model_admin, request):
     filter_request.path = target_url.path or request.path
     filter_request.path_info = target_url.path or request.path_info
     filter_request.GET = target_get
-    filter_request.archivebox_config = getattr(request, "archivebox_config", None)
+    filter_request.archivebox_config = config
 
     # Build the same filtered base queryset the changelist uses, but with the
     # search params stripped. The stream intersects each wave with this queryset
     # before writing IDs into the short-lived cache consumed by the changelist.
-    current_request = getattr(model_admin, "request", None)
+    current_request = model_admin.__dict__.get("request")
     try:
         base_queryset = model_admin.get_changelist_instance(filter_request).queryset
     finally:
@@ -150,12 +151,12 @@ def admin_snapshot_search_stream_view(model_admin, request):
             nonlocal last_sent
             iterator = None
             try:
-                search_mode_base = get_search_mode_base(search_mode, config=getattr(request, "archivebox_config", None))
+                search_mode_base = get_search_mode_base(search_mode, config=config)
                 iterator = (
                     iter_admin_meta_search_ids(query, base_queryset)
                     if search_mode_base == "meta"
                     else iter_admin_backend_search_ids(
-                        iter_query_search_ids(query, search_mode=search_mode, config=getattr(request, "archivebox_config", None)),
+                        iter_query_search_ids(query, search_mode=search_mode, config=config),
                         base_queryset,
                     )
                 )

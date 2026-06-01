@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError
@@ -16,6 +16,11 @@ from abx_dl.output_files import guess_mimetype
 from abx_dl.services.base import BaseService
 
 from .process_service import parse_event_datetime
+
+
+@runtime_checkable
+class ModelDumpable(Protocol):
+    def model_dump(self) -> dict[str, Any]: ...
 
 
 def _collect_output_metadata(plugin_dir: Path) -> tuple[dict[str, dict], int, str]:
@@ -97,15 +102,8 @@ def _normalize_output_files(raw_output_files: Any) -> dict[str, dict]:
         if isinstance(item, str):
             normalized[item] = _enrich_metadata(item, {})
             continue
-        if hasattr(item, "model_dump"):
+        if isinstance(item, ModelDumpable):
             item = item.model_dump()
-        elif hasattr(item, "path"):
-            item = {
-                "path": getattr(item, "path", ""),
-                "extension": getattr(item, "extension", ""),
-                "mimetype": getattr(item, "mimetype", ""),
-                "size": getattr(item, "size", 0),
-            }
         if not isinstance(item, dict):
             continue
         path = str(item.get("path") or "").strip()
@@ -224,14 +222,18 @@ class ArchiveResultService(BaseService):
         snapshot = await Snapshot.objects.filter(id=event.snapshot_id).select_related("crawl", "crawl__created_by").afirst()
         if snapshot is None:
             return
-        plugin_dir = Path(snapshot.output_dir) / event.plugin
-        output_files, output_size, output_mimetypes = await sync_to_async(_resolve_output_metadata)(event.output_files, plugin_dir)
         process_started = await self.bus.find(
             ProcessStartedEvent,
             past=True,
             future=False,
             where=lambda candidate: self.bus.event_is_child_of(event, candidate),
         )
+        plugin_dir = (
+            Path(process_started.output_dir)
+            if process_started is not None and process_started.output_dir
+            else Path(snapshot.output_dir) / event.plugin
+        )
+        output_files, output_size, output_mimetypes = await sync_to_async(_resolve_output_metadata)(event.output_files, plugin_dir)
         process = None
         if process_started is not None:
             started_at = parse_event_datetime(process_started.start_ts)
@@ -292,14 +294,15 @@ class ArchiveResultService(BaseService):
 
             update_fields = []
             for field, value in defaults.items():
-                if getattr(result, field) != value:
+                if result.__dict__[field] != value:
                     setattr(result, field, value)
                     update_fields.append(field)
             if update_fields:
                 await result.asave(update_fields=[*update_fields, "modified_at"])
 
         if result.status in (ArchiveResult.StatusChoices.SUCCEEDED, ArchiveResult.StatusChoices.NORESULTS):
-            next_title = _extract_snapshot_title(str(snapshot.output_dir), event.plugin, result.output_str, snapshot_url=snapshot.url)
+            title_output_str = result.output_str if result.status == ArchiveResult.StatusChoices.SUCCEEDED else ""
+            next_title = _extract_snapshot_title(str(plugin_dir.parent), event.plugin, title_output_str, snapshot_url=snapshot.url)
             if next_title and _should_update_snapshot_title(snapshot.title or "", next_title, snapshot_url=snapshot.url):
                 snapshot.title = next_title
                 await snapshot.asave(update_fields=["title", "modified_at"])

@@ -11,6 +11,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -128,6 +129,7 @@ def test_runner_worker_uses_current_interpreter():
     from archivebox.workers.supervisord_util import RUNNER_WORKER
 
     assert RUNNER_WORKER["command"] == f"{sys.executable} -m archivebox run --daemon"
+    assert 'ARCHIVEBOX_RUNNER_DAEMON="1"' in RUNNER_WORKER["environment"]
 
 
 def test_daphne_worker_uses_default_application_close_timeout():
@@ -173,6 +175,28 @@ def test_server_daemon_starts_real_plugin_owned_sonic_worker(archivebox_daemon_s
     assert state["worker_runner"]["statename"] == "RUNNING", state
     assert state["worker_sonic"]["statename"] == "RUNNING", state
     assert "sonic" in state["worker_sonic"]["name"]
+
+
+def test_server_daemon_restarts_runner_killed_by_signal(archivebox_daemon_server):
+    server = archivebox_daemon_server(
+        SEARCH_BACKEND_ENGINE="sqlite",
+    )
+    state = server.wait_for_workers(("worker_daphne", "worker_runner"))
+    old_runner_pid = state["worker_runner"]["pid"]
+
+    os.kill(old_runner_pid, signal.SIGTERM)
+
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        state = server.worker_state()
+        runner = state.get("worker_runner", {})
+        if runner.get("statename") == "RUNNING" and runner.get("pid") and runner.get("pid") != old_runner_pid:
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError(f"worker_runner did not restart after SIGTERM: {state}")
+
+    assert state["worker_daphne"]["statename"] == "RUNNING", state
 
 
 def test_sonic_worker_is_disabled_when_sonic_disabled_and_engine_not_sonic(tmp_path):
