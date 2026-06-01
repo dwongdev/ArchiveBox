@@ -182,6 +182,7 @@ SETTINGS_LOGGING = {
             "formatter": "rich",
             "level": "DEBUG",
             "markup": False,
+            "enable_link_path": False,
             "rich_tracebacks": False,  # Use standard Python tracebacks (no frame/box)
             "console": STDERR,
             "filters": ["noisyrequestsfilter", "daphneclosetimeout", "asynciocancelledshield", "stripansi"],
@@ -198,6 +199,7 @@ SETTINGS_LOGGING = {
         "outbound_webhooks": {
             "class": "rich.logging.RichHandler",
             "markup": False,
+            "enable_link_path": False,
             "rich_tracebacks": False,  # Use standard Python tracebacks (no frame/box)
             "formatter": "outbound_webhooks",
         },

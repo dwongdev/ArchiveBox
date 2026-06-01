@@ -732,6 +732,66 @@ class TestUrlRouting:
             },
         )
 
+    def test_subdomain_replay_assets_route_without_base_url(self) -> None:
+        chrome_extensions_dir = self.data_dir / "test-chrome-extensions"
+        self._run(
+            """
+            snapshot = get_snapshot()
+            snapshot_host = get_snapshot_host(str(snapshot.id))
+            extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
+            extension_dir.mkdir(parents=True, exist_ok=True)
+            (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui__ = true;\\n", encoding="utf-8")
+            (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw__ = true;\\n", encoding="utf-8")
+
+            client = Client()
+            resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
+            body = response_body(resp).decode("utf-8", "ignore")
+
+            assert resp.status_code == 200
+            assert resp["Content-Type"].startswith("application/javascript")
+            assert "window.__archivebox_replay_ui__" in body
+
+            print("OK")
+            """,
+            mode="safe-subdomains-fullreplay",
+            env_overrides={
+                "BIND_ADDR": "127.0.0.1:8766",
+                "BASE_URL": "",
+                "CHROME_EXTENSIONS_DIR": str(chrome_extensions_dir),
+            },
+        )
+
+    def test_subdomain_replay_assets_fall_back_to_chromewebstore_lib_dir(self) -> None:
+        lib_dir = self.data_dir / "test-lib"
+        self._run(
+            """
+            snapshot = get_snapshot()
+            snapshot_host = get_snapshot_host(str(snapshot.id))
+            extension_dir = Path(SERVER_CONFIG.LIB_DIR) / "chromewebstore" / "extensions" / "test__archivewebpage"
+            extension_dir.mkdir(parents=True, exist_ok=True)
+            (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui_from_lib__ = true;\\n", encoding="utf-8")
+            (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw_from_lib__ = true;\\n", encoding="utf-8")
+
+            client = Client()
+            resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
+            body = response_body(resp).decode("utf-8", "ignore")
+
+            assert SERVER_CONFIG.CHROME_EXTENSIONS_DIR == ""
+            assert resp.status_code == 200
+            assert resp["Content-Type"].startswith("application/javascript")
+            assert "window.__archivebox_replay_ui_from_lib__" in body
+
+            print("OK")
+            """,
+            mode="safe-subdomains-fullreplay",
+            env_overrides={
+                "BIND_ADDR": "127.0.0.1:8766",
+                "BASE_URL": "",
+                "LIB_DIR": str(lib_dir),
+                "CHROME_EXTENSIONS_DIR": "",
+            },
+        )
+
     def test_onedomain_base_url_overrides_are_preserved_for_external_links(self) -> None:
         self._run(
             """
