@@ -322,6 +322,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         abxpkg install --no-cache --install-timeout=600 --binproviders=playwright --bin-dir="$LIB_DIR/env/bin" chromium; \
     fi \
     && ABXPKG_INSTALL_TIMEOUT=600 TIMEOUT=600 PUID=0 PGID=0 abx-dl plugins --install \
+        accessibility archivedotorg archivewebpage base chrome chrome_mhtml chrome_screencast \
+        claudechrome claudecode claudecodecleanup claudecodeextract consolelog defuddle dns dom \
+        favicon forumdl gallerydl git hashes headers htmltotext infiniscroll \
+        istilldontcareaboutcookies liteparse media mercury modalcloser opendataloader papersdl \
+        parse_dom_outlinks parse_html_urls parse_jsonl_urls parse_netscape_urls parse_rss_urls \
+        parse_txt_urls pdf readability redirects responses screenshot search_backend_ripgrep \
+        search_backend_sonic search_backend_sqlite seo singlefile ssl sslcerts staticfile title \
+        trafilatura ublock wget ytdlp \
     && abxpkg install --no-cache --binproviders=chromewebstore --overrides='{"chromewebstore":{"install_args":["fpeoodllldobpkbkabpblcfaogecpndd","--name=archivewebpage"]}}' archivewebpage \
     && test -f "$LIB_DIR/chromewebstore/extensions/fpeoodllldobpkbkabpblcfaogecpndd__archivewebpage/manifest.json" \
     && mkdir -p "$LIB_DIR/env/bin" \
