@@ -373,6 +373,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
 # Initialize an empty image collection without rerunning dependency installs.
 WORKDIR "$DATA_DIR"
 RUN echo "[+] Initializing image collection..." \
+    && find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
     && PUID=0 PGID=0 archivebox init \
     && find "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \

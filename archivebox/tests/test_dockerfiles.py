@@ -91,3 +91,9 @@ def test_dockerfile_build_installs_disable_release_age_gate() -> None:
 def test_dockerfiles_do_not_queue_optional_binaries_during_validation() -> None:
     for dockerfile_name in ("Dockerfile", "Dockerfile.multistage"):
         assert _bare_archivebox_install_commands(REPO_ROOT / dockerfile_name) == []
+
+
+def test_dockerfiles_clean_build_data_dir_before_init() -> None:
+    for dockerfile_name in ("Dockerfile", "Dockerfile.multistage"):
+        text = (REPO_ROOT / dockerfile_name).read_text()
+        assert 'find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +' in text
