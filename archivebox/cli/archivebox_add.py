@@ -194,7 +194,7 @@ def add(
         label=f"{USER}@{HOSTNAME} $ {cmd_str} [{timestamp}]",
         created_by_id=created_by_id,
         status=Crawl.StatusChoices.QUEUED,
-        retry_at=None if index_only else timezone.now(),
+        retry_at=None if (index_only or bg) else timezone.now(),
         config=crawl_config,
     )
 
