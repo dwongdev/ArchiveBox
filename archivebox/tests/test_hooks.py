@@ -33,7 +33,6 @@ def create_test_plugin_structure(plugins_dir: Path) -> None:
     wget_dir = plugins_dir / "wget"
     wget_dir.mkdir()
     (wget_dir / "on_Snapshot__50_wget.py").write_text("# test hook")
-    (wget_dir / "on_BinaryRequest__10_wget.py").write_text("# binary request hook")
 
     chrome_dir = plugins_dir / "chrome"
     chrome_dir.mkdir(exist_ok=True)
@@ -345,15 +344,14 @@ class TestHookDiscovery:
         assert "chrome" not in hook_names
         assert "accessibility" not in hook_names
 
-    def test_get_plugins_includes_non_snapshot_plugin_dirs(self, tmp_path):
-        """get_plugins() should include binary-only plugins with standardized metadata."""
+    def test_get_plugins_includes_config_only_plugin_dirs(self, tmp_path):
+        """get_plugins() should include config-only plugins with standardized metadata."""
         plugins_dir = tmp_path / "plugins"
         create_test_plugin_structure(plugins_dir)
 
-        env_dir = plugins_dir / "env"
-        env_dir.mkdir()
-        (env_dir / "on_BinaryRequest__15_env.py").write_text("# binary hook")
-        (env_dir / "config.json").write_text('{"type": "object", "properties": {}}')
+        helper_dir = plugins_dir / "helper"
+        helper_dir.mkdir()
+        (helper_dir / "config.json").write_text('{"type": "object", "properties": {}}')
 
         plugins = run_plugin_discovery_subprocess(
             tmp_path,
@@ -366,29 +364,12 @@ class TestHookDiscovery:
             emit(get_plugins())
             """,
         )
-        assert "env" in plugins
+        assert "helper" in plugins
 
-    def test_discover_binary_hooks_ignores_plugins_whitelist(self, tmp_path):
-        """Binary provider hooks should remain discoverable under --plugins filtering."""
+    def test_discover_binary_hooks_returns_empty(self, tmp_path):
+        """Binary provider hooks are owned by abxpkg, not ArchiveBox plugin discovery."""
         plugins_dir = tmp_path / "plugins"
         create_test_plugin_structure(plugins_dir)
-
-        singlefile_dir = plugins_dir / "singlefile"
-        singlefile_dir.mkdir()
-        (singlefile_dir / "config.json").write_text(
-            json.dumps(
-                {
-                    "type": "object",
-                    "required_plugins": ["chrome"],
-                    "properties": {},
-                },
-            ),
-        )
-
-        npm_dir = plugins_dir / "npm"
-        npm_dir.mkdir()
-        (npm_dir / "on_BinaryRequest__10_npm.py").write_text("# npm binary hook")
-        (npm_dir / "config.json").write_text('{"type": "object", "properties": {}}')
 
         hook_names = run_plugin_discovery_subprocess(
             tmp_path,
@@ -398,16 +379,18 @@ class TestHookDiscovery:
 
             from archivebox.plugins.discovery import get_plugins
             get_plugins.cache_clear()
-            hooks = hooks_module.discover_hooks("BinaryRequest", config={"PLUGINS": "singlefile"})
+            hooks = hooks_module.discover_hooks("BinaryRequest", filter_disabled=False)
             emit([hook.name for hook in hooks])
             """,
         )
-        assert "on_BinaryRequest__10_npm.py" in hook_names
+        assert hook_names == []
 
     def test_discover_hooks_accepts_event_class_names(self, tmp_path):
-        """discover_hooks should accept BinaryRequestEvent / SnapshotEvent class names."""
+        """discover_hooks should accept CrawlSetupEvent / SnapshotEvent class names."""
         plugins_dir = tmp_path / "plugins"
         create_test_plugin_structure(plugins_dir)
+        chrome_dir = plugins_dir / "chrome"
+        (chrome_dir / "on_CrawlSetup__90_chrome_launch.daemon.bg.js").write_text("// crawl hook")
 
         hook_names = run_plugin_discovery_subprocess(
             tmp_path,
@@ -417,15 +400,15 @@ class TestHookDiscovery:
 
             from archivebox.plugins.discovery import get_plugins
             get_plugins.cache_clear()
-            binary_hooks = hooks_module.discover_hooks("BinaryRequestEvent", filter_disabled=False)
+            crawl_setup_hooks = hooks_module.discover_hooks("CrawlSetupEvent", filter_disabled=False)
             snapshot_hooks = hooks_module.discover_hooks("SnapshotEvent", filter_disabled=False)
             emit({
-                "binary": [hook.name for hook in binary_hooks],
+                "crawl_setup": [hook.name for hook in crawl_setup_hooks],
                 "snapshot": [hook.name for hook in snapshot_hooks],
             })
             """,
         )
-        assert "on_BinaryRequest__10_wget.py" in hook_names["binary"]
+        assert "on_CrawlSetup__90_chrome_launch.daemon.bg.js" in hook_names["crawl_setup"]
         assert "on_Snapshot__50_wget.py" in hook_names["snapshot"]
 
     def test_discover_hooks_returns_empty_for_non_hook_lifecycle_events(self, tmp_path):

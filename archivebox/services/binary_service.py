@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from asgiref.sync import sync_to_async
+from django.utils import timezone
 
 from abxpkg import Binary as AbxBinary
 from abxpkg import BinProvider, PROVIDER_CLASS_BY_NAME
-from abxpkg.binary_service import BinaryRequestEvent
+from abxpkg.binary_service import BinaryEvent, BinaryRequestEvent
+from abxbus import BaseEvent, EventBus
+from abx_dl.services.base import BaseService
 
 
 _LIB_DIR_MANAGED_PROVIDERS = {
@@ -16,6 +20,7 @@ _LIB_DIR_MANAGED_PROVIDERS = {
     "deno",
     "gem",
     "goget",
+    "chromewebstore",
     "nix",
     "npm",
     "pip",
@@ -24,7 +29,7 @@ _LIB_DIR_MANAGED_PROVIDERS = {
 }
 
 
-class ArchiveBoxBinaryCacheBackend:
+class ArchiveBoxDBBinaryCacheBackend:
     """ArchiveBox machine.Binary projection backend for abxpkg BinaryCacheService."""
 
     async def get(self, request: BinaryRequestEvent) -> AbxBinary | None:
@@ -173,6 +178,90 @@ class ArchiveBoxBinaryCacheBackend:
         installed.status = Binary.StatusChoices.QUEUED
         installed.retry_at = None
         await installed.asave(update_fields=["status", "retry_at", "modified_at"])
+
+
+class ArchiveBoxBinaryService(BaseService):
+    """Preserve ArchiveBox's legacy Binary Process rows around abxpkg requests."""
+
+    LISTENS_TO = [BinaryRequestEvent]
+    EMITS: list[type[BaseEvent]] = []
+
+    def __init__(self, bus: EventBus):
+        super().__init__(bus)
+        self.bus.on(BinaryRequestEvent, self.on_BinaryRequestEvent__project_process)
+
+    async def on_BinaryRequestEvent__project_process(self, request: BinaryRequestEvent) -> None:
+        from archivebox.machine.models import Binary, Machine, Process, _canonical_binary_name
+        from archivebox.services.process_service import current_network_interface_with_machine
+
+        machine = await sync_to_async(Machine.current, thread_sensitive=True)()
+        binary_name = _canonical_binary_name(request.name)
+        if not binary_name:
+            return
+        binary = await Binary.objects.filter(machine=machine, name=binary_name).order_by("-modified_at").afirst()
+        if binary is None:
+            return
+
+        binary_event = await self.bus.find(
+            BinaryEvent,
+            child_of=request,
+            past=True,
+            future=False,
+            name=request.name,
+            where=lambda candidate: bool(candidate.abspath),
+        )
+        iface = await sync_to_async(current_network_interface_with_machine, thread_sensitive=True)()
+        now = timezone.now()
+        success = isinstance(binary_event, BinaryEvent)
+        output_dir = self._process_output_dir(binary, request)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "abxpkg",
+            "install",
+            f"--name={request.name}",
+            f"--binproviders={_binproviders_to_str(request.binproviders)}",
+        ]
+        if request.overrides:
+            cmd.append(f"--overrides={json.dumps(request.overrides, sort_keys=True)}")
+        stdout = json.dumps(binary.to_json()) + "\n" if success else ""
+        stderr = "" if success else f"Binary request did not resolve: {request.name}"
+        process = await Process.objects.acreate(
+            machine=iface.machine,
+            iface=iface,
+            process_type=Process.TypeChoices.BINARY,
+            worker_type="",
+            pwd=str(output_dir),
+            cmd=cmd,
+            env={},
+            timeout=int(request.event_timeout or request.install_timeout or 600),
+            pid=None,
+            url=None,
+            started_at=now,
+            ended_at=now,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=0 if success else 1,
+            status=Process.StatusChoices.EXITED,
+            retry_at=None,
+            binary=binary,
+        )
+        self._write_binary_index(binary, process, output_dir)
+
+    def _process_output_dir(self, binary, request: BinaryRequestEvent) -> Path:
+        raw_output_dir = str(request.extra_context.get("output_dir") or "").strip()
+        if raw_output_dir:
+            output_dir = Path(raw_output_dir).expanduser()
+            if output_dir.name == str(binary.id):
+                return output_dir.parent
+            return output_dir
+        return binary.output_dir.parent
+
+    def _write_binary_index(self, binary, process, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        index_path = output_dir / "index.jsonl"
+        with index_path.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(binary.to_json()) + "\n")
+            f.write(json.dumps(process.to_json()) + "\n")
 
 
 def _provider_names(binproviders: str | list[str] | None) -> list[str]:

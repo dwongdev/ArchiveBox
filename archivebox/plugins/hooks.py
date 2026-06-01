@@ -9,7 +9,6 @@ ArchiveBox no longer drives plugin execution itself during normal crawls.
 - parses hook stdout JSONL records into ArchiveBox models when needed
 
 Hook-backed event families are discovered from filenames like:
-    on_BinaryRequest__*
     on_CrawlSetup__*
     on_Snapshot__*
 
@@ -114,7 +113,6 @@ def normalize_hook_event_name(event_name: str) -> str | None:
     Normalize a hook event family or event class name to its on_* prefix.
 
     Examples:
-        BinaryRequestEvent -> BinaryRequest
         CrawlSetupEvent -> CrawlSetup
         SnapshotEvent -> Snapshot
         BinaryEvent -> Binary
@@ -168,7 +166,7 @@ def discover_hooks(
 
     Args:
         event_name: Hook event family or event class name.
-            Examples: 'BinaryRequestEvent', 'Snapshot'.
+            Examples: 'CrawlSetupEvent', 'Snapshot'.
             Event names are normalized by stripping a trailing `Event`.
             If no matching `on_{EventFamily}__*` scripts exist, returns [].
         filter_disabled: If True, skip hooks from disabled plugins (default: True)
@@ -196,6 +194,8 @@ def discover_hooks(
     hook_event_name = normalize_hook_event_name(event_name)
     if not hook_event_name:
         return []
+    if hook_event_name == "BinaryRequest":
+        return []
 
     hooks = []
 
@@ -212,11 +212,7 @@ def discover_hooks(
             pattern_direct = f"on_{hook_event_name}__*.{ext}"
             hooks.extend(base_dir.glob(pattern_direct))
 
-    # Binary provider hooks are not end-user extractors. They
-    # self-filter via `binproviders`, so applying the PLUGINS whitelist here
-    # can hide the very installer needed by a selected plugin (e.g.
-    # `--plugins=singlefile` still needs the `npm` BinaryRequest hook).
-    if filter_disabled and hook_event_name != "BinaryRequest":
+    if filter_disabled:
         # Get merged config if not provided (lazy import to avoid circular dependency)
         if config is None:
             from archivebox.config.common import get_config
@@ -576,8 +572,8 @@ def process_hook_records(records: list[dict[str, Any]], overrides: dict[str, Any
     """
     Process JSONL records emitted by hook stdout.
 
-    This handles hook-emitted record types such as Snapshot, Tag, BinaryRequest,
-    and Binary. It does not process internal bus lifecycle events, since those
+    This handles hook-emitted record types such as Snapshot, Tag, and Binary.
+    It does not process internal bus lifecycle events, since those
     are not emitted as JSONL records by hook subprocesses.
 
     Args:
@@ -630,7 +626,7 @@ def process_hook_records(records: list[dict[str, Any]], overrides: dict[str, Any
                 if obj:
                     stats["Tag"] = stats.get("Tag", 0) + 1
 
-            elif record_type in {"BinaryRequest", "Binary"}:
+            elif record_type == "Binary":
                 from archivebox.machine.models import Binary
 
                 obj = Binary.from_json(record.copy(), overrides)

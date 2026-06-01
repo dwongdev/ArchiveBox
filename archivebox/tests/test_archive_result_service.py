@@ -638,7 +638,8 @@ def test_process_started_uses_node_binary_for_js_hooks_without_plugin_binary(tmp
 
 def test_binary_event_reuses_existing_installed_binary_row():
     from archivebox.machine.models import Binary, Machine
-    from archivebox.services.binary_service import BinaryService as ArchiveBoxBinaryService
+    from archivebox.services.binary_service import ArchiveBoxDBBinaryCacheBackend
+    from abxpkg.binary_service import BinaryCacheService, BinaryService
     import asyncio
 
     machine = Machine.current()
@@ -653,17 +654,21 @@ def test_binary_event_reuses_existing_installed_binary_row():
         status=Binary.StatusChoices.INSTALLED,
     )
 
-    service = ArchiveBoxBinaryService(create_bus(name="test_binary_event_reuses_existing_installed_binary_row"))
+    bus = create_bus(name="test_binary_event_reuses_existing_installed_binary_row")
+    BinaryCacheService(bus, backend=ArchiveBoxDBBinaryCacheBackend())
+    BinaryService(bus)
     event = BinaryRequestEvent(
         name="wget",
-        plugin_name="wget",
-        output_dir="/tmp/wget",
         binproviders=binary.binproviders,
+        extra_context={
+            "plugin_name": "wget",
+            "output_dir": "/tmp/wget",
+        },
     )
 
     async def run_event():
-        await service.bus.emit(event).now()
-        await service.bus.wait_until_idle()
+        await bus.emit(event).now()
+        await bus.wait_until_idle()
 
     asyncio.run(run_event())
 

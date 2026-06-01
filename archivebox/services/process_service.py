@@ -59,9 +59,7 @@ class ProcessService(BaseService):
         from archivebox.machine.models import Process
 
         iface = await self.current_iface()
-        process_type = event.process_type or (
-            Process.TypeChoices.BINARY if event.hook_name.startswith("on_BinaryRequest") else Process.TypeChoices.HOOK
-        )
+        process_type = event.process_type or Process.TypeChoices.HOOK
         worker_type = event.worker_type or ""
         started_at = parse_event_datetime(event.start_ts)
         if started_at is None:
@@ -159,9 +157,7 @@ class ProcessService(BaseService):
         from archivebox.machine.models import Process
 
         iface = await self.current_iface()
-        process_type = event.process_type or (
-            Process.TypeChoices.BINARY if event.hook_name.startswith("on_BinaryRequest") else Process.TypeChoices.HOOK
-        )
+        process_type = event.process_type or Process.TypeChoices.HOOK
         worker_type = event.worker_type or ""
         started_at = parse_event_datetime(event.start_ts)
         if started_at is None:

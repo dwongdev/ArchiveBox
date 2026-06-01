@@ -16,8 +16,9 @@ EVENT_FLOW_DIAGRAM = """
 │  InstallEvent                                                               │
 │    └─ config.json > required_binaries                                       │
 │         └─ BinaryRequestEvent                                               │
-│              └─ on_BinaryRequest__*                                         │
+│              └─ abxpkg BinaryService builtin providers                      │
 │                   └─ BinaryEvent                                            │
+│                        └─ BinaryCacheService / project cache backend        │
 │                                                                             │
 │  CrawlEvent                                                                 │
 │    └─ CrawlSetupEvent                                                       │
@@ -75,12 +76,14 @@ def pluginmap(
             "emits": ["BinaryRequestEvent", "BinaryEvent", "ProcessEvent"],
         },
         "BinaryRequestEvent": {
-            "description": "Provider phase. on_BinaryRequest hooks resolve or install requested binaries.",
+            "description": "Binary resolution phase. abxpkg BinaryService resolves or installs requested binaries using built-in providers.",
             "emits": ["BinaryEvent", "ProcessEvent"],
+            "direct_hooks": False,
         },
         "BinaryEvent": {
-            "description": "Resolved binary metadata event. Projected into the DB binary cache.",
+            "description": "Resolved binary metadata event. ArchiveBoxBinaryService projects it into the ArchiveBox DB binary cache.",
             "emits": [],
+            "direct_hooks": False,
         },
         "CrawlEvent": {
             "description": "Root crawl lifecycle event emitted by the runner.",
@@ -140,7 +143,8 @@ def pluginmap(
 
     for event_name, info in event_phases.items():
         hook_event = normalize_hook_event_name(event_name)
-        hooks = discover_hooks(event_name, filter_disabled=not show_disabled)
+        has_direct_hooks = info.get("direct_hooks", True)
+        hooks = discover_hooks(event_name, filter_disabled=not show_disabled) if has_direct_hooks else []
 
         hook_infos = []
         for hook_path in hooks:
@@ -194,8 +198,10 @@ def pluginmap(
         prnt(f"[dim]{info['description']}[/dim]")
         if info["emits"]:
             prnt(f"[dim]Emits: {', '.join(info['emits'])}[/dim]")
-        if not hook_infos:
+        if not hook_infos and has_direct_hooks:
             prnt(f"[dim]No direct on_{hook_event}__* scripts are currently defined for this event family.[/dim]")
+        elif not has_direct_hooks:
+            prnt("[dim]No direct plugin hook family. This event is handled by services.[/dim]")
         prnt()
 
     if not quiet:

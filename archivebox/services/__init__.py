@@ -1,5 +1,5 @@
 from .archive_result_service import ArchiveResultService
-from .binary_service import ArchiveBoxBinaryCacheBackend
+from .binary_service import ArchiveBoxBinaryService, ArchiveBoxDBBinaryCacheBackend
 from .crawl_service import CrawlService
 from .machine_service import MachineService
 from .process_service import ProcessService
@@ -9,7 +9,8 @@ from .tag_service import TagService
 
 __all__ = [
     "ArchiveResultService",
-    "ArchiveBoxBinaryCacheBackend",
+    "ArchiveBoxBinaryService",
+    "ArchiveBoxDBBinaryCacheBackend",
     "CrawlService",
     "MachineService",
     "ProcessService",

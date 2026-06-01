@@ -118,8 +118,6 @@ def live_progress_view(request):
                 phase = "crawl"
             elif normalized_hook_name.startswith("on_Snapshot__"):
                 phase = "snapshot"
-            elif normalized_hook_name.startswith("on_BinaryRequest__"):
-                phase = "binary"
 
             label = normalized_hook_name
             if "__" in normalized_hook_name:

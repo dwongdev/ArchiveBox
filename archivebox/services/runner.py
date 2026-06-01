@@ -51,7 +51,7 @@ from abx_dl.orchestrator import (
     setup_services as setup_abx_services,
 )
 from abx_dl.services.process_service import ProcessService as HookProcessService
-from abx_dl.services.binary_service import PluginBinariesService as HookPluginBinariesService
+from abx_dl.services.binary_service import PluginBinariesService
 from abx_dl.services.snapshot_service import SnapshotService as HookSnapshotService
 from abx_dl.cli import LiveBusUI
 from abxbus import BaseEvent
@@ -66,7 +66,7 @@ from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler
 from archivebox.workers.models import ACTIVE_STATE_LEASE_SECONDS
 
 from .archive_result_service import ArchiveResultService
-from .binary_service import ArchiveBoxBinaryCacheBackend
+from .binary_service import ArchiveBoxBinaryService, ArchiveBoxDBBinaryCacheBackend
 from .crawl_service import CrawlService
 from .machine_service import MachineService
 from .process_service import ProcessService as PersistedProcessService
@@ -140,11 +140,6 @@ def _runner_task_context() -> contextvars.Context:
 
 def _is_external_task_cancelled(error: asyncio.CancelledError) -> bool:
     return not isinstance(error, (EventHandlerAbortedError, EventHandlerCancelledError))
-
-
-def _register_binary_services(bus) -> None:
-    BinaryCacheService(bus, backend=ArchiveBoxBinaryCacheBackend())
-    BinaryService(bus)
 
 
 async def _emit_machine_config(
@@ -237,7 +232,9 @@ class CrawlRunner:
         HookProcessService(self.bus, emit_jsonl=False, interactive_tty=interactive_interrupts)
         register_sonic_daemon_event_handler(self.bus)
         PersistedProcessService(self.bus)
-        _register_binary_services(self.bus)
+        BinaryCacheService(self.bus, backend=ArchiveBoxDBBinaryCacheBackend())
+        BinaryService(self.bus)
+        ArchiveBoxBinaryService(self.bus)
         TagService(self.bus)
         CrawlService(self.bus, crawl_id=str(crawl.id))
         MachineService(self.bus)
@@ -842,7 +839,7 @@ class CrawlRunner:
             emit_jsonl=False,
             abort_requested=self.crawl_is_cancelled,
             MachineService=None,
-            PluginBinariesService=HookPluginBinariesService,
+            PluginBinariesService=PluginBinariesService,
             BinaryCacheService=None,
             BinaryService=None,
             ProcessService=None,
@@ -1168,7 +1165,9 @@ async def _run_binary(binary_id: str) -> None:
     config = _normalize_runtime_config(config)
     bus = create_bus(name=_bus_name("ArchiveBox_binary", str(binary.id)), total_timeout=1800.0)
     process_service = PersistedProcessService(bus)
-    _register_binary_services(bus)
+    BinaryCacheService(bus, backend=ArchiveBoxDBBinaryCacheBackend())
+    BinaryService(bus)
+    ArchiveBoxBinaryService(bus)
     TagService(bus)
     ArchiveResultService(bus)
     MachineService(bus)
@@ -1196,7 +1195,7 @@ async def _run_binary(binary_id: str) -> None:
                 overrides=binary.overrides or None,
                 extra_context={
                     "plugin_name": "archivebox",
-                    "hook_name": "on_BinaryRequest__archivebox_run",
+                    "hook_name": "archivebox_binary_run",
                     "output_dir": str(binary.output_dir),
                     "binary_id": str(binary.id),
                     "machine_id": str(binary.machine_id),
@@ -1524,7 +1523,9 @@ async def _run_install(plugin_names: list[str] | None = None) -> None:
     config = _normalize_runtime_config(config)
     bus = create_bus(name="ArchiveBox_install", total_timeout=3600.0)
     PersistedProcessService(bus)
-    _register_binary_services(bus)
+    BinaryCacheService(bus, backend=ArchiveBoxDBBinaryCacheBackend())
+    BinaryService(bus)
+    ArchiveBoxBinaryService(bus)
     TagService(bus)
     ArchiveResultService(bus)
     MachineService(bus)

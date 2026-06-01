@@ -691,7 +691,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             return binary
 
-        # Case 3: From on_BinaryRequest__ hook output - update with installation results
+        # Case 3: From Binary output - update with installation results
         if abspath and version:
             binary, _ = Binary.objects.update_or_create(
                 machine=machine,
