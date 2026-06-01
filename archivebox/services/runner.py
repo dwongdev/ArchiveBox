@@ -181,7 +181,7 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
 
     from archivebox.config import CONSTANTS
     from archivebox.machine.models import Machine, Process
-    from archivebox.workers.supervisord_util import get_existing_supervisord_process, get_worker
+    from archivebox.workers.supervisord_util import RUNNER_WORKER, get_existing_supervisord_process, get_worker, start_worker
 
     supervisor = get_existing_supervisord_process()
     runner_worker = get_worker(supervisor, "worker_runner") if supervisor else None
@@ -189,6 +189,7 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
         return False
 
     machine = Machine.current()
+    Process.cleanup_stale_running(machine=machine)
     running_orchestrators = Process.objects.filter(
         machine=machine,
         status=Process.StatusChoices.RUNNING,
@@ -196,6 +197,13 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     )
     if any(proc.is_running for proc in running_orchestrators):
         return False
+
+    if supervisor is not None:
+        try:
+            start_worker(supervisor, RUNNER_WORKER)
+            return True
+        except Exception:
+            pass
 
     log_path = CONSTANTS.LOGS_DIR / "errors.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
