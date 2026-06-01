@@ -7,7 +7,9 @@ from typing import Any, ClassVar
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from statemachine.mixins import MachineMixin
+from statemachine.callbacks import SPECS_ALL
+from statemachine.dispatcher import Listener, Listeners
+from statemachine.graph import iterate_states_and_transitions
 
 from django.db import models
 from django.core import checks
@@ -45,7 +47,7 @@ ObjectState = State | str
 ObjectStateList = Iterable[ObjectState]
 
 
-class BaseModelWithStateMachine(models.Model, MachineMixin):
+class BaseModelWithStateMachine(models.Model):
     StatusChoices: ClassVar[type[DefaultStatusChoices]]
 
     # status: models.CharField
@@ -54,7 +56,7 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
     state_machine_name: str | None = None
     state_field_name: str
     state_machine_attr: str = "sm"
-    bind_events_as_methods: bool = True
+    bind_events_as_methods: bool = False
 
     active_state: ObjectState
     retry_at_field_name: str
@@ -62,6 +64,31 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
     class Meta(TypedModelMeta):
         app_label = "workers"
         abstract = True
+
+    @property
+    def sm(self) -> StateMachine:
+        """Build the python-statemachine wrapper only at transition callsites.
+
+        This model is loaded by high-volume paths that do not drive lifecycle
+        transitions: admin lists, progress polling, index-only maintenance, and
+        bulk recovery scans all instantiate thousands of rows just to read or
+        update ordinary columns.  python-statemachine setup is correct but not
+        free: it creates per-instance state wrappers, callback registries,
+        queues, locks, and callback adapters.  Paying that cost from Django's
+        model __init__ made plain ORM materialization scale with state-machine
+        setup instead of row decoding.
+
+        ArchiveBox drives lifecycle transitions explicitly through `.sm`
+        (`snapshot.sm.tick()`, `crawl.sm.seal()`, etc.), so the machine can be
+        cached on first use without changing the state model.  Code that only
+        needs database fields never constructs one.
+        """
+        try:
+            machine = self.__dict__["_archivebox_state_machine"]
+        except KeyError:
+            machine = self.StateMachineClass(self, state_field=self.state_field_name)
+            self.__dict__["_archivebox_state_machine"] = machine
+        return machine
 
     @classmethod
     def status_counts(cls, queryset: models.QuerySet | None = None, statuses: Iterable[str] | None = None) -> dict[str, int]:
@@ -302,42 +329,30 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         super().save(*args, **kwargs)
 
     def pause(self, *, save: bool = True) -> bool:
-        paused_state = getattr(self.StatusChoices, "PAUSED", None)
-        if paused_state is None:
+        try:
+            paused_state = self.StatusChoices.PAUSED
+        except AttributeError:
             return False
         if self.STATE in self.FINAL_STATES or self.is_paused:
             return False
         if save:
-            transition = getattr(getattr(self, self.state_machine_attr, None), "pause_requested", None)
-            if callable(transition):
-                transition()
-                self.refresh_from_db()
-                return self.is_paused
-            previous_state = self.STATE
-            self.STATE = paused_state
-            self.RETRY_AT = RETRY_AT_MAX
-            updated = self.safe_update(
-                {
-                    self.state_field_name: paused_state,
-                    self.retry_at_field_name: RETRY_AT_MAX,
-                },
-                extra_filter={self.state_field_name: previous_state},
-            )
-            return updated
+            self.sm.pause_requested()
+            self.refresh_from_db()
+            return self.is_paused
         self.STATE = paused_state
         self.RETRY_AT = RETRY_AT_MAX
         return True
 
     def resume(self, *, when: datetime | None = None, save: bool = True) -> bool:
-        paused_state = getattr(self.StatusChoices, "PAUSED", None)
-        if paused_state is None:
+        try:
+            paused_state = self.StatusChoices.PAUSED
+        except AttributeError:
             return False
         if not self.is_paused:
             return False
         if save:
-            transition = getattr(getattr(self, self.state_machine_attr, None), "resume_requested", None)
-            if callable(transition) and when is None:
-                transition()
+            if when is None:
+                self.sm.resume_requested()
                 self.refresh_from_db()
                 return self.STATE == self.StatusChoices.QUEUED
             self.STATE = self.StatusChoices.QUEUED
@@ -452,10 +467,7 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         if not self.claim_processing_lock(lock_seconds=lock_seconds):
             return False
 
-        tick = getattr(getattr(self, self.state_machine_attr, None), "tick", None)
-        if not callable(tick):
-            raise TypeError(f"{type(self).__name__}.{self.state_machine_attr}.tick() must be callable")
-        tick()
+        self.sm.tick()
         self.refresh_from_db()
         return True
 
@@ -545,9 +557,9 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
 
     @classproperty
     def StateMachineClass(cls) -> type[StateMachine]:
-        """Get the StateMachine class for the given django Model that inherits from MachineMixin"""
+        """Get the StateMachine class for the given django Model."""
 
-        model_state_machine_name = getattr(cls, "state_machine_name", None)
+        model_state_machine_name = cls.state_machine_name
         if model_state_machine_name:
             StateMachineCls = registry.get_machine_cls(model_state_machine_name)
             assert issubclass(StateMachineCls, StateMachine)
@@ -564,7 +576,7 @@ class ModelWithStateMachine(BaseModelWithStateMachine):
     state_machine_name: str | None  # e.g. 'core.models.ArchiveResultMachine'
     state_field_name: str = "status"
     state_machine_attr: str = "sm"
-    bind_events_as_methods: bool = True
+    bind_events_as_methods: bool = False
 
     active_state = StatusChoices.STARTED
     retry_at_field_name: str = "retry_at"
@@ -600,6 +612,40 @@ class BaseStateMachine(StateMachine):
     def __init__(self, obj, *args, **kwargs):
         setattr(self, self.model_attr_name, obj)
         super().__init__(obj, *args, **kwargs)
+
+    def _register_callbacks(self, listeners: list[object]):
+        """Register transition callbacks without scanning the Django model.
+
+        python-statemachine normally treats the wrapped model as a callback
+        listener.  That is useful when transition specs point at methods on the
+        domain object, but ArchiveBox keeps all transition guards/actions on the
+        machine classes themselves (`SnapshotMachine.can_start`,
+        `CrawlMachine.enter_sealed`, etc.).  Scanning the Django model therefore
+        only adds work: `dir(model)` is large, callback resolution walks that
+        attribute set for every state/transition, and the cost lands on every
+        `.sm` construction.
+
+        Keep support for explicit external listeners, but do not register
+        `self.model` as an implicit listener.  If a future machine wants model
+        methods as callbacks, pass that model explicitly as a listener at the
+        callsite so the cost is local and visible.
+        """
+        self._listeners.update({id(listener): listener for listener in listeners})
+        callbacks = Listeners.from_listeners(
+            (
+                Listener.from_obj(self, skip_attrs=self._protected_attrs),
+                *(Listener.from_obj(listener) for listener in listeners),
+            ),
+        )
+        registry = self._callbacks
+        callbacks.resolve(self._specs, registry=registry, allowed_references=SPECS_ALL)
+
+        check_callbacks = self._callbacks.check
+        for visited in iterate_states_and_transitions(self.states):
+            callbacks.resolve(visited._specs, registry=registry, allowed_references=SPECS_ALL)
+            check_callbacks(visited._specs)
+
+        self._callbacks.async_or_sync()
 
     def __repr__(self) -> str:
         obj = getattr(self, self.model_attr_name)
