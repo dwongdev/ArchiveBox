@@ -197,7 +197,7 @@ RUN echo "[+] Initializing image collection..." \
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install liteparse mercury search_backend_ripgrep search_backend_sonic 2>&1 | tee -a /VERSION.txt \
+    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install liteparse mercury readability search_backend_ripgrep search_backend_sonic 2>&1 | tee -a /VERSION.txt \
     && "$LIB_DIR/env/bin/chromium" --version | tee -a /VERSION.txt \
     && "$LIB_DIR/pip/packages/papers-dl/venv/bin/papers-dl" --version | tee -a /VERSION.txt \
     && /usr/bin/rg --version | head -1 | tee -a /VERSION.txt \
