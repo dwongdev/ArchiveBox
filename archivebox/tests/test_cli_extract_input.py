@@ -6,23 +6,26 @@ import json
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
-from archivebox.tests.conftest import run_archivebox_cmd, run_queued_crawls, cli_env
+from archivebox.tests.conftest import run_archivebox_cmd, cli_env
 
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
+def create_extract_snapshot(initialized_archive, env, url="https://example.com"):
+    run_archivebox_cmd(
+        ["snapshot", "create", url],
+        cwd=initialized_archive,
+        env=env,
+        check=True,
+    )
+
+
 def test_extract_runs_on_snapshot_id(initialized_archive):
     """Test that extract command accepts a snapshot ID."""
     env = cli_env(disable_extractors=True)
-
-    # First create a snapshot
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
@@ -40,13 +43,7 @@ def test_extract_runs_on_snapshot_id(initialized_archive):
 def test_extract_with_enabled_extractor_creates_archiveresult(initialized_archive):
     """Test that extract creates ArchiveResult when extractor is enabled."""
     env = cli_env(disable_extractors=True)
-
-    # First create a snapshot
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
@@ -70,13 +67,7 @@ def test_extract_with_enabled_extractor_creates_archiveresult(initialized_archiv
 def test_extract_plugin_option_accepted(initialized_archive):
     """Test that --plugin option is accepted."""
     env = cli_env(disable_extractors=True)
-
-    # First create a snapshot
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
@@ -92,13 +83,7 @@ def test_extract_plugin_option_accepted(initialized_archive):
 def test_extract_stdin_snapshot_id(initialized_archive):
     """Test that extract reads snapshot IDs from stdin."""
     env = cli_env(disable_extractors=True)
-
-    # First create a snapshot
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
@@ -116,13 +101,7 @@ def test_extract_stdin_snapshot_id(initialized_archive):
 def test_extract_stdin_jsonl_input(initialized_archive):
     """Test that extract reads JSONL records from stdin."""
     env = cli_env(disable_extractors=True)
-
-    # First create a snapshot
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
@@ -179,16 +158,8 @@ def test_extract_multiple_snapshots(initialized_archive):
     """Test extracting from multiple snapshots."""
     env = cli_env(disable_extractors=True)
 
-    # Create multiple snapshots one at a time to avoid deduplication issues
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://example.com"],
-        env=env,
-    )
-    run_archivebox_cmd(
-        ["add", "--index-only", "https://iana.org"],
-        env=env,
-    )
-    run_queued_crawls(initialized_archive, env)
+    create_extract_snapshot(initialized_archive, env, "https://example.com")
+    create_extract_snapshot(initialized_archive, env, "https://iana.org")
 
     with use_archivebox_db(initialized_archive):
         snapshot_ids = list(Snapshot.objects.values_list("id", flat=True))

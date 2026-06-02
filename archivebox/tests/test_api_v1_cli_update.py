@@ -86,7 +86,7 @@ def test_cli_update_api_supports_all_snapshot_list_filters_with_real_rows(tmp_pa
             "post",
             "/api/v1/cli/update",
             api_token=api_token,
-            json={**body, "batch_size": 100},
+            json={**body, "batch_size": 100, "index_only": True},
             timeout=30,
         )
         assert response.status_code == 200, f"{label}: {response.text}"
