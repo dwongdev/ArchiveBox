@@ -1,3 +1,5 @@
+import time
+
 import pytest
 import requests
 
@@ -17,6 +19,17 @@ from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def live_api_request_retrying_sqlite_lock(*args, attempts: int = 12, delay: float = 2.0, **kwargs):
+    response = None
+    for _attempt in range(attempts):
+        response = live_api_request(*args, **kwargs)
+        if response.status_code != 503 or "database is locked" not in response.text:
+            return response
+        time.sleep(delay)
+    assert response is not None
+    return response
 
 
 @pytest.mark.timeout(180)
@@ -100,7 +113,7 @@ def test_core_api_workflow_uses_token_auth_and_persists_side_effects_over_server
         assert snapshot_payload["url"] == recursive_test_site["child_urls"][0]
         assert snapshot_payload["tags"] == ["api-child"]
 
-        patch_snapshot = live_api_request(
+        patch_snapshot = live_api_request_retrying_sqlite_lock(
             port,
             "patch",
             f"/api/v1/core/snapshot/{snapshot_id}",
@@ -112,7 +125,7 @@ def test_core_api_workflow_uses_token_auth_and_persists_side_effects_over_server
         assert patch_snapshot.json()["status"] == "sealed"
         assert set(patch_snapshot.json()["tags"]) == {"api-child", "api-patched"}
 
-        tag_create = live_api_request(
+        tag_create = live_api_request_retrying_sqlite_lock(
             port,
             "post",
             "/api/v1/core/tags/create/",
@@ -123,7 +136,7 @@ def test_core_api_workflow_uses_token_auth_and_persists_side_effects_over_server
         assert tag_create.status_code == 200, tag_create.text
         tag_id = tag_create.json()["tag_id"]
 
-        add_tag = live_api_request(
+        add_tag = live_api_request_retrying_sqlite_lock(
             port,
             "post",
             "/api/v1/core/tags/add-to-snapshot/",
@@ -132,7 +145,7 @@ def test_core_api_workflow_uses_token_auth_and_persists_side_effects_over_server
             timeout=10,
         )
         assert add_tag.status_code == 200, add_tag.text
-        remove_tag = live_api_request(
+        remove_tag = live_api_request_retrying_sqlite_lock(
             port,
             "post",
             "/api/v1/core/tags/remove-from-snapshot/",
@@ -142,7 +155,7 @@ def test_core_api_workflow_uses_token_auth_and_persists_side_effects_over_server
         )
         assert remove_tag.status_code == 200, remove_tag.text
 
-        crawl_patch = live_api_request(
+        crawl_patch = live_api_request_retrying_sqlite_lock(
             port,
             "patch",
             f"/api/v1/crawls/crawl/{crawl_id}",
