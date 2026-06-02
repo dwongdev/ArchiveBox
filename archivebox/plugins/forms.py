@@ -9,6 +9,7 @@ from typing import Any
 from django import forms
 from django.utils.html import format_html
 
+from archivebox.config import CONSTANTS_CONFIG
 from archivebox.config.common import ArchiveBoxConfig, get_config
 from archivebox.plugins.discovery import discover_plugin_configs, get_plugin_icon, get_plugins
 
@@ -317,6 +318,7 @@ class PluginConfigFormMixin:
                 for config_key, prop_schema in properties.items()
                 if (
                     isinstance(prop_schema, dict)
+                    and str(config_key) not in CONSTANTS_CONFIG
                     and (self.allow_crawl_execution_config_fields or ArchiveBoxConfig.scope_for_key(str(config_key)) == "crawl_frozen")
                 )
             ]
@@ -430,6 +432,8 @@ class PluginConfigFormMixin:
 
                 input_name = _plugin_config_input_name(plugin_name, config_key)
                 if input_name not in self.data:
+                    continue
+                if str(config_key) in CONSTANTS_CONFIG:
                     continue
                 if not self.allow_crawl_execution_config_fields and ArchiveBoxConfig.scope_for_key(str(config_key)) != "crawl_frozen":
                     continue

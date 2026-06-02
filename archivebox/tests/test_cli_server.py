@@ -108,8 +108,8 @@ def test_server_shows_usage_info(tmp_path, process):
     assert "server" in result.stdout.lower() or "http" in result.stdout.lower()
 
 
-def test_server_init_flag(tmp_path, process):
-    """Test that --init flag runs init before starting server."""
+def test_server_help_lists_runtime_options(tmp_path, process):
+    """Test that server help exposes the current runtime options."""
     os.chdir(tmp_path)
 
     # Check init flag is recognized
@@ -121,7 +121,8 @@ def test_server_init_flag(tmp_path, process):
     )
 
     assert result.returncode == 0
-    assert "--init" in result.stdout or "init" in result.stdout.lower()
+    assert "--daemonize" in result.stdout
+    assert "--reload" in result.stdout
 
 
 def test_runner_worker_uses_current_interpreter():

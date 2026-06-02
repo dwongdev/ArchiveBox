@@ -48,10 +48,11 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
     from rich import print as rprint
     from django.utils import timezone
     from archivebox.core.models import ArchiveResult
+    from archivebox.api.v1_core import _uuid_ref_query
     from archivebox.services.runner import run_crawl
 
     try:
-        archiveresult = ArchiveResult.objects.get(id=archiveresult_id)
+        archiveresult = ArchiveResult.objects.get(_uuid_ref_query("id", archiveresult_id))
     except ArchiveResult.DoesNotExist:
         rprint(f"[red]ArchiveResult {archiveresult_id} not found[/red]", file=sys.stderr)
         return 1
@@ -418,16 +419,11 @@ def run_plugins(
 
 
 def is_archiveresult_id(value: str) -> bool:
-    """Check if value looks like an ArchiveResult UUID."""
-    import re
-
-    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-    if not uuid_pattern.match(value):
-        return False
-    # Verify it's actually an ArchiveResult (not a Snapshot or other object)
+    """Check if value resolves to an ArchiveResult ID."""
     from archivebox.core.models import ArchiveResult
+    from archivebox.api.v1_core import _uuid_ref_query
 
-    return ArchiveResult.objects.filter(id=value).exists()
+    return ArchiveResult.objects.filter(_uuid_ref_query("id", value)).exists()
 
 
 @click.command()

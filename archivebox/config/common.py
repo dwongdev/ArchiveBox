@@ -645,8 +645,10 @@ class ArchiveBoxBaseConfig(
             "ACTIVE_PERSONA",
             "CHROME_DOWNLOADS_DIR",
             "CHROME_USER_DATA_DIR",
+            "CRAWL_DIR",
             "DEFAULT_PERSONA",
             "EXTRA_CONTEXT",
+            "SNAP_DIR",
         }
         return frozenset(
             key for key, scope in cls._scope_by_key().items() if scope == _SCOPE_CRAWL_EXECUTION and key in runtime_derived_keys
@@ -659,7 +661,10 @@ class ArchiveBoxBaseConfig(
 
     def for_crawl(self) -> dict[str, Any]:
         """Config scoped to crawl execution, without runtime object overlays."""
-        return self._scoped_config(include_execution=True)
+        config = self._scoped_config(include_execution=True)
+        for key in type(self).runtime_derived_config_keys():
+            config.pop(key, None)
+        return config
 
     def for_crawl_frozen(self, *, persona: Any = None) -> dict[str, Any]:
         """Config safe to persist permanently on Crawl.config."""
@@ -685,10 +690,9 @@ class ArchiveBoxBaseConfig(
     ) -> dict[str, Any]:
         """Config payload safe to pass to crawl/snapshot hook execution."""
         config = self.for_crawl()
+        config["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
         scope_by_key = type(self)._scope_by_key()
         model_fields = type(self).model_fields
-        for key in type(self).runtime_derived_config_keys():
-            config.pop(key, None)
         # ArchiveBox owns SEARCH_BACKEND_ENGINE and uses it during model
         # validation to derive the selected backend's *_ENABLED flag. Hooks
         # only receive the backend-local flags, never the selector itself.
@@ -922,14 +926,11 @@ def find_config_type(key: str) -> str:
 
 def find_config_source(key: str, merged_config: Mapping[str, Any]) -> str:
     """Determine where a config value comes from."""
-    try:
-        from archivebox.machine.models import Machine
+    from archivebox.machine.models import Machine
 
-        machine = Machine.current()
-        if machine.config and key in machine.config:
-            return "Machine"
-    except Exception:
-        pass
+    machine = Machine.current()
+    if machine.config and key in machine.config:
+        return "Machine"
 
     if key in os.environ:
         return "Environment"

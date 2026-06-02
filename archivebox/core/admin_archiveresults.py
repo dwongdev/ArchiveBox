@@ -517,7 +517,6 @@ class ArchiveResultAdmin(BaseModelAdmin):
             super()
             .get_queryset(request)
             .defer(
-                "config",
                 "notes",
                 "output_json",
             )

@@ -116,6 +116,10 @@ class ModelWithHealthStats(models.Model):
         abstract = True
 
     @property
+    def admin_change_url(self) -> str:
+        return f"/admin/{self._meta.app_label}/{self._meta.model_name}/{self.pk}/change/"
+
+    @property
     def health(self) -> int:
         total = max(self.num_uses_failed + self.num_uses_succeeded, 1)
         return round((self.num_uses_succeeded / total) * 100)

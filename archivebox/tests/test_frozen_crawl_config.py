@@ -66,7 +66,7 @@ def test_crawl_save_freezes_full_raw_persona_config_and_redacts_public_serializa
     assert "TIMEOUT" in crawl.config
     assert "CHECK_SSL_VALIDITY" in crawl.config
     assert crawl.config["USER_AGENT"] == "Frozen UA"
-    assert crawl.config["TWOCAPTCHA_API_KEY"] == SENSITIVE_SECRET
+    assert "TWOCAPTCHA_API_KEY" not in crawl.config
     assert crawl.config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] == 3
     assert "ACTIVE_PERSONA" not in crawl.config
     assert "DEFAULT_PERSONA" not in crawl.config
@@ -83,7 +83,7 @@ def test_crawl_save_freezes_full_raw_persona_config_and_redacts_public_serializa
 
     runtime_config = get_config(crawl=crawl)
     assert runtime_config.USER_AGENT == "Frozen UA"
-    assert runtime_config.TWOCAPTCHA_API_KEY == SENSITIVE_SECRET
+    assert runtime_config.TWOCAPTCHA_API_KEY == UPDATED_SECRET
     redacted_runtime_config = get_config(crawl=crawl, redact_sensitive=True)
     assert redacted_runtime_config.USER_AGENT == "Frozen UA"
     assert redacted_runtime_config.TWOCAPTCHA_API_KEY == SENSITIVE_CONFIG_VALUE_REDACTED
@@ -96,7 +96,7 @@ def test_crawl_save_freezes_full_raw_persona_config_and_redacts_public_serializa
     assert "DATABASE_NAME" not in execution_config
 
     public_json = crawl.to_json()
-    assert public_json["config"]["TWOCAPTCHA_API_KEY"] == SENSITIVE_CONFIG_VALUE_REDACTED
+    assert "TWOCAPTCHA_API_KEY" not in public_json["config"]
     assert SENSITIVE_SECRET not in str(public_json)
 
 
@@ -334,11 +334,11 @@ def test_schedule_enqueue_refreezes_using_current_template_persona_defaults(arch
     child = schedule.enqueue()
     assert child.config["TIMEOUT"] == 55
     assert child.config["USER_AGENT"] == "Current schedule UA"
-    assert child.config["TWOCAPTCHA_API_KEY"] == UPDATED_SECRET
+    assert "TWOCAPTCHA_API_KEY" not in child.config
     assert "SECRET_KEY" not in child.config
     assert "PUBLIC_ADD_VIEW" not in child.config
     assert template.config["USER_AGENT"] == "Initial schedule UA"
-    assert template.config["TWOCAPTCHA_API_KEY"] == SENSITIVE_SECRET
+    assert "TWOCAPTCHA_API_KEY" not in template.config
 
 
 def test_crawl_config_backfill_migration_uses_frozen_config_helper(archivebox_db):
@@ -369,7 +369,7 @@ def test_crawl_config_backfill_migration_uses_frozen_config_helper(archivebox_db
     assert crawl.config["TIMEOUT"] == 44
     assert "CHROME_BINARY" not in crawl.config
     assert crawl.config["USER_AGENT"] == "Migration UA"
-    assert crawl.config["TWOCAPTCHA_API_KEY"] == SENSITIVE_SECRET
+    assert "TWOCAPTCHA_API_KEY" not in crawl.config
     assert "ACTIVE_PERSONA" not in crawl.config
     assert "DEFAULT_PERSONA" not in crawl.config
     assert "CRAWL_DIR" not in crawl.config

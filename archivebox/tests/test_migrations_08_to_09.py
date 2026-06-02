@@ -745,6 +745,8 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
         if d.is_dir():
             files_before.extend([f for f in d.rglob("*") if f.is_file()])
     files_before_count = len(files_before)
+    generated_metadata_names = {"index.html", "index.json", "index.jsonl"}
+    original_payloads = sorted(path.read_text() for path in files_before if path.name not in generated_metadata_names)
 
     # Sample some specific files to check they're preserved
     sample_paths_before = {}
@@ -879,8 +881,6 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
     # the hydrated DB row, so raw file counts are allowed to increase; compare
     # the legacy payload contents after excluding those generated metadata
     # files to keep the no-data-loss assertion strict.
-    generated_metadata_names = {"index.html", "index.jsonl"}
-    original_payloads = sorted(path.read_text() for path in files_before)
     migrated_payloads = sorted(
         path.read_text() for path in [*files_new_structure, *old_files_remaining] if path.name not in generated_metadata_names
     )

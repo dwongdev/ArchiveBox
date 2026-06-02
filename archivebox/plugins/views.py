@@ -78,13 +78,9 @@ def get_live_config_url(key: str) -> str:
 
 
 def get_machine_admin_url() -> str | None:
-    try:
-        from archivebox.machine.models import Machine
+    from archivebox.machine.models import Machine
 
-        machine = Machine.current()
-        return machine.admin_change_url or f"/admin/machine/machine/{machine.id}/change/"
-    except Exception:
-        return None
+    return Machine.current().admin_change_url
 
 
 def render_code_tag_list(values: list[str]) -> str:

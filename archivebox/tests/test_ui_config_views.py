@@ -239,18 +239,18 @@ def test_live_config_value_view_renames_source_field_and_uses_plugin_definition_
 
     assert "Currently read from" in section["fields"]
     assert "Source" not in section["fields"]
-    assert section["fields"]["Currently read from"] == "Default"
+    assert section["fields"]["Currently read from"] == "Plugin Default"
     assert "abx_plugins/plugins/parse_dom_outlinks/config.json" in section["help_texts"]["Type"]
 
 
-def test_find_config_source_prefers_environment_over_machine_and_file(monkeypatch, machine):
+def test_find_config_source_prefers_machine_over_environment_and_file(monkeypatch, machine):
     monkeypatch.setenv("CHECK_SSL_VALIDITY", "false")
     machine.config = {"CHECK_SSL_VALIDITY": "true"}
     machine.save(update_fields=["config"])
     CONSTANTS.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONSTANTS.CONFIG_FILE.write_text("[SERVER_CONFIG]\nCHECK_SSL_VALIDITY = true\n")
 
-    assert core_views.find_config_source("CHECK_SSL_VALIDITY", {"CHECK_SSL_VALIDITY": False}) == "Environment"
+    assert core_views.find_config_source("CHECK_SSL_VALIDITY", {"CHECK_SSL_VALIDITY": False}) == "Machine"
 
 
 def test_live_config_value_view_priority_text_matches_runtime_precedence(monkeypatch, admin_request, machine):
@@ -266,8 +266,8 @@ def test_live_config_value_view_priority_text_matches_runtime_precedence(monkeyp
     )
     section = context["data"][0]
 
-    assert section["fields"]["Currently read from"] == "Environment"
-    assert section["fields"]["Value"] is False
+    assert section["fields"]["Currently read from"] == "Machine"
+    assert section["fields"]["Value"] is True
     help_text = section["help_texts"]["Currently read from"]
-    assert help_text.index("Environment") < help_text.index("Machine") < help_text.index("Config File") < help_text.index("Default")
+    assert help_text.index("Machine") < help_text.index("Environment") < help_text.index("File") < help_text.index("Default")
     assert "Configuration Sources (highest priority first):" in section["help_texts"]["Value"]

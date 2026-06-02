@@ -24,7 +24,7 @@ def test_in_process_archivebox_config_uses_temp_data_dir():
     assert CONSTANTS.DATA_DIR != test_harness.REPO_ROOT
 
     config = get_config(include_machine=False)
-    assert "DATA_DIR" not in config
+    assert config.DATA_DIR in ("", str(data_dir))
     assert "ARCHIVE_DIR" not in config
     assert "USERS_DIR" not in config
     assert CONSTANTS.ARCHIVE_DIR == data_dir / "archive"

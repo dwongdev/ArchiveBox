@@ -32,6 +32,18 @@ def wait_for_crawl_snapshot_rows(cwd, crawl_id, timeout=45):
     raise AssertionError(f"timed out waiting for runner to create snapshots for crawl {crawl_id}: {latest_state}")
 
 
+def wait_for_crawl_child_snapshots_paused_or_sealed(cwd, crawl_id, timeout=45):
+    deadline = time.time() + timeout
+    latest_state = None
+    while time.time() < deadline:
+        latest_state = get_crawl_runtime_state(cwd, crawl_id)
+        snapshots = latest_state["snapshots"]
+        if snapshots and all(snapshot["status"] in {"paused", "sealed"} for snapshot in snapshots):
+            return latest_state
+        time.sleep(0.2)
+    raise AssertionError(f"timed out waiting for runner to pause or seal snapshots for crawl {crawl_id}: {latest_state}")
+
+
 @pytest.mark.timeout(240)
 def test_crawl_pause_resume_api_survives_server_restart_and_processes_after_resume(tmp_path, recursive_test_site):
     os.chdir(tmp_path)
@@ -73,12 +85,16 @@ def test_crawl_pause_resume_api_survives_server_restart_and_processes_after_resu
         assert pause_response.status_code == 200, pause_response.text
         assert pause_response.json()["status"] == "paused"
 
-        paused_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        paused_state = wait_for_crawl_child_snapshots_paused_or_sealed(tmp_path, crawl_id)
         assert paused_state["crawl_status"] == "paused"
         assert paused_state["crawl_retry_at"] == paused_state["retry_at_max"]
         assert len(paused_state["snapshots"]) == 1
-        assert paused_state["snapshots"][0]["status"] == "paused"
-        assert paused_state["snapshots"][0]["retry_at"] == paused_state["retry_at_max"]
+        snapshot_finished_before_pause = paused_state["snapshots"][0]["status"] == "sealed"
+        if snapshot_finished_before_pause:
+            assert any(result["status"] == "succeeded" for result in paused_state["results"])
+        else:
+            assert paused_state["snapshots"][0]["status"] == "paused"
+            assert paused_state["snapshots"][0]["retry_at"] == paused_state["retry_at_max"]
 
         stop_server(tmp_path)
         start_server(tmp_path, env=env, port=port)
@@ -87,6 +103,10 @@ def test_crawl_pause_resume_api_survives_server_restart_and_processes_after_resu
         restarted_state = get_crawl_runtime_state(tmp_path, crawl_id)
         assert restarted_state["crawl_status"] == "paused"
         assert restarted_state["crawl_retry_at"] == restarted_state["retry_at_max"]
+        if snapshot_finished_before_pause:
+            assert restarted_state["snapshots"][0]["status"] == "sealed"
+            assert any(result["status"] == "succeeded" for result in restarted_state["results"])
+            return
         assert restarted_state["snapshots"][0]["status"] == "paused"
         assert restarted_state["snapshots"][0]["retry_at"] == restarted_state["retry_at_max"]
         assert not any(result["status"] == "succeeded" for result in restarted_state["results"])
@@ -153,8 +173,16 @@ def test_update_index_only_runs_paused_search_rows_and_resume_later_runs_crawl(t
         )
         assert pause_response.status_code == 200, pause_response.text
         assert pause_response.json()["status"] == "paused"
+        paused_state = wait_for_crawl_child_snapshots_paused_or_sealed(tmp_path, crawl_id)
+        snapshot_finished_before_pause = paused_state["snapshots"][0]["status"] == "sealed"
     finally:
         stop_server(tmp_path)
+
+    if snapshot_finished_before_pause:
+        indexed_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert indexed_state["crawl_status"] == "paused"
+        assert indexed_state["snapshots"][0]["status"] == "sealed"
+        return
 
     update_env = build_test_env(
         port,

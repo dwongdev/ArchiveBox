@@ -53,6 +53,38 @@ def _assert_safe_runtime_paths(*, cwd: Path | None = None, env: dict[str, str] |
             _assert_not_repo_path(Path(value), label=key)
 
 
+def _sync_archivebox_test_data_dir(data_dir: Path) -> None:
+    from archivebox.config import constants as constants_mod
+    from archivebox.config import paths as paths_mod
+
+    data_dir = data_dir.resolve()
+    archive_dir = data_dir / constants_mod.CONSTANTS.ARCHIVE_DIR_NAME
+    users_dir = archive_dir / constants_mod.CONSTANTS.USERS_DIR_NAME
+
+    paths_mod.DATA_DIR = data_dir
+    paths_mod.ARCHIVE_DIR = archive_dir
+    paths_mod.USERS_DIR = users_dir
+    paths_mod.DATABASE_FILE = data_dir / constants_mod.CONSTANTS.SQL_INDEX_FILENAME
+
+    constants_mod.CONSTANTS.DATA_DIR = data_dir
+    constants_mod.CONSTANTS.ARCHIVE_DIR = archive_dir
+    constants_mod.CONSTANTS.USERS_DIR = users_dir
+    constants_mod.CONSTANTS.COLLECTION_ID = paths_mod.get_collection_id(data_dir)
+    constants_mod.CONSTANTS.SOURCES_DIR = data_dir / constants_mod.CONSTANTS.SOURCES_DIR_NAME
+    constants_mod.CONSTANTS.PERSONAS_DIR = data_dir / constants_mod.CONSTANTS.PERSONAS_DIR_NAME
+    constants_mod.CONSTANTS.LOGS_DIR = data_dir / constants_mod.CONSTANTS.LOGS_DIR_NAME
+    constants_mod.CONSTANTS.CACHE_DIR = data_dir / constants_mod.CONSTANTS.CACHE_DIR_NAME
+    constants_mod.CONSTANTS.CUSTOM_TEMPLATES_DIR = data_dir / constants_mod.CONSTANTS.CUSTOM_TEMPLATES_DIR_NAME
+    constants_mod.CONSTANTS.USER_PLUGINS_DIR = data_dir / constants_mod.CONSTANTS.CUSTOM_PLUGINS_DIR_NAME
+    constants_mod.CONSTANTS.CONFIG_FILE = data_dir / constants_mod.CONSTANTS.CONFIG_FILENAME
+    constants_mod.CONSTANTS.DATABASE_FILE = data_dir / constants_mod.CONSTANTS.SQL_INDEX_FILENAME
+    constants_mod.CONSTANTS.DEFAULT_TMP_DIR = data_dir / constants_mod.CONSTANTS.TMP_DIR_NAME / constants_mod.CONSTANTS.MACHINE_ID
+
+    constants_mod.CONSTANTS_CONFIG.update(
+        {key: value for key, value in constants_mod.CONSTANTS.__dict__.items() if key.isupper() and not key.startswith("_")},
+    )
+
+
 # =============================================================================
 # CLI Helpers (defined before fixtures that use them)
 # =============================================================================
@@ -142,6 +174,8 @@ def isolate_test_runtime(tmp_path, monkeypatch):
     original_chdir = os.chdir
     original_popen = subprocess.Popen
     os.chdir(tmp_path)
+    _sync_archivebox_test_data_dir(tmp_path)
+    os.environ.pop("DATA_DIR", None)
 
     def reset_machine_model_caches() -> None:
         import archivebox.machine.models as machine_models
@@ -154,6 +188,7 @@ def isolate_test_runtime(tmp_path, monkeypatch):
     def guarded_chdir(path: os.PathLike[str] | str) -> None:
         _assert_not_repo_path(Path(path), label="cwd")
         original_chdir(path)
+        _sync_archivebox_test_data_dir(Path(path))
 
     def guarded_popen(*args: Any, **kwargs: Any):
         cwd = kwargs.get("cwd")
@@ -172,6 +207,7 @@ def isolate_test_runtime(tmp_path, monkeypatch):
     finally:
         reset_machine_model_caches()
         original_chdir(original_cwd)
+        _sync_archivebox_test_data_dir(original_cwd)
         os.environ.clear()
         os.environ.update(original_env)
 

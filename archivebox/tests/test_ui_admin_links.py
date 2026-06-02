@@ -76,6 +76,14 @@ def _admin_post_request(path):
     return request
 
 
+def _admin_get_request(path="/"):
+    from archivebox.config.common import get_config
+
+    request = RequestFactory().get(path, HTTP_HOST="admin.archivebox.localhost:8000")
+    request.archivebox_config = get_config()
+    return request
+
+
 @pytest.fixture
 def running_process_record():
     from archivebox.machine.models import Machine, Process, psutil
@@ -210,6 +218,7 @@ def test_snapshot_admin_zip_links():
 
     snapshot = _create_snapshot()
     admin = SnapshotAdmin(Snapshot, AdminSite())
+    admin.request = _admin_get_request()
 
     files_url = admin.get_snapshot_files_url(snapshot)
     zip_url = admin.get_snapshot_zip_url(snapshot)
@@ -233,6 +242,7 @@ def test_archiveresult_admin_zip_links():
     )
 
     admin = ArchiveResultAdmin(ArchiveResult, AdminSite())
+    admin.request = _admin_get_request()
     zip_url = admin.get_output_zip_url(result)
 
     assert html.escape(zip_url, quote=True) in str(admin.zip_link(result))
@@ -270,6 +280,7 @@ def test_archiveresult_admin_copy_command_redacts_sensitive_env_keys():
     )
 
     admin = ArchiveResultAdmin(ArchiveResult, AdminSite())
+    admin.request = _admin_get_request()
     cmd_html = str(admin.cmd_str(result))
 
     assert "SAFE_FLAG=1" in cmd_html

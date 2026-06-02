@@ -94,7 +94,6 @@ result = ArchiveResult.objects.create(
     plugin="title",
     hook_name="on_Snapshot__54_title.py",
     status=ArchiveResult.StatusChoices.SUCCEEDED,
-    config={{"DELETE_AFTER": "1hr"}},
 )
 Path(result.output_dir).mkdir(parents=True, exist_ok=True)
 (Path(result.output_dir) / "title.txt").write_text("Example")

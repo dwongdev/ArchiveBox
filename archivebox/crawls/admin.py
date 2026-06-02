@@ -8,6 +8,7 @@ from django import forms
 from django.core.paginator import Paginator
 from django.http import JsonResponse, HttpRequest, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect
+from django.template.response import TemplateResponse
 from django.template.loader import render_to_string
 from django.urls import path, reverse
 from django.utils.html import escape, format_html, format_html_join
@@ -737,6 +738,8 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         self.crawl_admin_base_config = request.archivebox_config
         self.stop_reason_cache = {}
         response = super().changelist_view(request, extra_context)
+        if not isinstance(response, TemplateResponse):
+            return response
         cl = response.context_data.get("cl")
         if cl is not None and not self.should_annotate_snapshot_counts(request):
             self.hydrate_visible_snapshot_counts(cl.result_list)

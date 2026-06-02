@@ -711,6 +711,10 @@ def _apply_archive_replay_headers(
     return response
 
 
+def _is_asgi_request(request) -> bool:
+    return isinstance(request, ASGIRequest) or "scope" in request.__dict__
+
+
 def serve_static_with_byterange_support(request, path, document_root=None, show_indexes=False, is_archive_replay: bool = False):
     """
     Overrides Django's built-in django.views.static.serve function to support byte range requests.
@@ -718,7 +722,9 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     https://github.com/satchamo/django/commit/2ce75c5c4bee2a858c0214d136bfcd351fcde11d
     """
     assert document_root
-    config = request.archivebox_config
+    config = request.__dict__.get("archivebox_config")
+    if config is None:
+        config = get_config(resolve_plugins=False)
     fullpath, path = _resolve_archive_path(document_root, path)
     if os.access(fullpath, os.R_OK) and fullpath.is_dir():
         if request.GET.get("download") == "zip" and show_indexes:
@@ -726,7 +732,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
                 fullpath,
                 path,
                 is_archive_replay=is_archive_replay,
-                use_async_stream=isinstance(request, ASGIRequest),
+                use_async_stream=_is_asgi_request(request),
                 config=config,
             )
         if show_indexes:
@@ -977,7 +983,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
     # setup response object
     ranged_file = RangedFileReader(open(fullpath, "rb"))
     response = StreamingHttpResponse(
-        _stream_ranged_file_async(ranged_file) if isinstance(request, ASGIRequest) else ranged_file,
+        _stream_ranged_file_async(ranged_file) if _is_asgi_request(request) else ranged_file,
         content_type=content_type,
     )
     response.headers["Last-Modified"] = http_date(statobj.st_mtime)

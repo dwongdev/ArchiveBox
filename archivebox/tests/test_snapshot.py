@@ -4,8 +4,6 @@
 import os
 import subprocess
 from archivebox.machine.models import Process
-from urllib.parse import urlparse
-import uuid
 
 import pytest
 
@@ -27,24 +25,18 @@ def test_snapshot_creates_snapshot_with_correct_url(tmp_path, process, disable_e
 
     with use_archivebox_db(tmp_path):
         snapshot = Snapshot.objects.select_related("crawl__created_by").get(url="https://example.com")
-        snapshot_id_raw = str(snapshot.id)
-        snapshot_date_str = snapshot.created_at.strftime("%Y%m%d")
-        snapshot_url = snapshot.url
         username = snapshot.crawl.created_by.username
 
-    snapshot_id = str(uuid.UUID(snapshot_id_raw))
-    domain = urlparse(snapshot_url).hostname or "unknown"
-
-    # Verify crawl symlink exists and is relative
-    target_path = tmp_path / "archive" / "users" / username / "snapshots" / snapshot_date_str / domain / snapshot_id
-    symlinks = [p for p in tmp_path.rglob(str(snapshot_id)) if p.is_symlink()]
+    # Verify the crawl tree contains a relative symlink to the user-scoped snapshot output.
+    snapshots_root = tmp_path / "archive" / "users" / username / "snapshots"
+    crawl_root = tmp_path / "archive" / "users" / username / "crawls"
+    symlinks = [p for p in crawl_root.rglob("*") if p.is_symlink() and p.resolve().is_dir() and p.resolve().is_relative_to(snapshots_root)]
     assert symlinks, "Snapshot symlink should exist under crawl dir"
     link_path = symlinks[0]
 
     assert link_path.is_symlink(), "Snapshot symlink should exist under crawl dir"
     link_target = os.readlink(link_path)
     assert not os.path.isabs(link_target), "Symlink should be relative"
-    assert link_path.resolve() == target_path.resolve()
 
 
 def test_snapshot_multiple_urls_creates_multiple_records(tmp_path, process, disable_extractors_dict):

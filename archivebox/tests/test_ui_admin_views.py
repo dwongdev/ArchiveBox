@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
-from django.test import override_settings
+from django.test import override_settings, RequestFactory
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import UserManager
@@ -536,15 +536,15 @@ class TestSnapshotProgressStats:
 
         assert failed_items == []
 
-    def test_plugin_full_prefers_db_embed_path_over_empty_filesystem_embed_path(self, monkeypatch):
+    def test_plugin_full_prefers_db_embed_path_over_empty_filesystem_embed_path(self, snapshot, monkeypatch):
         from archivebox.core.templatetags import core_tags
+        from archivebox.core.models import ArchiveResult
 
-        result = SimpleNamespace(
+        result = ArchiveResult.objects.create(
             plugin="title",
-            snapshot=SimpleNamespace(),
-            snapshot_id="019d191c-5e42-77fc-b5b6-ffa4215f6d64",
-            embed_path_db=lambda: "title/title.txt",
-            embed_path=lambda: None,
+            snapshot=snapshot,
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_files={"title.txt": {"size": 12, "extension": "txt", "mimetype": "text/plain"}},
         )
 
         monkeypatch.setattr(core_tags, "get_plugin_template", lambda plugin, view: "{{ output_path }}")
@@ -982,13 +982,18 @@ class TestAdminSnapshotListView:
     def test_snapshot_view_url_uses_canonical_replay_url_for_mode(self, snapshot, monkeypatch):
         from archivebox.core.admin_site import archivebox_admin
         from archivebox.core.admin_snapshots import SnapshotAdmin
+        from archivebox.config.common import get_config
 
         admin = SnapshotAdmin(snapshot.__class__, archivebox_admin)
 
         monkeypatch.setenv("SERVER_SECURITY_MODE", "safe-subdomains-fullreplay")
+        request = RequestFactory().get("/", HTTP_HOST="admin.archivebox.localhost:8000")
+        request.archivebox_config = get_config()
+        admin.request = request
         assert admin.get_snapshot_view_url(snapshot) == f"http://snap-{str(snapshot.pk).replace('-', '')[-12:]}.archivebox.localhost:8000"
 
         monkeypatch.setenv("SERVER_SECURITY_MODE", "safe-onedomain-nojsreplay")
+        request.archivebox_config = get_config()
         assert admin.get_snapshot_view_url(snapshot) == f"http://archivebox.localhost:8000/snapshot/{snapshot.pk}"
 
     def test_find_snapshots_for_url_matches_fragment_suffixed_variants(self, crawl, db):

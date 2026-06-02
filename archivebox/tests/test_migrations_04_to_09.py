@@ -139,15 +139,17 @@ def test_add_works_after_migration(archive_04):
     # Try to add a new URL after migration
     result = run_archivebox(work_dir, ["add", "--index-only", "https://example.com/new-page"], timeout=45)
     assert result.returncode == 0, f"Add failed after migration: {result.stderr}"
+    result = run_archivebox(work_dir, ["run"], timeout=90)
+    assert result.returncode == 0, f"Run failed after migration: {result.stderr}"
 
-    # Verify snapshot was added
+    # Verify add queued the new crawl after migration.
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM core_snapshot WHERE url = 'https://example.com/new-page'")
+    cursor.execute("SELECT COUNT(*) FROM crawls_crawl WHERE urls LIKE '%example.com/new-page%'")
     count = cursor.fetchone()[0]
     conn.close()
 
-    assert count == 1, "New snapshot was not created after migration"
+    assert count == 1, "New crawl was not created after migration"
 
 
 def test_new_schema_elements_created(archive_04):

@@ -67,7 +67,7 @@ def test_add_bg_queues_crawl_without_creating_snapshots(tmp_path, process, disab
         snapshot_count = Snapshot.objects.count()
 
     assert crawl.status == Crawl.StatusChoices.QUEUED
-    assert crawl.retry_at is None
+    assert crawl.retry_at is not None
     assert snapshot_count == 0
 
 

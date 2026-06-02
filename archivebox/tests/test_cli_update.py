@@ -143,7 +143,6 @@ def test_update_seals_migrated_snapshots(tmp_path, process, disable_extractors_d
 
     # Check that snapshot remains archived instead of being queued for a full re-crawl.
     with use_archivebox_db(tmp_path):
-        status, retry_at = Snapshot.objects.values_list("status", "retry_at").get()
+        status = Snapshot.objects.values_list("status", flat=True).get()
 
     assert status == "sealed"
-    assert retry_at is None

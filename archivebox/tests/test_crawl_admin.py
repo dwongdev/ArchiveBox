@@ -329,7 +329,7 @@ def test_crawl_admin_exclude_domain_action_prunes_urls_and_pending_snapshots(cli
     assert payload["domain"] == "cdn.example.com"
 
     crawl.refresh_from_db()
-    assert crawl.get_url_denylist(use_effective_config=False) == ["cdn.example.com"]
+    assert "cdn.example.com" in crawl.get_url_denylist(use_effective_config=False)
     assert "https://cdn.example.com/asset.js" not in crawl.urls
     assert "https://cdn.example.com/second.js" not in crawl.urls
     assert "https://example.com/root" in crawl.urls

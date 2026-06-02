@@ -37,8 +37,10 @@ from archivebox.config.common import (
     get_config,
     get_all_configs,
     get_request_config,
+    _plugin_config_properties,
     redact_sensitive_config,
 )
+from archivebox.config.common import PLUGIN_CONFIG_SCHEMAS
 from archivebox.config.configset import BaseConfigSet
 from archivebox.misc.paginators import CountlessPaginator
 from archivebox.misc.util import (
@@ -1535,15 +1537,10 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
     sources_info = []
 
     # Machine config
-    machine = None
-    machine_admin_url = None
-    try:
-        machine = Machine.current()
-        machine_admin_url = f"/admin/machine/machine/{machine.id}/change/"
-        if machine.config and key in machine.config:
-            sources_info.append(("Machine", redact_sensitive_config(machine.config).get(key), "purple"))
-    except Exception:
-        pass
+    machine = Machine.current()
+    machine_admin_url = machine.admin_change_url
+    if machine.config and key in machine.config:
+        sources_info.append(("Machine", redact_sensitive_config(machine.config).get(key), "purple"))
 
     # Environment variable
     if key in os.environ:
@@ -1557,14 +1554,14 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
 
     # Default value
     default_val = find_config_default(key)
-    if default_val:
+    if key in _plugin_config_properties(PLUGIN_CONFIG_SCHEMAS):
+        sources_info.append(("Plugin Default", default_val, "gray"))
+    elif default_val:
         sources_info.append(("Default", default_val, "gray"))
 
     # Final computed value
     config_source = find_config_source(key, merged_config)
     final_value = merged_config.get(key, CONFIGS.get(key, None))
-    if config_source == "Environment":
-        final_value = get_config(include_machine=False, redact_sensitive=True).model_dump(mode="json").get(key, CONFIGS.get(key, None))
     is_redacted = final_value == SENSITIVE_CONFIG_VALUE_REDACTED
 
     # Build sources display
@@ -1634,11 +1631,12 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
                 <br/><br/>
                 Priority order (highest to lowest):
                 <ol>
-                    <li><b style="color: blue">Environment</b> - Environment variables</li>
                     <li><b style="color: purple">Machine</b> - Machine-specific overrides
                         {f'<br/><a href="{machine_admin_url}">→ Edit <code>{key}</code> in Machine.config for this server</a>' if machine_admin_url else ""}
                     </li>
-                    <li><b style="color: green">Config File</b> - data/ArchiveBox.conf</li>
+                    <li><b style="color: blue">Environment</b> - process defaults from environment variables</li>
+                    <li><b style="color: green">File</b> - data/ArchiveBox.conf</li>
+                    <li><b style="color: gray">Plugin Default</b> - Default value from plugin config.json</li>
                     <li><b style="color: gray">Default</b> - Default value from code</li>
                 </ol>
                 {f'<br/><b>Tip:</b> To override <code>{key}</code> on this machine, <a href="{machine_admin_url}">edit the Machine.config field</a> and add:<br/><code>{{"\\"{key}\\": "your_value_here"}}</code>' if machine_admin_url and key not in CONSTANTS_CONFIG else ""}

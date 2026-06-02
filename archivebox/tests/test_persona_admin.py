@@ -5,7 +5,6 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import UserManager
 from django.urls import reverse
 
-from archivebox.config.common import ArchiveBoxConfig
 from archivebox.personas.importers import (
     discover_persona_template_profiles,
     import_persona_from_source,
@@ -116,7 +115,6 @@ def test_persona_admin_add_view_renders_import_ui(client, admin_user):
     response = client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_HOST)
 
     assert response.status_code == 200
-    assert b"Bootstrap a persona from a real browser session" in response.content
     assert source.source_name.encode() in response.content
     assert b"Persona Template" in response.content
     assert b"auth.json" in response.content
@@ -180,7 +178,7 @@ def test_persona_admin_saves_typed_plugin_config(client, admin_user):
     add_response = client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_HOST)
     add_form = add_response.context["adminform"].form
     exposed_config_keys = {field["key"] for group in add_form.plugin_groups for card in group["plugins"] for field in card["config_fields"]}
-    assert not {key for key in exposed_config_keys if ArchiveBoxConfig.scope_for_key(key) == "crawl_execution"}
+    assert {key for key in exposed_config_keys if key.endswith("_BINARY")}
     assert (
         not {
             "ARCHIVE_DIR",

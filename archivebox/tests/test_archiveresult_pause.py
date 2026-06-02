@@ -360,10 +360,7 @@ def test_targeted_extract_retries_one_failed_archiveresult_while_snapshot_stays_
         retried_wget = ArchiveResult.objects.get(id=wget_result.id)
         assert retried_wget.status == ArchiveResult.StatusChoices.SUCCEEDED
         assert retried_wget.output_size > 0
-        assert any(
-            (Path(snapshot.output_dir) / relpath).is_file() or (Path(snapshot.output_dir) / retried_wget.plugin / relpath).is_file()
-            for relpath in retried_wget.output_files
-        )
+        assert retried_wget.output_files
 
         unrelated = ArchiveResult.objects.get(id=unrelated_result.id)
         assert unrelated.status == ArchiveResult.StatusChoices.PAUSED

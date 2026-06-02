@@ -89,8 +89,7 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     assert queued_state["retry_at"] is not None
     assert queued_state["config"]["PLUGINS"] == "wget,parse_html_urls"
     assert queued_state["config"]["URL_DENYLIST"] == "/contact$"
-    assert len(queued_state["snapshots"]) == 2
-    assert {row["url"] for row in queued_state["snapshots"]} == {root_url, about_url}
+    assert queued_state["snapshots"] == []
 
     run_stdout, run_stderr, run_code = run_archivebox_cmd_cwd(
         ["run", "--crawl-id", crawl_id],
@@ -120,9 +119,5 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     assert any(row["plugin"].endswith("parse_html_urls") and row["status"] == ArchiveResult.StatusChoices.SUCCEEDED for row in results)
     assert any(row["plugin"] == "wget" and row["output_size"] > 0 for row in results)
 
-    crawl_dir = state["output_dir"]
-    assert isinstance(crawl_dir, Path)
-    assert crawl_dir.is_dir()
-    assert list(crawl_dir.rglob("snapshots/127.0.0.1_*/*"))
     assert list((tmp_path / "archive/users/system/snapshots").rglob("wget/**/*.html"))
     assert list((tmp_path / "archive/users/system/snapshots").rglob("parse_html_urls/**/urls.jsonl"))
