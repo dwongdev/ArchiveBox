@@ -24,7 +24,7 @@ from archivebox.config.common import get_config
 from archivebox.crawls.models import Crawl
 from archivebox.misc.util import filter_queryset_by_uuid_substring
 
-from .auth import API_AUTH_METHODS, auth_using_token
+from .auth import API_AUTH_METHODS, authenticated_user_from_request
 
 router = Router(tags=["Crawl Models"], auth=API_AUTH_METHODS)
 
@@ -137,12 +137,16 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
     return crawl
 
 
+def get_crawl_by_ref(crawl_id: str):
+    return filter_queryset_by_uuid_substring(Crawl.objects.all(), crawl_id).get()
+
+
 @router.get("/crawl/{crawl_id}", response=CrawlSchema, url_name="get_crawl")
 def get_crawl(request: HttpRequest, crawl_id: str, as_rss: bool = False, with_snapshots: bool = False, with_archiveresults: bool = False):
     """Get a specific Crawl by id."""
     setattr(request, "with_snapshots", with_snapshots)
     setattr(request, "with_archiveresults", with_archiveresults)
-    crawl = filter_queryset_by_uuid_substring(Crawl.objects.all(), crawl_id).get()
+    crawl = get_crawl_by_ref(crawl_id)
 
     if crawl and as_rss:
         query = request.GET.copy()
@@ -156,33 +160,18 @@ def get_crawl(request: HttpRequest, crawl_id: str, as_rss: bool = False, with_sn
 def crawl_file(request: HttpRequest, crawl_id: str, path: str):
     # Try to resolve the crawl first; if it doesn't exist, return 404.
     try:
-        crawl = filter_queryset_by_uuid_substring(Crawl.objects.all(), crawl_id).get()
+        crawl = get_crawl_by_ref(crawl_id)
     except Crawl.DoesNotExist:
         raise HttpError(404, "Crawl not found")
 
-    # Determine the effective viewer: session user takes precedence, otherwise
-    # fall back to an API token passed via ?api_key=, X-ArchiveBox-API-Key, or
-    # Authorization: Bearer ... (so that programmatic clients still work).
-    user = request.user
-    is_authenticated = bool(user.is_authenticated and user.is_active)
-    if not is_authenticated:
-        token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key")
-        auth_header = request.headers.get("Authorization", "")
-        if not token and auth_header.lower().startswith("bearer "):
-            token = auth_header.split(None, 1)[1].strip()
-        token_user = auth_using_token(token=token, request=request) if token else None
-        if token_user and token_user.is_active:
-            user = token_user
-            is_authenticated = True
-            # Re-bind so is_admin_user() / ownership checks below see the token user.
-            setattr(request, "user", token_user)
+    user = authenticated_user_from_request(request)
 
     # Gate access using the same model as SnapshotView/can_view_snapshot:
     # admins always pass; owners can see their own crawls; otherwise the crawl
     # must be PUBLIC or UNLISTED. Don't disclose existence of private crawls.
     if not is_admin_user(request):
         permissions = normalize_permissions(crawl.permissions)
-        is_owner = bool(is_authenticated and crawl.created_by_id == user.id)
+        is_owner = bool(user and crawl.created_by_id == user.id)
         if not is_owner and permissions not in {PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED}:
             raise HttpError(404, "Crawl not found")
 
@@ -217,7 +206,7 @@ def crawl_file_nested_2(request: HttpRequest, crawl_id: str, folder: str, subfol
 @router.patch("/crawl/{crawl_id}", response=CrawlSchema, url_name="patch_crawl")
 def patch_crawl(request: HttpRequest, crawl_id: str, data: CrawlUpdateSchema):
     """Update a crawl (e.g., set status=sealed to cancel queued work)."""
-    crawl = filter_queryset_by_uuid_substring(Crawl.objects.all(), crawl_id).get()
+    crawl = get_crawl_by_ref(crawl_id)
     payload = data.dict(exclude_unset=True)
     update_fields = ["modified_at"]
 
@@ -259,7 +248,7 @@ def patch_crawl(request: HttpRequest, crawl_id: str, data: CrawlUpdateSchema):
 
 @router.delete("/crawl/{crawl_id}", response=CrawlDeleteResponseSchema, url_name="delete_crawl")
 def delete_crawl(request: HttpRequest, crawl_id: str):
-    crawl = filter_queryset_by_uuid_substring(Crawl.objects.all(), crawl_id).get()
+    crawl = get_crawl_by_ref(crawl_id)
     crawl_id_str = str(crawl.id)
     snapshot_count = crawl.snapshot_set.count()
     deleted_count, _ = crawl.delete()

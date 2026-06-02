@@ -1,75 +1,39 @@
-"""
-Tests for admin snapshot views.
-
-Tests cover:
-- Admin snapshot list view
-- Admin grid view
-- Snapshot progress statistics
-"""
+"""Snapshot model and admin UI tests."""
 
 import json
-import pytest
-import subprocess
-import uuid
-from datetime import datetime, timezone as dt_timezone
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+
+import pytest
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
-from django.test import override_settings, RequestFactory
+from django.core.paginator import UnorderedObjectListWarning
+from django.test import RequestFactory
 from django.urls import reverse
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import UserManager
 from django.utils import timezone
 
+from archivebox.tests.conftest import ADMIN_TEST_HOST
 
 pytestmark = pytest.mark.django_db
 
 
-User = get_user_model()
-ADMIN_HOST = "admin.archivebox.localhost:8000"
-PUBLIC_HOST = "public.archivebox.localhost:8000"
-WEB_HOST = "web.archivebox.localhost:8000"
+def test_snapshot_changelist_uses_stable_ordering_without_unordered_paginator_warning(admin_client, snapshot):
+    url = reverse("admin:core_snapshot_changelist")
 
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        response = admin_client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
-@pytest.fixture
-def admin_user(db):
-    """Create admin user for tests."""
-    return cast(UserManager, User.objects).create_superuser(
-        username="testadmin",
-        email="admin@test.com",
-        password="testpassword",
-    )
-
-
-@pytest.fixture
-def crawl(admin_user, db):
-    """Create test crawl."""
-    from archivebox.crawls.models import Crawl
-
-    return Crawl.objects.create(
-        urls="https://example.com",
-        created_by=admin_user,
-    )
-
-
-@pytest.fixture
-def snapshot(crawl, db):
-    """Create test snapshot."""
-    from archivebox.core.models import Snapshot
-
-    return Snapshot.objects.create(
-        url="https://example.com",
-        crawl=crawl,
-        status=Snapshot.StatusChoices.STARTED,
-    )
+    assert response.status_code == 200
+    assert not any(issubclass(warning.category, UnorderedObjectListWarning) for warning in caught)
+    assert response.context["cl"].queryset.ordered is True
 
 
 def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):
-    client.login(username="testadmin", password="testpassword")
+    client.force_login(admin_user)
     url = reverse("admin:core_snapshot_changelist")
 
-    response = client.get(url, HTTP_HOST=ADMIN_HOST)
+    response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
     assert response.status_code == 200
     assert b'value="set_snapshot_permissions"' in response.content
@@ -84,7 +48,7 @@ def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(
             ACTION_CHECKBOX_NAME: [str(snapshot.pk)],
             "index": "0",
         },
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 302
@@ -578,17 +542,17 @@ class TestAdminSnapshotListView:
 
     def test_list_view_renders(self, client, admin_user):
         """Test that the list view renders successfully."""
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
 
     def test_list_view_with_snapshots(self, client, admin_user, snapshot):
         """Test list view with snapshots displays them."""
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"example.com" in response.content
@@ -608,96 +572,12 @@ class TestAdminSnapshotListView:
         monkeypatch.setattr(Snapshot, "latest_title", property(_latest_title_should_not_be_used), raising=False)
         monkeypatch.setattr(Snapshot, "history", property(_history_should_not_be_used), raising=False)
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"example.com" in response.content
-
-    def test_live_progress_excludes_old_archiveresults_from_previous_snapshot_run(self, client, admin_user, crawl, snapshot):
-        from datetime import timedelta
-        from archivebox.core.models import ArchiveResult
-        from archivebox.crawls.models import Crawl
-        from archivebox.core.models import Snapshot
-
-        client.login(username="testadmin", password="testpassword")
-
-        now = timezone.now()
-        Crawl.objects.filter(pk=crawl.pk).update(
-            status=Crawl.StatusChoices.STARTED,
-            retry_at=now,
-            modified_at=now,
-        )
-        Snapshot.objects.filter(pk=snapshot.pk).update(
-            status=Snapshot.StatusChoices.STARTED,
-            retry_at=None,
-            downloaded_at=now - timedelta(minutes=1),
-            modified_at=now,
-        )
-
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="wget",
-            hook_name="on_Snapshot__06_wget.finite.bg",
-            status=ArchiveResult.StatusChoices.SUCCEEDED,
-            start_ts=now - timedelta(hours=1, minutes=1),
-            end_ts=now - timedelta(hours=1),
-        )
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="chrome",
-            hook_name="on_Snapshot__11_chrome_wait",
-            status=ArchiveResult.StatusChoices.QUEUED,
-        )
-
-        response = client.get("/progress.json", HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(item for item in payload["active_crawls"] if item["id"] == str(crawl.pk))
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.pk))
-        plugin_names = [item["plugin"] for item in active_snapshot["all_plugins"]]
-        assert plugin_names == ["chrome"]
-
-    def test_live_progress_does_not_hide_active_snapshot_results_when_modified_at_moves(self, client, admin_user, crawl, snapshot):
-        from datetime import timedelta
-        from archivebox.core.models import ArchiveResult
-        from archivebox.crawls.models import Crawl
-        from archivebox.core.models import Snapshot
-
-        client.login(username="testadmin", password="testpassword")
-
-        now = timezone.now()
-        Crawl.objects.filter(pk=crawl.pk).update(
-            status=Crawl.StatusChoices.STARTED,
-            retry_at=now,
-            modified_at=now,
-        )
-        Snapshot.objects.filter(pk=snapshot.pk).update(
-            status=Snapshot.StatusChoices.STARTED,
-            retry_at=None,
-            created_at=now - timedelta(hours=2),
-            modified_at=now,
-            downloaded_at=None,
-        )
-
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="wget",
-            hook_name="on_Snapshot__06_wget.finite.bg",
-            status=ArchiveResult.StatusChoices.STARTED,
-            start_ts=now - timedelta(minutes=5),
-        )
-
-        response = client.get("/progress.json", HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(item for item in payload["active_crawls"] if item["id"] == str(crawl.pk))
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.pk))
-        plugin_names = [item["plugin"] for item in active_snapshot["all_plugins"]]
-        assert plugin_names == ["wget"]
 
     def test_list_view_avoids_output_dir_lookups(self, client, admin_user, snapshot, monkeypatch):
         """Changelist links should render without probing snapshot paths on disk."""
@@ -708,9 +588,9 @@ class TestAdminSnapshotListView:
 
         monkeypatch.setattr(Snapshot, "output_dir", property(_output_dir_should_not_be_used), raising=False)
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"example.com" in response.content
@@ -731,9 +611,9 @@ class TestAdminSnapshotListView:
 
         monkeypatch.setattr(Snapshot, "icons", _icons_should_not_be_used, raising=True)
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"wget" in response.content
@@ -754,10 +634,10 @@ class TestAdminSnapshotListView:
             )
             snap.tags.add(*tags[: (idx % 3) + 1])
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
         with CaptureQueriesContext(connection) as ctx:
-            response = client.get(url, HTTP_HOST=ADMIN_HOST)
+            response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         per_row_tag_queries = [
@@ -769,9 +649,9 @@ class TestAdminSnapshotListView:
 
     def test_grid_view_renders(self, client, admin_user):
         """Test that the grid view renders successfully."""
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:grid")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
 
@@ -791,8 +671,8 @@ class TestAdminSnapshotListView:
             output_files={"output.html": {"path": "output.html", "size": 1000}},
         )
 
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:grid"), HTTP_HOST=ADMIN_HOST)
+        client.force_login(admin_user)
+        response = client.get(reverse("admin:grid"), HTTP_HOST=ADMIN_TEST_HOST)
         body = response.content.decode()
 
         assert response.status_code == 200
@@ -806,9 +686,9 @@ class TestAdminSnapshotListView:
 
     def test_view_mode_switcher_present(self, client, admin_user):
         """Test that view mode switcher is present."""
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         # Check for visible snapshot actions-bar controls
@@ -816,165 +696,10 @@ class TestAdminSnapshotListView:
         assert b"Grid" in response.content
         assert reverse("admin:grid").encode() in response.content
 
-    def test_binary_change_view_renders(self, client, admin_user, db):
-        """Binary admin change form should load without FieldError."""
-        from archivebox.machine.models import Machine, Binary
-
-        machine = Machine.objects.create(
-            guid=f"test-guid-{uuid.uuid4()}",
-            hostname="test-host",
-            hw_in_docker=False,
-            hw_in_vm=False,
-            hw_manufacturer="Test",
-            hw_product="Test Product",
-            hw_uuid=f"test-hw-{uuid.uuid4()}",
-            os_arch="x86_64",
-            os_family="darwin",
-            os_platform="darwin",
-            os_release="test",
-            os_kernel="test-kernel",
-            stats={},
-        )
-        binary = Binary.objects.create(
-            machine=machine,
-            name="gallery-dl",
-            binproviders="env",
-            binprovider="env",
-            abspath="/opt/homebrew/bin/gallery-dl",
-            version="1.26.9",
-            sha256="abc123",
-            status=Binary.StatusChoices.INSTALLED,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        url = f"/admin/machine/binary/{binary.pk}/change/"
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"gallery-dl" in response.content
-
-    def test_process_change_view_renders_copyable_cmd_env_and_readonly_runtime_fields(self, client, admin_user, db):
-        from datetime import timedelta
-        from archivebox.machine.models import Machine, Process
-
-        machine = Machine.objects.create(
-            guid=f"test-guid-{uuid.uuid4()}",
-            hostname="test-host",
-            hw_in_docker=False,
-            hw_in_vm=False,
-            hw_manufacturer="Test",
-            hw_product="Test Product",
-            hw_uuid=f"test-hw-{uuid.uuid4()}",
-            os_arch="x86_64",
-            os_family="darwin",
-            os_platform="darwin",
-            os_release="test",
-            os_kernel="test-kernel",
-            stats={},
-        )
-        process = Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.EXITED,
-            pwd="/tmp/archivebox",
-            cmd=["python", "/tmp/job.py", "--url=https://example.com"],
-            env={
-                "ENABLED": True,
-                "API_KEY": "super-secret-key",
-                "ACCESS_TOKEN": "super-secret-token",
-                "SHARED_SECRET": "super-secret-secret",
-            },
-            timeout=90,
-            pid=54321,
-            exit_code=0,
-            url="https://example.com/status",
-            started_at=timezone.now() - timedelta(seconds=52),
-            ended_at=timezone.now(),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:machine_process_change", args=[process.pk])
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Kill" in response.content
-        assert b"python /tmp/job.py --url=https://example.com" in response.content
-        assert b"ENABLED=True" in response.content
-        assert b"52s" in response.content
-        assert b"API_KEY=" not in response.content
-        assert b"ACCESS_TOKEN=" not in response.content
-        assert b"SHARED_SECRET=" not in response.content
-        assert b"super-secret-key" not in response.content
-        assert b"super-secret-token" not in response.content
-        assert b"super-secret-secret" not in response.content
-        assert response.content.count(b"data-command=") >= 2
-        assert b'name="timeout"' not in response.content
-        assert b'name="pid"' not in response.content
-        assert b'name="exit_code"' not in response.content
-        assert b'name="url"' not in response.content
-        assert b'name="started_at"' not in response.content
-        assert b'name="ended_at"' not in response.content
-
-    def test_process_list_view_shows_duration_snapshot_and_crawl_columns(self, client, admin_user, snapshot, db):
-        from datetime import timedelta
-        from archivebox.core.models import ArchiveResult
-        from archivebox.machine.models import Machine, Process
-
-        machine = Machine.objects.create(
-            guid=f"list-guid-{uuid.uuid4()}",
-            hostname="list-host",
-            hw_in_docker=False,
-            hw_in_vm=False,
-            hw_manufacturer="Test",
-            hw_product="Test Product",
-            hw_uuid=f"list-hw-{uuid.uuid4()}",
-            os_arch="x86_64",
-            os_family="darwin",
-            os_platform="darwin",
-            os_release="test",
-            os_kernel="test-kernel",
-            stats={},
-        )
-        process = Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.EXITED,
-            pwd="/tmp/archivebox",
-            cmd=["python", "/tmp/job.py"],
-            env={},
-            pid=12345,
-            exit_code=0,
-            started_at=timezone.now() - timedelta(milliseconds=10),
-            ended_at=timezone.now(),
-        )
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            process=process,
-            plugin="title",
-            hook_name="on_Snapshot__54_title",
-            status="succeeded",
-            output_str="Example Domain",
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:machine_process_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Duration" in response.content
-        assert b"Snapshot" in response.content
-        assert b"Crawl" in response.content
-        assert b"0.01s" in response.content
-        changelist = response.context["cl"]
-        row = next(obj for obj in changelist.result_list if obj.pk == process.pk)
-
-        assert row.archiveresult.snapshot_id == snapshot.id
-        assert str(snapshot.id) in str(changelist.model_admin.snapshot_link(row))
-        assert str(snapshot.crawl_id) in str(changelist.model_admin.crawl_link(row))
-
     def test_change_view_renders_real_redo_failed_action(self, client, admin_user, snapshot):
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_change", args=[snapshot.pk])
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert f"/admin/core/snapshot/{snapshot.pk}/redo-failed/".encode() in response.content
@@ -1021,9 +746,9 @@ class TestAdminSnapshotListView:
         tag = Tag.objects.create(name="Alpha Research")
         snapshot.tags.add(tag)
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_change", args=[snapshot.pk])
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"Alpha Research" in response.content
@@ -1041,9 +766,9 @@ class TestAdminSnapshotListView:
             output_str="boom",
         )
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_redo_failed", args=[snapshot.pk])
-        response = client.post(url, HTTP_HOST=ADMIN_HOST)
+        response = client.post(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 302
         assert response["Location"].endswith(f"/admin/core/snapshot/{snapshot.pk}/change/")
@@ -1070,7 +795,7 @@ class TestAdminSnapshotListView:
             output_str="Example Domain",
         )
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         response = client.post(
             reverse("admin:core_snapshot_changelist"),
             {
@@ -1078,7 +803,7 @@ class TestAdminSnapshotListView:
                 "_selected_action": [str(snapshot.pk)],
                 "index": "0",
             },
-            HTTP_HOST=ADMIN_HOST,
+            HTTP_HOST=ADMIN_TEST_HOST,
         )
 
         assert response.status_code == 302
@@ -1101,7 +826,7 @@ class TestAdminSnapshotListView:
         snapshot.url = "https://example.com/path#section-1"
         snapshot.save(update_fields=["url"])
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
         response = client.post(
             url,
@@ -1110,7 +835,7 @@ class TestAdminSnapshotListView:
                 "_selected_action": [str(snapshot.pk)],
                 "index": "0",
             },
-            HTTP_HOST=ADMIN_HOST,
+            HTTP_HOST=ADMIN_TEST_HOST,
         )
 
         assert response.status_code == 302
@@ -1130,7 +855,7 @@ class TestAdminSnapshotListView:
             status=Snapshot.StatusChoices.STARTED,
         )
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_changelist")
         response = client.post(
             url,
@@ -1139,7 +864,7 @@ class TestAdminSnapshotListView:
                 "_selected_action": [str(snapshot.pk), str(other_snapshot.pk)],
                 "index": "0",
             },
-            HTTP_HOST=ADMIN_HOST,
+            HTTP_HOST=ADMIN_TEST_HOST,
         )
 
         assert response.status_code == 302
@@ -1174,9 +899,9 @@ class TestAdminSnapshotListView:
             output_str="Example Domain",
         )
 
-        client.login(username="testadmin", password="testpassword")
+        client.force_login(admin_user)
         url = reverse("admin:core_snapshot_change", args=[snapshot.pk])
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
 
         assert response.status_code == 200
         assert b"Process" in response.content
@@ -1185,469 +910,3 @@ class TestAdminSnapshotListView:
         assert machine.hostname.encode() in response.content
         assert reverse("admin:machine_process_change", args=[process.id]).encode() in response.content
         assert reverse("admin:machine_machine_change", args=[machine.id]).encode() in response.content
-
-
-class TestCrawlScheduleAdmin:
-    def test_crawlschedule_change_view_renders_and_saves(self, client, admin_user, crawl):
-        from archivebox.crawls.models import CrawlSchedule
-
-        schedule = CrawlSchedule.objects.create(
-            label="Nightly crawl",
-            notes="",
-            schedule="0 0 * * *",
-            template=crawl,
-            created_by=admin_user,
-        )
-        client.login(username="testadmin", password="testpassword")
-
-        change_url = reverse("admin:crawls_crawlschedule_change", args=[schedule.pk])
-        get_response = client.get(change_url, HTTP_HOST=ADMIN_HOST)
-
-        assert get_response.status_code == 200
-        assert b"Schedule Info" in get_response.content
-        assert b"No Crawls yet..." not in get_response.content
-        assert b"No Snapshots yet..." not in get_response.content
-
-        post_response = client.post(
-            change_url,
-            {
-                "label": "Morning crawl",
-                "notes": "updated",
-                "schedule": "0 8 * * *",
-                "template": str(crawl.pk),
-                "created_by": str(admin_user.pk),
-                "_save": "Save",
-            },
-            HTTP_HOST=ADMIN_HOST,
-        )
-
-        assert post_response.status_code == 302
-        schedule.refresh_from_db()
-        assert schedule.label == "Morning crawl"
-        assert schedule.notes == "updated"
-        assert schedule.schedule == "0 8 * * *"
-        assert schedule.template_id == crawl.pk
-        assert schedule.created_by_id == admin_user.pk
-
-    def test_crawlschedule_changelist_renders_snapshot_counts(self, client, admin_user, crawl, snapshot):
-        from archivebox.crawls.models import CrawlSchedule
-
-        schedule = CrawlSchedule.objects.create(
-            label="Daily crawl",
-            notes="",
-            schedule="0 0 * * *",
-            template=crawl,
-            created_by=admin_user,
-        )
-        crawl.schedule = schedule
-        crawl.save(update_fields=["schedule"])
-        snapshot.crawl = crawl
-        snapshot.save(update_fields=["crawl"])
-
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:crawls_crawlschedule_changelist")
-        response = client.get(url, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Daily crawl" in response.content
-
-
-class TestArchiveResultAdminListView:
-    def test_list_view_renders_readonly_tags_and_noresults_status(self, client, admin_user, snapshot):
-        from archivebox.core.models import ArchiveResult, Tag
-
-        tag = Tag.objects.create(name="Alpha Research")
-        snapshot.tags.add(tag)
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="title",
-            status=ArchiveResult.StatusChoices.NORESULTS,
-            output_str="No title found",
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:core_archiveresult_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Alpha Research" in response.content
-        assert b"tag-editor-inline readonly" in response.content
-        assert b"No Results" in response.content
-
-    def test_api_token_admin_list_view_renders(self, client, admin_user):
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:api_apitoken_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"API Keys" in response.content
-
-    def test_user_admin_list_view_renders(self, client, admin_user):
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:auth_user_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Select user to change" in response.content
-        assert b"/api/v1/core/snapshots.rss?created_by=testadmin&amp;limit=50&amp;api_key=" in response.content
-        assert b"RSS" in response.content
-
-    def test_user_admin_change_view_renders_rss_feed_link(self, client, admin_user):
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:auth_user_change", args=[admin_user.pk]), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert b"Snapshot Feed" in response.content
-        assert b"/api/v1/core/snapshots.rss?created_by=testadmin&amp;limit=50&amp;api_key=" in response.content
-
-    def test_archiveresult_model_has_retry_at_field(self):
-        from archivebox.core.models import ArchiveResult
-
-        assert "retry_at" in {field.name for field in ArchiveResult._meta.fields}
-
-
-class TestLiveProgressView:
-    def test_live_progress_hides_finished_cancelled_crawl(self, client, admin_user, crawl, snapshot):
-        from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.crawls.models import Crawl
-
-        now = timezone.now()
-        Crawl.objects.filter(pk=crawl.pk).update(
-            status=Crawl.StatusChoices.SEALED,
-            retry_at=None,
-            modified_at=now,
-        )
-        Snapshot.objects.filter(pk=snapshot.pk).update(
-            status=Snapshot.StatusChoices.SEALED,
-            retry_at=None,
-            downloaded_at=None,
-            modified_at=now,
-        )
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="singlefile",
-            hook_name="on_Snapshot__50_singlefile",
-            status=ArchiveResult.StatusChoices.QUEUED,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["active_crawls"] == []
-        assert payload["downloads_queued"] == 0
-        assert payload["crawls_active"] == 0
-        assert payload["archiveresults_queued"] == 1
-        assert "crawls_started" not in payload
-        assert "crawls_pending" not in payload
-        assert "downloads_started" not in payload
-        assert "downloads_pending" not in payload
-
-    def test_live_progress_scope_accepts_compact_and_dashed_snapshot_ids(self, client, admin_user, snapshot):
-        from archivebox.core.models import Snapshot
-
-        Snapshot.objects.filter(pk=snapshot.pk).update(status=Snapshot.StatusChoices.STARTED)
-        compact_id = str(snapshot.id).replace("-", "")
-        dashed_id = str(uuid.UUID(hex=compact_id))
-
-        client.login(username="testadmin", password="testpassword")
-        for snapshot_id in (compact_id, dashed_id):
-            response = client.get(reverse("live_progress"), {"snapshot_id": snapshot_id}, HTTP_HOST=ADMIN_HOST)
-            assert response.status_code == 200
-            payload = response.json()
-            assert payload["scope"]["snapshot_id"] == compact_id
-            assert payload["active_crawls"]
-
-    def test_live_progress_scope_accepts_compact_and_dashed_crawl_ids(self, client, admin_user, crawl):
-        compact_id = str(crawl.id).replace("-", "")
-        dashed_id = str(uuid.UUID(hex=compact_id))
-
-        client.login(username="testadmin", password="testpassword")
-        for crawl_id in (compact_id, dashed_id):
-            response = client.get(reverse("live_progress"), {"crawl_id": crawl_id}, HTTP_HOST=ADMIN_HOST)
-            assert response.status_code == 200
-            payload = response.json()
-            assert payload["scope"]["crawl_id"] == compact_id
-            assert payload["active_crawls"]
-
-    def test_live_progress_reports_real_orchestrator_process_running(self, client, admin_user, db):
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process, psutil
-
-        machine_models._CURRENT_MACHINE = None
-        cmd = ["/bin/sleep", "60"]
-        popen = subprocess.Popen(
-            cmd,
-            cwd=Path.cwd(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            os_process = psutil.Process(popen.pid)
-            Process.objects.create(
-                machine=Machine.current(refresh=True),
-                process_type=Process.TypeChoices.ORCHESTRATOR,
-                status=Process.StatusChoices.RUNNING,
-                pid=popen.pid,
-                cmd=cmd,
-                env={},
-                started_at=datetime.fromtimestamp(os_process.create_time(), tz=dt_timezone.utc),
-            )
-
-            client.login(username="testadmin", password="testpassword")
-            response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-            assert response.status_code == 200
-            payload = response.json()
-            assert payload["orchestrator_running"] is True
-            assert payload["orchestrator_pid"] == popen.pid
-        finally:
-            if popen.poll() is None:
-                popen.terminate()
-                try:
-                    popen.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    popen.kill()
-                    popen.wait(timeout=5)
-
-    def test_live_progress_ignores_unscoped_running_processes_when_no_crawls(self, client, admin_user, db):
-        import os
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.RUNNING,
-            pid=os.getpid(),
-            cmd=["/plugins/title/on_Snapshot__10_title.py", "--url=https://example.com"],
-            env={},
-            started_at=timezone.now(),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["active_crawls"] == []
-        assert payload["total_workers"] == 0
-
-    def test_live_progress_does_not_clean_stale_running_processes(self, client, admin_user, db):
-        from datetime import timedelta
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        proc = Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.RUNNING,
-            pid=999999,
-            cmd=["/plugins/title/on_Snapshot__10_title.py", "--url=https://example.com"],
-            env={},
-            started_at=timezone.now() - timedelta(days=2),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        proc.refresh_from_db()
-        assert proc.status == Process.StatusChoices.RUNNING
-        assert proc.ended_at is None
-        assert response.json()["total_workers"] == 0
-
-    def test_live_progress_routes_crawl_process_rows_to_crawl_setup(self, client, admin_user, snapshot, db):
-        import os
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        pid = os.getpid()
-        Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.RUNNING,
-            pid=pid,
-            pwd=str(snapshot.output_dir / "chrome"),
-            cmd=["/plugins/chrome/on_CrawlSetup__91_chrome_wait.js", "--url=https://example.com"],
-            started_at=timezone.now(),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(crawl for crawl in payload["active_crawls"] if crawl["id"] == str(snapshot.crawl_id))
-        setup_entry = next(item for item in active_crawl["setup_plugins"] if item["source"] == "process")
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.id))
-        assert setup_entry["label"] == "chrome wait"
-        assert setup_entry["status"] == "started"
-        assert active_crawl["worker_pid"] == pid
-        assert active_snapshot["all_plugins"] == []
-
-    def test_live_progress_uses_snapshot_process_rows_before_archiveresults(self, client, admin_user, snapshot, db):
-        import os
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        pid = os.getpid()
-        Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.RUNNING,
-            pid=pid,
-            pwd=str(snapshot.output_dir / "title"),
-            cmd=["/plugins/title/on_Snapshot__10_title.py", "--url=https://example.com"],
-            started_at=timezone.now(),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(crawl for crawl in payload["active_crawls"] if crawl["id"] == str(snapshot.crawl_id))
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.id))
-        assert active_snapshot["all_plugins"][0]["source"] == "process"
-        assert active_snapshot["all_plugins"][0]["label"] == "title"
-        assert active_snapshot["all_plugins"][0]["status"] == "started"
-        assert active_snapshot["worker_pid"] == pid
-
-    def test_live_progress_merges_process_rows_with_archiveresults_when_present(self, client, admin_user, snapshot, db):
-        import os
-        import archivebox.machine.models as machine_models
-        from archivebox.core.models import ArchiveResult
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.RUNNING,
-            pid=os.getpid(),
-            pwd=str(snapshot.output_dir / "chrome"),
-            cmd=["/plugins/chrome/on_Snapshot__11_chrome_wait.js", "--url=https://example.com"],
-            started_at=timezone.now(),
-        )
-        ArchiveResult.objects.create(
-            snapshot=snapshot,
-            plugin="title",
-            status=ArchiveResult.StatusChoices.STARTED,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(crawl for crawl in payload["active_crawls"] if crawl["id"] == str(snapshot.crawl_id))
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.id))
-        sources = {item["source"] for item in active_snapshot["all_plugins"]}
-        plugins = {item["plugin"] for item in active_snapshot["all_plugins"]}
-        assert sources == {"archiveresult", "process"}
-        assert "title" in plugins
-        assert "chrome" in plugins
-
-    def test_live_progress_omits_pid_for_exited_process_rows(self, client, admin_user, snapshot, db):
-        import archivebox.machine.models as machine_models
-        from archivebox.machine.models import Machine, Process
-
-        machine_models._CURRENT_MACHINE = None
-        machine = Machine.current()
-        Process.objects.create(
-            machine=machine,
-            process_type=Process.TypeChoices.HOOK,
-            status=Process.StatusChoices.EXITED,
-            exit_code=0,
-            pid=99999,
-            pwd=str(snapshot.output_dir / "title"),
-            cmd=["/plugins/title/on_Snapshot__10_title.py", "--url=https://example.com"],
-            started_at=timezone.now(),
-            ended_at=timezone.now(),
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        payload = response.json()
-        active_crawl = next(crawl for crawl in payload["active_crawls"] if crawl["id"] == str(snapshot.crawl_id))
-        active_snapshot = next(item for item in active_crawl["active_snapshots"] if item["id"] == str(snapshot.id))
-        process_entry = next(item for item in active_snapshot["all_plugins"] if item["source"] == "process")
-        assert process_entry["status"] == "succeeded"
-        assert "pid" not in process_entry
-
-
-class TestPublicIndex:
-    """Tests for public index visibility and redirects."""
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_index_lists_only_public_snapshots(self, client, admin_user):
-        from archivebox.core.models import Snapshot
-        from archivebox.crawls.models import Crawl
-
-        public_crawl = Crawl.objects.create(urls="https://public.example", created_by=admin_user, config={"PERMISSIONS": "public"})
-        unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
-        private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
-        Snapshot.objects.create(
-            url="https://public.example",
-            title="Public Snapshot",
-            crawl=public_crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-        Snapshot.objects.create(
-            url="https://unlisted.example",
-            title="Unlisted Snapshot",
-            crawl=unlisted_crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-        Snapshot.objects.create(
-            url="https://private.example",
-            title="Private Snapshot",
-            crawl=private_crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
-
-        assert response.status_code == 200
-        assert b"Public Snapshot" in response.content
-        assert b"Unlisted Snapshot" not in response.content
-        assert b"Private Snapshot" not in response.content
-
-    def test_direct_snapshot_urls_allow_unlisted_but_not_private_for_guests(self, client, admin_user):
-        from archivebox.core.models import Snapshot
-        from archivebox.crawls.models import Crawl
-
-        unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
-        private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
-        unlisted_snapshot = Snapshot.objects.create(
-            url="https://unlisted.example",
-            crawl=unlisted_crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-        private_snapshot = Snapshot.objects.create(url="https://private.example", crawl=private_crawl, status=Snapshot.StatusChoices.SEALED)
-
-        unlisted_response = client.get(f"/snapshot/{unlisted_snapshot.id}/", HTTP_HOST=WEB_HOST)
-        private_response = client.get(f"/snapshot/{private_snapshot.id}/", HTTP_HOST=WEB_HOST)
-
-        assert unlisted_response.status_code == 200
-        assert private_response.status_code == 302
-        assert private_response["Location"].startswith("/admin/login/")
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_index_redirects_logged_in_users_to_admin_snapshot_list(self, client, admin_user):
-        client.force_login(admin_user)
-
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
-
-        assert response.status_code == 302
-        assert response["Location"] == "/admin/core/snapshot/"

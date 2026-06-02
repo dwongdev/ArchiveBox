@@ -51,6 +51,27 @@ def auth_using_token(token: str | None, request: HttpRequest | None = None) -> U
     return user
 
 
+def token_from_request(request: HttpRequest) -> str:
+    token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key") or ""
+    auth_header = request.headers.get("Authorization", "")
+    if not token and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(None, 1)[1].strip()
+    return token
+
+
+def authenticated_user_from_request(request: HttpRequest) -> User | None:
+    user = request.user
+    if user.is_authenticated and user.is_active:
+        return user
+
+    token = token_from_request(request)
+    token_user = auth_using_token(token=token, request=request) if token else None
+    if token_user and token_user.is_active:
+        request.user = token_user
+        return token_user
+    return None
+
+
 def auth_using_password(username: str | None, password: str | None, request: HttpRequest | None = None) -> User | None:
     """Given a username and password, check if they are valid and return the corresponding user"""
     user: User | None = None

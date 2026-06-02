@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """CLI-specific tests for archivebox schedule."""
 
-import os
-import subprocess
-import sys
+from archivebox.tests.conftest import run_archivebox_cmd
 
 import pytest
 
 from archivebox.crawls.models import Crawl, CrawlSchedule
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 from .conftest import (
-    build_test_env,
+    cli_env,
     get_counts,
     get_free_port,
     init_archive,
     make_latest_schedule_due,
-    start_server,
+    start_archivebox_server,
     stop_server,
     wait_for_http,
     wait_for_snapshot_capture,
@@ -24,27 +22,23 @@ from .conftest import (
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-def test_schedule_run_all_enqueues_scheduled_crawl(tmp_path, process, disable_extractors_dict):
-    os.chdir(tmp_path)
+def test_schedule_run_all_enqueues_scheduled_crawl(initialized_archive):
 
-    subprocess.run(
-        ["archivebox", "schedule", "--every=daily", "--depth=0", "https://example.com"],
-        capture_output=True,
-        text=True,
+    env = cli_env(disable_extractors=True)
+    run_archivebox_cmd(
+        ["schedule", "--every=daily", "--depth=0", "https://example.com"],
         check=True,
     )
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--run-all"],
-        capture_output=True,
-        text=True,
-        env=disable_extractors_dict,
+    result = run_archivebox_cmd(
+        ["schedule", "--run-all"],
+        env=env,
     )
 
     assert result.returncode == 0
     assert "Enqueued 1 scheduled crawl" in result.stdout
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         crawl_count = Crawl.objects.count()
         queued_count = Crawl.objects.filter(status="queued").count()
 
@@ -52,36 +46,30 @@ def test_schedule_run_all_enqueues_scheduled_crawl(tmp_path, process, disable_ex
     assert queued_count >= 1
 
 
-def test_schedule_without_import_path_creates_maintenance_schedule(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_without_import_path_creates_maintenance_schedule(initialized_archive):
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--every=day"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--every=day"],
     )
 
     assert result.returncode == 0
     assert "Created scheduled maintenance update" in result.stdout
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         row = Crawl.objects.order_by("-created_at").values_list("urls", "status").first()
 
     assert row == ("archivebox://update", "sealed")
 
 
-def test_schedule_creates_enabled_db_schedule(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_creates_enabled_db_schedule(initialized_archive):
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--every=daily", "--depth=1", "https://example.com/feed.xml"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--every=daily", "--depth=1", "https://example.com/feed.xml"],
     )
 
     assert result.returncode == 0
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         schedule_row = CrawlSchedule.objects.order_by("-created_at").values_list("schedule", "is_enabled", "label").first()
         crawl = Crawl.objects.order_by("-created_at").first()
 
@@ -92,20 +80,15 @@ def test_schedule_creates_enabled_db_schedule(tmp_path, process):
     assert crawl.max_depth == 1
 
 
-def test_schedule_show_lists_enabled_schedules(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_show_lists_enabled_schedules(initialized_archive):
 
-    subprocess.run(
-        ["archivebox", "schedule", "--every=weekly", "https://example.com/feed.xml"],
-        capture_output=True,
-        text=True,
+    run_archivebox_cmd(
+        ["schedule", "--every=weekly", "https://example.com/feed.xml"],
         check=True,
     )
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--show"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--show"],
     )
 
     assert result.returncode == 0
@@ -114,26 +97,21 @@ def test_schedule_show_lists_enabled_schedules(tmp_path, process):
     assert "weekly" in result.stdout
 
 
-def test_schedule_clear_disables_existing_schedules(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_clear_disables_existing_schedules(initialized_archive):
 
-    subprocess.run(
-        ["archivebox", "schedule", "--every=daily", "https://example.com/feed.xml"],
-        capture_output=True,
-        text=True,
+    run_archivebox_cmd(
+        ["schedule", "--every=daily", "https://example.com/feed.xml"],
         check=True,
     )
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--clear"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--clear"],
     )
 
     assert result.returncode == 0
     assert "Disabled 1 scheduled crawl" in result.stdout
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         disabled_count = CrawlSchedule.objects.filter(is_enabled=False).count()
         enabled_count = CrawlSchedule.objects.filter(is_enabled=True).count()
 
@@ -141,26 +119,20 @@ def test_schedule_clear_disables_existing_schedules(tmp_path, process):
     assert enabled_count == 0
 
 
-def test_schedule_every_requires_valid_period(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_every_requires_valid_period(initialized_archive):
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--every=invalid_period", "https://example.com/feed.xml"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--every=invalid_period", "https://example.com/feed.xml"],
     )
 
     assert result.returncode != 0
     assert "Invalid schedule" in result.stderr or "Invalid schedule" in result.stdout
 
 
-def test_schedule_help_lists_schedule_options(tmp_path, process):
-    os.chdir(tmp_path)
+def test_schedule_help_lists_schedule_options(initialized_archive):
 
-    result = subprocess.run(
-        ["archivebox", "schedule", "--help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["schedule", "--help"],
     )
 
     assert result.returncode == 0
@@ -172,17 +144,14 @@ def test_schedule_help_lists_schedule_options(tmp_path, process):
 
 @pytest.mark.timeout(180)
 def test_schedule_due_crawl_runs_over_server_and_saves_real_content(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(port)
+    env = cli_env(port=port, server=True)
 
-    schedule_result = subprocess.run(
-        [sys.executable, "-m", "archivebox", "schedule", "--every=daily", "--depth=0", recursive_test_site["root_url"]],
+    schedule_result = run_archivebox_cmd(
+        ["schedule", "--every=daily", "--depth=0", recursive_test_site["root_url"]],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
         env=env,
         timeout=60,
     )
@@ -192,7 +161,7 @@ def test_schedule_due_crawl_runs_over_server_and_saves_real_content(tmp_path, re
     make_latest_schedule_due(tmp_path)
 
     try:
-        start_server(tmp_path, env=env, port=port)
+        start_archivebox_server(tmp_path, env=env, port=port)
         wait_for_http(port, host=f"web.archivebox.localhost:{port}")
         captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=180)
         assert "Root" in captured_text
@@ -203,19 +172,16 @@ def test_schedule_due_crawl_runs_over_server_and_saves_real_content(tmp_path, re
 
 @pytest.mark.timeout(180)
 def test_add_remains_one_shot_when_schedule_is_due(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(port)
+    env = cli_env(port=port, server=True)
     scheduled_url = recursive_test_site["root_url"]
     one_shot_url = recursive_test_site["child_urls"][0]
 
-    schedule_result = subprocess.run(
-        [sys.executable, "-m", "archivebox", "schedule", "--every=daily", "--depth=0", scheduled_url],
+    schedule_result = run_archivebox_cmd(
+        ["schedule", "--every=daily", "--depth=0", scheduled_url],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
         env=env,
         timeout=60,
     )
@@ -223,11 +189,9 @@ def test_add_remains_one_shot_when_schedule_is_due(tmp_path, recursive_test_site
 
     make_latest_schedule_due(tmp_path)
 
-    add_result = subprocess.run(
-        [sys.executable, "-m", "archivebox", "add", "--depth=0", "--plugins=wget", one_shot_url],
+    add_result = run_archivebox_cmd(
+        ["add", "--depth=0", "--plugins=wget", one_shot_url],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
         env=env,
         timeout=120,
     )

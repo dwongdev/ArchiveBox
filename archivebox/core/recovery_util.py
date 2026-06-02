@@ -20,6 +20,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         "crawls_queued_without_retry_at": 0,
         "snapshots_queued_without_retry_at": 0,
         "archiveresults_backoff": 0,
+        "snapshots_queued_plugin_rows_waiting_on_stale_lease": 0,
         "archiveresults_started_without_running_process": 0,
         "snapshots_started_without_running_results": 0,
         "crawls_started_with_due_snapshots": 0,
@@ -73,6 +74,24 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         retry_at__isnull=True,
     ).update(retry_at=now, modified_at=now)
     cleaned["archiveresults_backoff"] = backoff_results.update(status=ArchiveResult.StatusChoices.QUEUED, modified_at=now)
+    # Targeted plugin rows on final/paused Snapshots are scheduled through the
+    # parent Snapshot.retry_at. retry_at=NULL is the normal idle marker for a
+    # sealed Snapshot and must not be interpreted as queued work just because
+    # old/synthetic ArchiveResult rows exist. If takeover kills the runner
+    # after it leases the Snapshot but before queued ArchiveResult rows finish,
+    # the rows remain QUEUED while retry_at sits in the future. Recovery runs
+    # only after this runner has won the single-runner gate, so it can safely
+    # unlock those stale plugin leases for immediate processing instead of
+    # waiting out the previous owner's full lock timeout.
+    queued_plugin_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.QUEUED)
+    cleaned["snapshots_queued_plugin_rows_waiting_on_stale_lease"] = (
+        Snapshot.objects.filter(
+            id__in=queued_plugin_results.values("snapshot_id"),
+            status__in=[Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED],
+        )
+        .filter(retry_at__gt=now)
+        .update(retry_at=now, modified_at=now)
+    )
     # Impossible state repair: STARTED ArchiveResults without a live Process
     # have no owner left to emit completion. Requeue only the result row; the
     # snapshot/crawl schedulers will pick up normal retry processing.

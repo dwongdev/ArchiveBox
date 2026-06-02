@@ -943,7 +943,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             updated += len(batch)
         return updated
 
-    @action(label="Recrawl", description="Create a new crawl with the same settings")
+    @action(label="Recrawl", description="Create a new crawl with the same settings", methods=("POST",))
     def recrawl(self, request, obj):
         """Duplicate this crawl as a new crawl with the same URLs and settings."""
 

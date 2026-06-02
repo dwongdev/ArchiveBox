@@ -2,10 +2,10 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
+from archivebox.tests.conftest import run_archivebox_cmd
 
 import pytest
 from asgiref.sync import async_to_sync
@@ -455,7 +455,7 @@ class TestSearchBackendsE2E:
                 sock.bind(("127.0.0.1", 0))
                 return int(sock.getsockname()[1])
 
-        def archivebox(*args: str, env: dict[str, str] | None = None, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+        def archivebox(*args: str, env: dict[str, str] | None = None, timeout: int = 120):
             merged_env = os.environ.copy()
             merged_env.update(
                 {
@@ -468,12 +468,10 @@ class TestSearchBackendsE2E:
             )
             if env:
                 merged_env.update(env)
-            return subprocess.run(
-                [sys.executable, "-m", "archivebox", *args],
+            return run_archivebox_cmd(
+                list(args),
                 cwd=data_dir,
                 env=merged_env,
-                capture_output=True,
-                text=True,
                 timeout=timeout,
             )
 
@@ -506,14 +504,14 @@ class TestSearchBackendsE2E:
         )
         server_log = data_dir / "server.log"
         with server_log.open("w", encoding="utf-8") as log_file:
-            server = subprocess.Popen(
-                [sys.executable, "-m", "archivebox", "server", f"127.0.0.1:{http_port}"],
+            server = run_archivebox_cmd(
+                ["server", f"127.0.0.1:{http_port}"],
                 cwd=data_dir,
                 env=sonic_env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                text=True,
                 start_new_session=True,
+                wait=False,
             )
         try:
             for _ in range(80):

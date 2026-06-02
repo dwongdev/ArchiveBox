@@ -21,7 +21,7 @@ from .migrations_helpers import (
     SCHEMA_0_8,
     seed_0_8_data,
     seed_0_7_data,
-    run_archivebox,
+    run_archivebox_migration_cmd,
     create_data_dir_structure,
     verify_snapshot_count,
     verify_snapshot_urls,
@@ -56,7 +56,7 @@ def test_migration_preserves_snapshot_count(migration_08_data):
     work_dir, db_path, original_data = migration_08_data
     expected_count = len(original_data["snapshots"])
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_snapshot_count(db_path, expected_count)
@@ -68,7 +68,7 @@ def test_migration_preserves_snapshot_urls(migration_08_data):
     work_dir, db_path, original_data = migration_08_data
     expected_urls = [s["url"] for s in original_data["snapshots"]]
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_snapshot_urls(db_path, expected_urls)
@@ -78,7 +78,7 @@ def test_migration_preserves_snapshot_urls(migration_08_data):
 def test_migration_preserves_crawls(migration_08_data):
     """Migration should preserve all Crawl records and create default crawl if needed."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     # Count snapshots with NULL crawl_id in original data
@@ -96,7 +96,7 @@ def test_migration_preserves_crawls(migration_08_data):
 def test_migration_preserves_snapshot_crawl_links(migration_08_data):
     """Migration should preserve snapshot-to-crawl relationships and assign default crawl to orphans."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -121,7 +121,7 @@ def test_migration_preserves_snapshot_crawl_links(migration_08_data):
 def test_migration_preserves_tags(migration_08_data):
     """Migration should preserve all tags."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_tag_count(db_path, len(original_data["tags"]))
@@ -138,7 +138,7 @@ def test_migration_preserves_archiveresults(migration_08_data):
         key = (result["extractor"], status)
         expected_counts[key] = expected_counts.get(key, 0) + 1
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_archiveresult_count(db_path, expected_count)
@@ -162,7 +162,7 @@ def test_migration_preserves_archiveresults(migration_08_data):
 def test_migration_preserves_archiveresult_status(migration_08_data):
     """Migration should preserve archive result status values."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -182,20 +182,20 @@ def test_migration_preserves_archiveresult_status(migration_08_data):
 def test_status_works_after_migration(migration_08_data):
     """Status command should work after migration."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
-    result = run_archivebox(work_dir, ["status"])
+    result = run_archivebox_migration_cmd(work_dir, ["status"])
     assert result.returncode == 0, f"Status failed after migration: {result.stderr}"
 
 
 def test_list_works_after_migration(migration_08_data):
     """List command should work and show ALL migrated data."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
-    result = run_archivebox(work_dir, ["snapshot", "list"])
+    result = run_archivebox_migration_cmd(work_dir, ["snapshot", "list"])
     assert result.returncode == 0, f"List failed after migration: {result.stderr}"
 
     # Verify ALL snapshots appear in output
@@ -207,10 +207,10 @@ def test_list_works_after_migration(migration_08_data):
 def test_search_works_after_migration(migration_08_data):
     """Search command should find ALL migrated snapshots."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
-    result = run_archivebox(work_dir, ["search"])
+    result = run_archivebox_migration_cmd(work_dir, ["search"])
     assert result.returncode == 0, f"Search failed after migration: {result.stderr}"
 
     # Verify ALL snapshots appear in output
@@ -224,7 +224,7 @@ def test_migration_preserves_snapshot_titles(migration_08_data):
     work_dir, db_path, original_data = migration_08_data
     expected_titles = {s["url"]: s["title"] for s in original_data["snapshots"]}
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_snapshot_titles(db_path, expected_titles)
@@ -234,7 +234,7 @@ def test_migration_preserves_snapshot_titles(migration_08_data):
 def test_migration_preserves_foreign_keys(migration_08_data):
     """Migration should maintain foreign key relationships."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_foreign_keys(db_path)
@@ -264,7 +264,7 @@ def test_migration_preserves_08_timestamp_meanings(migration_08_data):
     conn.commit()
     conn.close()
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -296,7 +296,7 @@ def test_hyphenated_crawl_ids_are_normalized_before_snapshot_saves(migration_08_
     conn.commit()
     conn.close()
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -310,7 +310,7 @@ def test_hyphenated_crawl_ids_are_normalized_before_snapshot_saves(migration_08_
     assert hyphenated_crawls == 0
     assert hyphenated_snapshot_refs == 0
 
-    result = run_archivebox(work_dir, ["update"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=60)
     output = result.stdout + result.stderr
     assert result.returncode == 0, f"Update failed after migration: {result.stderr}"
     assert "FOREIGN KEY constraint failed" not in output
@@ -319,7 +319,7 @@ def test_hyphenated_crawl_ids_are_normalized_before_snapshot_saves(migration_08_
 def test_migration_removes_seed_id_column(migration_08_data):
     """Migration should remove seed_id column from archivebox.crawls.crawl."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -334,7 +334,7 @@ def test_migration_removes_seed_id_column(migration_08_data):
 def test_migration_removes_seed_table(migration_08_data):
     """Migration should remove crawls_seed table."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -349,7 +349,7 @@ def test_migration_removes_seed_table(migration_08_data):
 def test_add_works_after_migration(migration_08_data):
     """Adding new URLs should work after migration from 0.8.x."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     # Check that init actually ran and applied migrations
     assert "Applying" in result.stdout + result.stderr, (
         f"Init did not apply migrations. stdout: {result.stdout[:500]}, stderr: {result.stderr[:500]}"
@@ -364,7 +364,7 @@ def test_add_works_after_migration(migration_08_data):
     conn.close()
 
     # Try to add a new URL after migration (use --index-only for speed)
-    result = run_archivebox(work_dir, ["add", "--index-only", "https://example.com/new-page"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["add", "--index-only", "https://example.com/new-page"], timeout=45)
     assert result.returncode == 0, f"Add failed after migration: {result.stderr}"
 
     # Verify a new Crawl was created
@@ -380,10 +380,10 @@ def test_add_works_after_migration(migration_08_data):
 def test_version_works_after_migration(migration_08_data):
     """Version command should work after migration."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
-    result = run_archivebox(work_dir, ["version"])
+    result = run_archivebox_migration_cmd(work_dir, ["version"])
     assert result.returncode == 0, f"Version failed after migration: {result.stderr}"
 
     # Should show version info
@@ -394,7 +394,7 @@ def test_version_works_after_migration(migration_08_data):
 def test_migration_creates_process_records(migration_08_data):
     """Migration should create Process records for all ArchiveResults."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     # Verify Process records created
@@ -406,7 +406,7 @@ def test_migration_creates_process_records(migration_08_data):
 def test_migration_creates_binary_records(migration_08_data):
     """Migration should create Binary records from cmd_version data."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -426,7 +426,7 @@ def test_migration_creates_binary_records(migration_08_data):
 def test_migration_preserves_cmd_data(migration_08_data):
     """Migration should preserve cmd data in Process.cmd field."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -446,7 +446,7 @@ def test_migration_preserves_cmd_data(migration_08_data):
 def test_no_duplicate_snapshots_after_migration(migration_08_data):
     """Migration should not create duplicate snapshots."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     # Check for duplicate URLs
@@ -465,7 +465,7 @@ def test_no_duplicate_snapshots_after_migration(migration_08_data):
 def test_no_orphaned_archiveresults_after_migration(migration_08_data):
     """Migration should not leave orphaned ArchiveResults."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     ok, msg = verify_foreign_keys(db_path)
@@ -477,7 +477,7 @@ def test_timestamps_preserved_after_migration(migration_08_data):
     work_dir, db_path, original_data = migration_08_data
     original_timestamps = {s["url"]: s["timestamp"] for s in original_data["snapshots"]}
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -493,7 +493,7 @@ def test_timestamps_preserved_after_migration(migration_08_data):
 def test_crawl_data_preserved_after_migration(migration_08_data):
     """Migration should preserve crawl metadata (urls, label, status)."""
     work_dir, db_path, original_data = migration_08_data
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -520,7 +520,7 @@ def test_tag_associations_preserved_after_migration(migration_08_data):
     original_count = cursor.fetchone()[0]
     conn.close()
 
-    result = run_archivebox(work_dir, ["init"], timeout=45)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=45)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
 
     # Count tag associations after migration
@@ -548,9 +548,9 @@ def test_update_migrates_db_snapshot_when_legacy_index_missing(tmp_path):
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     (snapshot_dir / "screenshot.png").write_text("existing-db-snapshot")
 
-    result = run_archivebox(work_dir, ["init"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=60)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
-    result = run_archivebox(work_dir, ["update"], timeout=120)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=120)
     assert result.returncode == 0, f"Update failed: {result.stderr}"
 
     migrated_files = list((work_dir / "archive" / "users").glob("*/snapshots/*/*/*/screenshot.png"))
@@ -577,9 +577,9 @@ def test_update_recovers_orphan_with_corrupt_index_from_archive_org_url(tmp_path
     (snapshot_dir / "archive.org.txt").write_text(f"https://web.archive.org/web/20170531210128/{original_url}\n")
     (snapshot_dir / "output.pdf").write_text("orphan-output")
 
-    result = run_archivebox(work_dir, ["init"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=60)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
-    result = run_archivebox(work_dir, ["update"], timeout=120)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=120)
     assert result.returncode == 0, f"Update failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -620,9 +620,9 @@ def test_update_preserves_legacy_folder_timestamp_over_index_float_variant(tmp_p
     )
     (snapshot_dir / "output.html").write_text("folder timestamp output")
 
-    result = run_archivebox(work_dir, ["init"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=60)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
-    result = run_archivebox(work_dir, ["update"], timeout=120)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=120)
     assert result.returncode == 0, f"Update failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -662,9 +662,9 @@ def test_update_preserves_distinct_legacy_dirs_with_integer_and_float_timestamps
         )
         (snapshot_dir / f"{payload}.txt").write_text(payload)
 
-    result = run_archivebox(work_dir, ["init"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=60)
     assert result.returncode == 0, f"Init failed: {result.stderr}"
-    result = run_archivebox(work_dir, ["update"], timeout=120)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=120)
     assert result.returncode == 0, f"Update failed: {result.stderr}"
 
     conn = sqlite3.connect(str(db_path))
@@ -762,7 +762,7 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
     print(f"[*] Sample files found: {len(sample_paths_before)}")
 
     # Run init to trigger migration
-    result = run_archivebox(work_dir, ["init"], timeout=60)
+    result = run_archivebox_migration_cmd(work_dir, ["init"], timeout=60)
     assert result.returncode == 0, f"Init (migration) failed: {result.stderr}"
 
     # Count archive directories and files AFTER migration
@@ -794,7 +794,7 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
 
     # Run update to trigger filesystem reorganization
     print("\n[*] Running archivebox update to reorganize filesystem...")
-    result = run_archivebox(work_dir, ["update"], timeout=120)
+    result = run_archivebox_migration_cmd(work_dir, ["update"], timeout=120)
     assert result.returncode == 0, f"Update failed: {result.stderr}"
 
     # Check new filesystem structure

@@ -1,12 +1,11 @@
 import json
-import os
 from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from archivebox.tests.conftest import run_archivebox_cmd_cwd, run_queued_crawls
+from archivebox.tests.conftest import run_archivebox_cmd, run_queued_crawls, cli_env
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -15,26 +14,28 @@ ADMIN_HOST = "admin.archivebox.localhost:8000"
 API_HOST = "api.archivebox.localhost:8000"
 
 
-def test_delete_after_real_cli_and_orchestrator_paths_cover_all_retained_models(tmp_path, disable_extractors_dict):
-    os.chdir(tmp_path)
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(["init", "--quick"], cwd=tmp_path, timeout=90)
+def test_delete_after_real_cli_and_orchestrator_paths_cover_all_retained_models(tmp_path):
+    env = cli_env(disable_extractors=True)
+    _cmd_result = run_archivebox_cmd(["init", "--quick"], cwd=tmp_path, timeout=90)
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, stderr
 
-    cli_env = {
-        **disable_extractors_dict,
+    run_env = {
+        **env,
         "DELETE_AFTER": "1hr",
         "USE_COLOR": "False",
         "SHOW_PROGRESS": "False",
     }
     url = "https://example.com/delete-after-cli"
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", url],
         cwd=tmp_path,
         timeout=120,
-        env=cli_env,
+        env=run_env,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, f"archivebox add failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-    run_queued_crawls(tmp_path, cli_env)
+    run_queued_crawls(tmp_path, run_env)
 
     lookup_script = f"""
 import json
@@ -47,12 +48,13 @@ print(json.dumps({{
     "snapshot_delete_at": bool(snapshot.delete_at),
 }}))
 """
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["manage", "shell", "-c", lookup_script],
         cwd=tmp_path,
         timeout=90,
-        env=cli_env,
+        env=run_env,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, f"retention lookup failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     created = json.loads(stdout.strip().splitlines()[-1])
     assert created["crawl_delete_at"]
@@ -141,17 +143,19 @@ print(json.dumps({{
     "archiveresult_dir": str(result.output_dir),
 }}))
 """
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["manage", "shell", "-c", setup_script],
         cwd=tmp_path,
         timeout=90,
-        env=cli_env,
+        env=run_env,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, f"retention setup failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     retained = json.loads(stdout.strip().splitlines()[-1])
     assert retained["crawl_id"] == created["crawl_id"]
 
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(["run", "--crawl-id", retained["crawl_id"]], cwd=tmp_path, timeout=120, env=cli_env)
+    _cmd_result = run_archivebox_cmd(["run", "--crawl-id", retained["crawl_id"]], cwd=tmp_path, timeout=120, env=run_env)
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, f"archivebox run failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
 
     remaining_script = f"""
@@ -166,12 +170,13 @@ print(json.dumps({{
     "process": Process.objects.filter(id="{retained["process_id"]}").count(),
 }}))
 """
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["manage", "shell", "-c", remaining_script],
         cwd=tmp_path,
         timeout=90,
-        env=cli_env,
+        env=run_env,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, f"retention remaining lookup failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     remaining = json.loads(stdout.strip().splitlines()[-1])
     assert remaining == {"crawl": 0, "snapshot": 0, "archiveresult": 0, "process": 0}

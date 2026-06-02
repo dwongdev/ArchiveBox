@@ -108,6 +108,7 @@ def add(
 
     # import models once django is set up
     from archivebox.crawls.models import Crawl
+    from archivebox.core.models import Snapshot
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.personas.models import Persona
     from archivebox.misc.logging_util import printable_filesize
@@ -124,16 +125,28 @@ def add(
         url_list = [str(url).strip() for url in urls if str(url).strip()]
     if snapshot_ids and len(snapshot_ids) != len(url_list):
         raise ValueError("snapshot_ids length must match urls length")
+    admitted_urls: list[str] = []
+    admitted_snapshot_ids: list[str] | None = [] if snapshot_ids else None
+    for index, url in enumerate(url_list):
+        if Snapshot.is_archivebox_internal_url(url):
+            print(f"[yellow][!] Skipping internal ArchiveBox URL: {url}[/yellow]")
+            continue
+        admitted_urls.append(url)
+        if admitted_snapshot_ids is not None and snapshot_ids:
+            admitted_snapshot_ids.append(snapshot_ids[index])
 
     # 1. Save the provided URLs to sources/2024-11-05__23-59-59__cli_add.txt
     sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__cli_add.txt"
     sources_file.parent.mkdir(parents=True, exist_ok=True)
-    if snapshot_ids:
+    if admitted_snapshot_ids is not None:
         sources_file.write_text(
-            "\n".join(json.dumps({"url": url, "id": snapshot_ids[index], "tags": tag, "depth": 0}) for index, url in enumerate(url_list)),
+            "\n".join(
+                json.dumps({"url": url, "id": admitted_snapshot_ids[index], "tags": tag, "depth": 0})
+                for index, url in enumerate(admitted_urls)
+            ),
         )
     else:
-        sources_file.write_text("\n".join(url_list))
+        sources_file.write_text("\n".join(admitted_urls))
 
     # 2. Create a new Crawl with inline URLs
     cli_args = [*sys.argv]
@@ -143,7 +156,6 @@ def add(
 
     timestamp = timezone.now().strftime("%Y-%m-%d__%H-%M-%S")
 
-    # Read URLs directly into crawl
     urls_content = sources_file.read_text()
     persona_name = (persona or "Default").strip() or "Default"
     plugins = plugins or ""
@@ -214,8 +226,8 @@ def add(
         # Foreground mode: run full crawl runner until all work is done
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")
         from archivebox.machine.models import Process
-        from archivebox.core.takeover_util import command_owns_runtime_stack, current_command, standby_until_runtime_stack_needed
-        from archivebox.workers.supervisord_util import run_runner_worker, stop_own_supervisord_process
+        from archivebox.core.takeover_util import command_owns_foreground_runner, current_command, standby_until_foreground_runner_needed
+        from archivebox.workers.supervisord_util import get_existing_supervisord_process, run_runner_worker, stop_own_supervisord_process
 
         command = current_command(Process.TypeChoices.ADD, data_dir=CONSTANTS.DATA_DIR, url=first_url)
         exit_code = 0
@@ -223,15 +235,27 @@ def add(
             try:
                 with foreground_shutdown_signals(first_signal_message=None), foreground_parent_watchdog():
                     while True:
-                        standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+                        standby_until_foreground_runner_needed(command, data_dir=CONSTANTS.DATA_DIR)
                         exit_code = run_runner_worker(
                             ["--crawl-id", str(crawl.id)],
                             name=f"worker_runner_add_{os.getpid()}",
                             interactive_interrupts=True,
                         )
+                        crawl.refresh_from_db(fields=["status", "retry_at"])
+                        if exit_code == 0 and crawl.status == crawl.StatusChoices.SEALED:
+                            break
+                        # A shared supervisord can be stopped by another
+                        # foreground owner (for example `archivebox server`
+                        # shutting down) and stop the one-shot add runner while
+                        # this add's crawl is still runnable. Keep the add
+                        # process alive so it can re-enter the normal
+                        # foreground-runner ownership loop and finish its crawl.
+                        supervisor_gone = exit_code == 1 and get_existing_supervisord_process(quiet=True) is None
+                        if crawl.status in crawl.RUNNABLE_STATES and (exit_code in (0, 130, 143) or supervisor_gone):
+                            continue
                         if exit_code == 0:
                             break
-                        if not command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):
+                        if not command_owns_foreground_runner(command, data_dir=CONSTANTS.DATA_DIR):
                             continue
                         raise SystemExit(exit_code)
             except KeyboardInterrupt:

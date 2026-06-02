@@ -17,4 +17,4 @@ ASCII_LOGO_MINI = r"""
 """
 
 if __name__ == "__main__":
-    main(args=sys.argv[1:], stdin=sys.stdin)
+    main(args=sys.argv[1:])

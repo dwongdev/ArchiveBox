@@ -885,7 +885,9 @@ def run_runner_worker(args: list[str], *, name: str = "worker_runner_once", inte
                             break
                         sys.stdout.write(line)
                         sys.stdout.flush()
-                    return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
+                    if proc["statename"] in {"EXITED", "STOPPED"}:
+                        return int(proc.get("exitstatus") or 0)
+                    return 1
                 time.sleep(0.5)
             except KeyboardInterrupt:
                 if not interactive_interrupts or forwarded_interrupt:
@@ -921,7 +923,7 @@ def format_runtime_components(components: list[str] | tuple[str, ...]) -> str:
 
 
 def worker_runtime_component(worker_name: str, *, config=None) -> str | None:
-    if worker_name in {RUNNER_WORKER["name"], RUNNER_WATCH_WORKER("")["name"]}:
+    if worker_name in {RUNNER_WORKER["name"], RUNNER_WATCH_WORKER("")["name"]} or worker_name.startswith("worker_runner_"):
         return "orchestrator"
     if worker_name in {SERVER_WORKER("", "")["name"], RUNSERVER_WORKER("", "", reload=False)["name"]}:
         return "server"

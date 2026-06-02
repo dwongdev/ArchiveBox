@@ -1,26 +1,14 @@
-import os
 from pathlib import Path
 
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
-from archivebox.tests.conftest import run_archivebox_cmd_cwd
+from archivebox.tests.conftest import run_archivebox_cmd
 from archivebox.tests.test_orm_helpers import use_archivebox_db
-from .conftest import build_test_env, get_free_port, init_archive
+from .conftest import cli_env, get_free_port, init_archive
 
 pytestmark = pytest.mark.django_db(transaction=True)
-
-
-def _assert_command_ok(command: str, stdout: str, stderr: str, code: int) -> None:
-    assert code == 0, f"{command} failed with code {code}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-
-
-def _latest_crawl_id(cwd: Path) -> str:
-    with use_archivebox_db(cwd):
-        crawl_id = Crawl.objects.order_by("-created_at").values_list("id", flat=True).first()
-        assert crawl_id is not None
-        return str(crawl_id)
 
 
 def _crawl_state(cwd: Path, crawl_id: str) -> dict[str, object]:
@@ -49,11 +37,10 @@ def _crawl_state(cwd: Path, crawl_id: str) -> dict[str, object]:
 
 @pytest.mark.timeout(240)
 def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(
+    env = cli_env(
         port,
         PLUGINS="wget,parse_html_urls",
         SAVE_WGET="True",
@@ -64,7 +51,7 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     about_url = recursive_test_site["child_urls"][0]
     contact_url = recursive_test_site["child_urls"][2]
 
-    add_stdout, add_stderr, add_code = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         [
             "add",
             "--bg",
@@ -81,9 +68,13 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
         env=env,
         timeout=120,
     )
-    _assert_command_ok("archivebox add --bg", add_stdout, add_stderr, add_code)
+    add_stdout, add_stderr, add_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+    assert add_code == 0, f"archivebox add --bg failed with code {add_code}\nSTDOUT:\n{add_stdout}\nSTDERR:\n{add_stderr}"
 
-    crawl_id = _latest_crawl_id(tmp_path)
+    with use_archivebox_db(tmp_path):
+        latest_crawl_id = Crawl.objects.order_by("-created_at").values_list("id", flat=True).first()
+        assert latest_crawl_id is not None
+        crawl_id = str(latest_crawl_id)
     queued_state = _crawl_state(tmp_path, crawl_id)
     assert queued_state["status"] == Crawl.StatusChoices.QUEUED
     assert queued_state["retry_at"] is not None
@@ -91,13 +82,14 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     assert queued_state["config"]["URL_DENYLIST"] == "/contact$"
     assert queued_state["snapshots"] == []
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["run", "--crawl-id", crawl_id],
         cwd=tmp_path,
         env=env,
         timeout=240,
     )
-    _assert_command_ok("archivebox run --crawl-id", run_stdout, run_stderr, run_code)
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+    assert run_code == 0, f"archivebox run --crawl-id failed with code {run_code}\nSTDOUT:\n{run_stdout}\nSTDERR:\n{run_stderr}"
 
     state = _crawl_state(tmp_path, crawl_id)
     snapshots = state["snapshots"]

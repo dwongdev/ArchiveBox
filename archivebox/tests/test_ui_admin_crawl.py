@@ -1,47 +1,88 @@
+"""Crawl model and admin UI tests."""
+
 import re
-from typing import cast
 
 import pytest
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import UserManager
 from django.urls import reverse
 
 from archivebox.crawls.admin import CrawlAdminForm
 from archivebox.crawls.models import Crawl
 from archivebox.core.models import Snapshot
 
+from archivebox.tests.conftest import ADMIN_TEST_HOST
 
 pytestmark = pytest.mark.django_db
 
 
-User = get_user_model()
-ADMIN_HOST = "admin.archivebox.localhost:8000"
+class TestCrawlScheduleAdmin:
+    def test_crawlschedule_change_view_renders_and_saves(self, client, admin_user, crawl):
+        from archivebox.crawls.models import CrawlSchedule
+
+        schedule = CrawlSchedule.objects.create(
+            label="Nightly crawl",
+            notes="",
+            schedule="0 0 * * *",
+            template=crawl,
+            created_by=admin_user,
+        )
+        client.force_login(admin_user)
+
+        change_url = reverse("admin:crawls_crawlschedule_change", args=[schedule.pk])
+        get_response = client.get(change_url, HTTP_HOST=ADMIN_TEST_HOST)
+
+        assert get_response.status_code == 200
+        assert b"Schedule Info" in get_response.content
+        assert b"No Crawls yet..." not in get_response.content
+        assert b"No Snapshots yet..." not in get_response.content
+
+        post_response = client.post(
+            change_url,
+            {
+                "label": "Morning crawl",
+                "notes": "updated",
+                "schedule": "0 8 * * *",
+                "template": str(crawl.pk),
+                "created_by": str(admin_user.pk),
+                "_save": "Save",
+            },
+            HTTP_HOST=ADMIN_TEST_HOST,
+        )
+
+        assert post_response.status_code == 302
+        schedule.refresh_from_db()
+        assert schedule.label == "Morning crawl"
+        assert schedule.notes == "updated"
+        assert schedule.schedule == "0 8 * * *"
+        assert schedule.template_id == crawl.pk
+        assert schedule.created_by_id == admin_user.pk
+
+    def test_crawlschedule_changelist_renders_snapshot_counts(self, client, admin_user, crawl, snapshot):
+        from archivebox.crawls.models import CrawlSchedule
+
+        schedule = CrawlSchedule.objects.create(
+            label="Daily crawl",
+            notes="",
+            schedule="0 0 * * *",
+            template=crawl,
+            created_by=admin_user,
+        )
+        crawl.schedule = schedule
+        crawl.save(update_fields=["schedule"])
+        snapshot.crawl = crawl
+        snapshot.save(update_fields=["crawl"])
+
+        client.force_login(admin_user)
+        url = reverse("admin:crawls_crawlschedule_changelist")
+        response = client.get(url, HTTP_HOST=ADMIN_TEST_HOST)
+
+        assert response.status_code == 200
+        assert b"Daily crawl" in response.content
 
 
-@pytest.fixture
-def admin_user(db):
-    return cast(UserManager, User.objects).create_superuser(
-        username="crawladmin",
-        email="crawladmin@test.com",
-        password="testpassword",
-    )
-
-
-@pytest.fixture
-def crawl(admin_user):
-    return Crawl.objects.create(
-        urls="https://example.com\nhttps://example.org",
-        tags_str="alpha,beta",
-        created_by=admin_user,
-    )
-
-
-def test_crawl_admin_change_view_renders_tag_editor_widget(client, admin_user, crawl):
-    client.login(username="crawladmin", password="testpassword")
-
-    response = client.get(
+def test_crawl_admin_change_view_renders_tag_editor_widget(admin_client, crawl):
+    response = admin_client.get(
         reverse("admin:crawls_crawl_change", args=[crawl.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -51,12 +92,28 @@ def test_crawl_admin_change_view_renders_tag_editor_widget(client, admin_user, c
     assert b"beta" in response.content
 
 
-def test_crawl_admin_add_view_renders_url_filter_alias_fields(client, admin_user):
-    client.login(username="crawladmin", password="testpassword")
+def test_crawl_admin_recrawl_object_action_is_post_only(admin_client, crawl):
+    action_url = reverse("admin:crawls_crawl_actions", kwargs={"pk": crawl.pk, "tool": "recrawl"})
 
-    response = client.get(
+    change_response = admin_client.get(reverse("admin:crawls_crawl_change", args=[crawl.pk]), HTTP_HOST=ADMIN_TEST_HOST)
+    assert change_response.status_code == 200
+    assert b'<form method="post"' in change_response.content
+    assert action_url.encode() in change_response.content
+
+    before_count = Crawl.objects.count()
+    get_response = admin_client.get(action_url, HTTP_HOST=ADMIN_TEST_HOST)
+    assert get_response.status_code == 405
+    assert Crawl.objects.count() == before_count
+
+    post_response = admin_client.post(action_url, HTTP_HOST=ADMIN_TEST_HOST)
+    assert post_response.status_code == 302
+    assert Crawl.objects.count() == before_count + 1
+
+
+def test_crawl_admin_add_view_renders_url_filter_alias_fields(admin_client):
+    response = admin_client.get(
         reverse("admin:crawls_crawl_add"),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -72,11 +129,10 @@ def test_crawl_admin_change_view_checks_effective_only_new(client, admin_user):
         config={},
         created_by=admin_user,
     )
-    client.login(username="crawladmin", password="testpassword")
-
+    client.force_login(admin_user)
     response = client.get(
         reverse("admin:crawls_crawl_change", args=[crawl.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -90,11 +146,10 @@ def test_crawl_admin_change_view_derives_url_filter_shortcut_toggles(client, adm
         config={"URL_ALLOWLIST": r"^https?://example\.com/docs/"},
         created_by=admin_user,
     )
-    client.login(username="crawladmin", password="testpassword")
-
+    client.force_login(admin_user)
     response = client.get(
         reverse("admin:crawls_crawl_change", args=[crawl.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -102,12 +157,10 @@ def test_crawl_admin_change_view_derives_url_filter_shortcut_toggles(client, adm
     assert b'id="id_url_filters_subpaths_only" name="url_filters_subpaths_only" value="1" checked' in response.content
 
 
-def test_admin_change_submit_row_uses_single_save_continue_button(client, admin_user, crawl):
-    client.login(username="crawladmin", password="testpassword")
-
-    response = client.get(
+def test_admin_change_submit_row_uses_single_save_continue_button(admin_client, crawl):
+    response = admin_client.get(
         reverse("admin:crawls_crawl_change", args=[crawl.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -121,12 +174,10 @@ def test_admin_change_submit_row_uses_single_save_continue_button(client, admin_
         assert 'name="_continue"' in row
 
 
-def test_admin_add_submit_row_hides_save_and_add_another(client, admin_user):
-    client.login(username="crawladmin", password="testpassword")
-
-    response = client.get(
+def test_admin_add_submit_row_hides_save_and_add_another(admin_client):
+    response = admin_client.get(
         reverse("admin:crawls_crawl_add"),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -135,10 +186,8 @@ def test_admin_add_submit_row_hides_save_and_add_another(client, admin_user):
     assert all('name="_addanother"' not in row for row in submit_rows)
 
 
-def test_crawl_schedule_admin_add_redirects_to_add_page_schedule_field(client, admin_user):
-    client.login(username="crawladmin", password="testpassword")
-
-    response = client.get(reverse("admin:crawls_crawlschedule_add"), HTTP_HOST=ADMIN_HOST)
+def test_crawl_schedule_admin_add_redirects_to_add_page_schedule_field(admin_client):
+    response = admin_client.get(reverse("admin:crawls_crawlschedule_add"), HTTP_HOST=ADMIN_TEST_HOST)
 
     assert response.status_code == 302
     assert response["Location"] == "/add/#schedule"
@@ -186,7 +235,7 @@ def test_crawl_admin_resume_action_updates_only_status(client, admin_user, crawl
     crawl.notes = "unsaved-change-guard"
     crawl.save(update_fields=["status", "retry_at", "notes", "modified_at"])
 
-    client.login(username="crawladmin", password="testpassword")
+    client.force_login(admin_user)
     response = client.post(
         reverse("admin:crawls_crawl_changelist"),
         data={
@@ -194,7 +243,7 @@ def test_crawl_admin_resume_action_updates_only_status(client, admin_user, crawl
             "_selected_action": str(crawl.pk),
             "index": "0",
         },
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 302
@@ -206,7 +255,7 @@ def test_crawl_admin_resume_action_updates_only_status(client, admin_user, crawl
 
 def test_crawl_admin_pause_action_updates_only_crawl_scheduler_row(client, admin_user, crawl):
     snapshots = crawl.create_snapshots_from_urls()
-    client.login(username="crawladmin", password="testpassword")
+    client.force_login(admin_user)
 
     response = client.post(
         reverse("admin:crawls_crawl_changelist"),
@@ -215,7 +264,7 @@ def test_crawl_admin_pause_action_updates_only_crawl_scheduler_row(client, admin
             "_selected_action": str(crawl.pk),
             "index": "0",
         },
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 302
@@ -281,10 +330,10 @@ def test_crawl_admin_delete_snapshot_action_removes_snapshot_and_url(client, adm
         url="https://example.com/remove-me",
     )
 
-    client.login(username="crawladmin", password="testpassword")
+    client.force_login(admin_user)
     response = client.post(
         reverse("admin:crawls_crawl_snapshot_delete", args=[crawl.pk, snapshot.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -317,10 +366,10 @@ def test_crawl_admin_exclude_domain_action_prunes_urls_and_pending_snapshots(cli
         status=Snapshot.StatusChoices.SEALED,
     )
 
-    client.login(username="crawladmin", password="testpassword")
+    client.force_login(admin_user)
     response = client.post(
         reverse("admin:crawls_crawl_snapshot_exclude_domain", args=[crawl.pk, queued_snapshot.pk]),
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 200
@@ -348,27 +397,6 @@ def test_snapshot_from_json_trims_markdown_suffixes_on_discovered_urls(crawl):
     assert snapshot.url == "https://docs.sweeting.me/s/youtube-favorites"
 
 
-def test_create_snapshots_from_urls_respects_url_allowlist_and_denylist(admin_user):
-    crawl = Crawl.objects.create(
-        urls="\n".join(
-            [
-                "https://example.com/root",
-                "https://static.example.com/app.js",
-                "https://other.test/page",
-            ],
-        ),
-        created_by=admin_user,
-        config={
-            "URL_ALLOWLIST": "example.com",
-            "URL_DENYLIST": "static.example.com",
-        },
-    )
-
-    created = crawl.create_snapshots_from_urls()
-
-    assert [snapshot.url for snapshot in created] == ["https://example.com/root"]
-
-
 def test_create_snapshots_from_urls_skips_invalid_and_archivebox_internal_urls(admin_user):
     crawl = Crawl.objects.create(
         urls="\n".join(
@@ -392,31 +420,6 @@ def test_create_snapshots_from_urls_skips_invalid_and_archivebox_internal_urls(a
         "https://example.com/root",
         "http://127.0.0.1:8765/page-001.html",
     ]
-
-
-def test_create_snapshots_from_urls_respects_max_urls(admin_user):
-    crawl = Crawl.objects.create(
-        urls="\n".join(
-            [
-                "https://example.com/root",
-                "https://example.com/about",
-                "https://example.com/contact",
-            ],
-        ),
-        config={"CRAWL_MAX_URLS": 2},
-        created_by=admin_user,
-    )
-
-    created = crawl.create_snapshots_from_urls()
-
-    assert [snapshot.url for snapshot in created] == [
-        "https://example.com/root",
-        "https://example.com/about",
-    ]
-    assert crawl.snapshot_set.count() == 2
-    assert crawl.remaining_snapshot_capacity() == 0
-    assert crawl.limit_stop_reason() == "crawl_max_urls"
-    assert crawl.add_url({"url": "https://example.com/extra", "depth": 1}) is False
 
 
 def test_crawl_stop_reason_reports_no_viable_urls_for_sealed_empty_crawl(admin_user):
@@ -455,137 +458,3 @@ def test_crawl_stop_reason_reports_paused_for_paused_crawl(admin_user):
     )
 
     assert crawl.stop_reason() == "paused"
-
-
-def test_crawl_stop_reason_keeps_specific_limit_reason_over_lifecycle_fallback(admin_user):
-    crawl = Crawl.objects.create(
-        urls="\n".join(
-            [
-                "https://example.com/root",
-                "https://example.com/about",
-            ],
-        ),
-        config={"CRAWL_MAX_URLS": 1},
-        status=Crawl.StatusChoices.SEALED,
-        retry_at=None,
-        created_by=admin_user,
-    )
-    Snapshot.objects.create(
-        url="https://example.com/root",
-        crawl=crawl,
-        status=Snapshot.StatusChoices.SEALED,
-        timestamp="1700000000.011",
-    )
-
-    assert crawl.stop_reason() == "crawl_max_urls"
-
-
-def test_create_snapshots_from_urls_respects_only_new_exact_url_matches(admin_user):
-    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
-    Snapshot.objects.create(
-        url="https://example.com/existing",
-        crawl=existing_crawl,
-        timestamp="1700000000.001",
-    )
-    crawl = Crawl.objects.create(
-        urls="\n".join(
-            [
-                "https://example.com/existing",
-                "https://example.com/existing/",
-                "https://example.com/fresh",
-            ],
-        ),
-        config={"ONLY_NEW": True},
-        created_by=admin_user,
-    )
-
-    created = crawl.create_snapshots_from_urls()
-
-    assert [snapshot.url for snapshot in created] == [
-        "https://example.com/existing/",
-        "https://example.com/fresh",
-    ]
-    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 1
-
-
-def test_create_snapshots_from_urls_allows_existing_exact_url_when_only_new_false(admin_user):
-    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
-    Snapshot.objects.create(
-        url="https://example.com/existing",
-        crawl=existing_crawl,
-        timestamp="1700000000.002",
-    )
-    crawl = Crawl.objects.create(
-        urls="https://example.com/existing",
-        config={"ONLY_NEW": False},
-        created_by=admin_user,
-    )
-
-    created = crawl.create_snapshots_from_urls()
-
-    assert [snapshot.url for snapshot in created] == ["https://example.com/existing"]
-    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 2
-
-
-def test_create_discovered_snapshots_respects_only_new_exact_url_matches(admin_user):
-    existing_crawl = Crawl.objects.create(urls="https://example.com/existing", created_by=admin_user)
-    Snapshot.objects.create(
-        url="https://example.com/existing",
-        crawl=existing_crawl,
-        timestamp="1700000000.003",
-    )
-    crawl = Crawl.objects.create(
-        urls="https://example.com/root",
-        max_depth=1,
-        config={"ONLY_NEW": True},
-        created_by=admin_user,
-    )
-    parent = crawl.create_snapshots_from_urls()[0]
-
-    created = crawl.create_discovered_snapshots(
-        parent,
-        [
-            {"url": "https://example.com/existing"},
-            {"url": "https://example.com/existing/"},
-            {"url": "https://example.com/fresh"},
-        ],
-        depth=1,
-    )
-
-    assert [snapshot.url for snapshot in created] == [
-        "https://example.com/existing/",
-        "https://example.com/fresh",
-    ]
-    assert Snapshot.objects.filter(url="https://example.com/existing").count() == 1
-
-
-def test_url_filter_regex_lists_preserve_commas_and_split_on_newlines_only(admin_user):
-    crawl = Crawl.objects.create(
-        urls="\n".join(
-            [
-                "https://example.com/root",
-                "https://example.com/path,with,commas",
-                "https://other.test/page",
-            ],
-        ),
-        created_by=admin_user,
-        config={
-            "URL_ALLOWLIST": r"^https://example\.com/(root|path,with,commas)$" + "\n" + r"^https://other\.test/page$",
-            "URL_DENYLIST": r"^https://example\.com/path,with,commas$",
-        },
-    )
-
-    assert crawl.get_url_allowlist(use_effective_config=False) == [
-        r"^https://example\.com/(root|path,with,commas)$",
-        r"^https://other\.test/page$",
-    ]
-    assert crawl.get_url_denylist(use_effective_config=False) == [
-        r"^https://example\.com/path,with,commas$",
-    ]
-
-    created = crawl.create_snapshots_from_urls()
-
-    assert [snapshot.url for snapshot in created] == [
-        "https://example.com/root",
-        "https://other.test/page",
-    ]

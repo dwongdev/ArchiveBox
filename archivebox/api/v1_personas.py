@@ -8,8 +8,10 @@ from uuid import UUID
 from django.db.models import Q
 from django.http import HttpRequest
 from ninja import Router, Schema
+from ninja.pagination import paginate
 from pydantic import Field
 
+from archivebox.api.v1_core import CustomPagination
 from archivebox.personas.importers import validate_persona_name
 from archivebox.personas.models import Persona
 
@@ -113,6 +115,7 @@ def find_persona(extension_persona_id: str, name: str) -> Persona | None:
 
 
 @router.get("/personas", response=list[PersonaSchema], url_name="get_personas")
+@paginate(CustomPagination)
 def get_personas(request: HttpRequest):
     """List personas available on this ArchiveBox server."""
     return Persona.objects.all().order_by("name")

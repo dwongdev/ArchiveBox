@@ -15,6 +15,7 @@ from pathlib import Path
 import rich_click as click
 
 from archivebox.misc.util import enforce_types, docstring
+from archivebox.cli.archivebox_snapshot import snapshot_filter_options
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -47,51 +48,19 @@ def _get_search_indexing_plugins() -> list[str]:
 
 
 def _build_filtered_snapshots_queryset(
-    *,
-    filter_patterns: Iterable[str],
-    filter_type: str,
-    status: str | None = None,
-    url__icontains: str | None = None,
-    url__istartswith: str | None = None,
-    tag: str | None = None,
-    crawl_id: str | None = None,
-    limit: int | None = None,
-    sort: str | None = None,
-    search: str | None = None,
-    before: float | None = None,
-    after: float | None = None,
-    resume: str | None = None,
+    **kwargs,
 ):
-    from datetime import datetime
+    from archivebox.core.models import Snapshot
     from archivebox.cli.archivebox_snapshot import build_snapshot_queryset
 
-    filter_patterns = tuple(filter_patterns)
-    snapshots = build_snapshot_queryset(
-        status=status,
-        url__icontains=url__icontains,
-        url__istartswith=url__istartswith,
-        tag=tag,
-        crawl_id=crawl_id,
-        sort=sort,
-        search=search,
-        query=" ".join(filter_patterns) if search else None,
-    )
-
-    if filter_patterns and not search:
-        snapshots = snapshots.filter_by_patterns(list(filter_patterns), filter_type)
-
-    if before:
-        snapshots = snapshots.filter(bookmarked_at__lt=datetime.fromtimestamp(before))
-    if after:
-        snapshots = snapshots.filter(bookmarked_at__gt=datetime.fromtimestamp(after))
-    if resume:
-        snapshots = snapshots.filter(timestamp__lte=resume)
-    if not sort:
-        snapshots = snapshots.order_by("-timestamp")
+    limit = kwargs.pop("limit", None)
+    snapshots = build_snapshot_queryset(**kwargs)
+    if kwargs.get("resume"):
+        snapshots = snapshots.filter(timestamp__lte=kwargs["resume"])
     snapshots = snapshots.select_related("crawl")
-    if limit:
-        limited_ids = list(snapshots.values_list("id", flat=True)[:limit])
-        snapshots = snapshots.model.objects.filter(id__in=limited_ids).select_related("crawl")
+    if limit is not None and limit > 0:
+        snapshot_ids = list(snapshots.values_list("id", flat=True)[:limit])
+        snapshots = Snapshot.objects.filter(id__in=snapshot_ids).select_related("crawl")
 
     return snapshots
 
@@ -254,27 +223,29 @@ def update(
     from archivebox.machine.models import Process
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals, raise_if_shutdown_requested
     from archivebox.core.takeover_util import (
-        command_owns_runtime_stack,
+        command_owns_foreground_runner,
         current_command,
         ensure_daemon_stack,
-        standby_until_runtime_stack_needed,
+        standby_until_foreground_runner_needed,
     )
-    from archivebox.workers.supervisord_util import run_runner_worker, stop_existing_supervisord_process, stop_own_supervisord_process
+    from archivebox.workers.supervisord_util import run_runner_worker, stop_own_supervisord_process
 
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
 
     def wait_for_turn() -> None:
         raise_if_shutdown_requested()
-        standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+        standby_until_foreground_runner_needed(command, data_dir=CONSTANTS.DATA_DIR)
         raise_if_shutdown_requested()
 
-    def run_scoped_runner(*args: str) -> None:
+    def run_scoped_runner(*args: str, ensure_daemon_reason: str | None = None) -> None:
         while True:
             wait_for_turn()
+            if ensure_daemon_reason:
+                ensure_daemon_stack(reason=ensure_daemon_reason)
             exit_code = run_runner_worker(list(args), name=f"worker_runner_update_{os.getpid()}")
             if exit_code == 0:
                 return
-            if not command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):
+            if not command_owns_foreground_runner(command, data_dir=CONSTANTS.DATA_DIR):
                 continue
             raise SystemExit(exit_code)
 
@@ -298,8 +269,6 @@ def update(
 
     try:
         wait_for_turn()
-        if stop_daemon_stack:
-            stop_existing_supervisord_process()
 
         with foreground_shutdown_signals(), foreground_parent_watchdog():
             while True:
@@ -466,7 +435,10 @@ def update(
                         for snapshot_id in sorted(touched_snapshot_ids):
                             run_scoped_runner("--snapshot-id", snapshot_id)
                     else:
-                        run_scoped_runner(*(["--maintenance-only"] if index_only or migrate_only else []))
+                        run_scoped_runner(
+                            *(["--maintenance-only"] if index_only or migrate_only else []),
+                            ensure_daemon_reason="search indexing" if do_index else None,
+                        )
 
                 if not continuous:
                     break
@@ -987,22 +959,11 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 
 @click.command()
 @click.option("--resume", type=str, help="Resume from timestamp")
-@click.option("--status", "-s", help="Filter by status (queued, started, sealed)")
-@click.option("--url__icontains", help="Filter by URL contains")
-@click.option("--url__istartswith", help="Filter by URL starts with")
-@click.option("--tag", "-t", help="Filter by tag name")
-@click.option("--crawl-id", help="Filter by crawl ID")
-@click.option("--limit", "-n", type=int, help="Limit number of snapshots to update")
-@click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
-@click.option("--search", help="Search mode to use for positional query")
-@click.option("--before", type=float, help="Only snapshots before timestamp")
-@click.option("--after", type=float, help="Only snapshots after timestamp")
-@click.option("--filter-type", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")
 @click.option("--batch-size", type=int, default=500, help="Commit every N records")
 @click.option("--continuous", is_flag=True, help="Run continuously as background worker")
 @click.option("--index-only", is_flag=True, help="Backfill available search indexes from existing archived content")
 @click.option("--migrate-only", is_flag=True, help="Only migrate filesystem and update database/index state")
-@click.argument("filter_patterns", nargs=-1)
+@snapshot_filter_options(default_filter_type="exact")
 @docstring(update.__doc__)
 def main(**kwargs):
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
@@ -1010,6 +971,8 @@ def main(**kwargs):
     try:
         with foreground_shutdown_signals(), foreground_parent_watchdog():
             update(**kwargs)
+    except ValueError as err:
+        raise click.BadParameter(str(err), param_hint="--status") from err
     except KeyboardInterrupt:
         raise SystemExit(130) from None
 

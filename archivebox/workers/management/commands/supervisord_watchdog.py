@@ -43,7 +43,7 @@ class Command(BaseCommand):
                 return
 
             owner = supervisord_process.parent
-            if owner is not None and owner.status == Process.StatusChoices.RUNNING:
+            if owner is not None and owner.status == Process.StatusChoices.RUNNING and owner.is_running:
                 time.sleep(interval)
                 continue
 

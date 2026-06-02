@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from archivebox.machine.models import Binary, Machine, Process
-from archivebox.tests.conftest import run_archivebox_cmd_cwd
+from archivebox.tests.conftest import run_archivebox_cmd
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -47,12 +47,13 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
     _write_tool_shim(provider_bin_dir, "lit", "2.5.9")
     _link_real_tool(provider_bin_dir, "node")
 
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["install", "--binproviders=env", "liteparse"],
         cwd=initialized_archive,
         timeout=120,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
     assert returncode == 0, stdout + stderr
     assert "liteparse" in stdout
@@ -114,12 +115,13 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
         print("MACHINE_SERVICE_E2E_DONE")
         """,
     )
-    shell_stdout, shell_stderr, shell_code = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["shell", "-c", machine_event_script],
         cwd=initialized_archive,
         timeout=60,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
     )
+    shell_stdout, shell_stderr, shell_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert shell_code == 0, shell_stdout + shell_stderr
     assert "MACHINE_SERVICE_E2E_DONE" in shell_stdout
 
@@ -129,24 +131,26 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
     assert machine.config["LITEPARSE_BINARY"] == str(installed_liteparse_path)
     assert machine.config["LITEPARSE_BINARY"] != "/tmp/user-config-must-not-persist"
 
-    version_stdout, version_stderr, version_code = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["version"],
         cwd=initialized_archive,
         timeout=60,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
     )
+    version_stdout, version_stderr, version_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert version_code == 0, version_stderr
     assert "lit" in version_stdout
 
     installed_liteparse_path.unlink()
     (initialized_archive / "lib" / "bin" / installed_liteparse_path.name).unlink(missing_ok=True)
 
-    cleanup_stdout, cleanup_stderr, cleanup_code = run_archivebox_cmd_cwd(
+    _cmd_result = run_archivebox_cmd(
         ["version"],
         cwd=initialized_archive,
         timeout=60,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
     )
+    cleanup_stdout, cleanup_stderr, cleanup_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert cleanup_code == 0, cleanup_stdout + cleanup_stderr
 
     with use_archivebox_db(initialized_archive):

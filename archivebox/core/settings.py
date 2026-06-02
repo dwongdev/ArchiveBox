@@ -77,6 +77,8 @@ INSTALLED_APPS = [
     "django_extensions",  # provides Django Debug Toolbar (and other non-debug helpers)
 ]
 
+DJANGO_OBJECT_ACTIONS_DEFAULT_HTTP_METHOD = "POST"
+
 
 MIDDLEWARE = [
     "archivebox.core.middleware.TimezoneMiddleware",

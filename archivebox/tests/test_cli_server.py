@@ -15,12 +15,26 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
+from archivebox.tests.conftest import (
+    assert_no_processes_for_data_dir,
+    get_free_port,
+    kill_processes_for_data_dir,
+    cli_env,
+    start_archivebox_server,
+    stop_archivebox_process,
+    wait_for_pid_to_disappear,
+    wait_for_port_open,
+    wait_for_process,
+    run_archivebox_cmd,
+)
+
 
 def test_server_auth_secret_and_cookie_settings_are_restart_stable(tmp_path, monkeypatch):
     """Admin sessions must survive `archivebox server` restarts for a collection."""
     from archivebox.config.collection import write_config_file
 
-    os.chdir(tmp_path)
     (tmp_path / ".archivebox_id").write_text("testcoll")
     monkeypatch.setenv("BASE_URL", "http://archivebox.localhost:9292")
 
@@ -91,16 +105,13 @@ def test_sqlite_connections_use_explicit_busy_timeout():
     assert "PRAGMA journal_mode = WAL;" in SQLITE_CONNECTION_OPTIONS["OPTIONS"]["init_command"]
 
 
-def test_server_shows_usage_info(tmp_path, process):
+def test_server_shows_usage_info(initialized_archive):
     """Test that server command shows usage or starts."""
-    os.chdir(tmp_path)
 
     # Just check that the command is recognized
     # We won't actually start a full server in tests
-    result = subprocess.run(
-        ["archivebox", "server", "--help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["server", "--help"],
         timeout=10,
     )
 
@@ -108,15 +119,12 @@ def test_server_shows_usage_info(tmp_path, process):
     assert "server" in result.stdout.lower() or "http" in result.stdout.lower()
 
 
-def test_server_help_lists_runtime_options(tmp_path, process):
+def test_server_help_lists_runtime_options(initialized_archive):
     """Test that server help exposes the current runtime options."""
-    os.chdir(tmp_path)
 
     # Check init flag is recognized
-    result = subprocess.run(
-        ["archivebox", "server", "--help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["server", "--help"],
         timeout=10,
     )
 
@@ -156,14 +164,6 @@ def test_reload_workers_use_current_interpreter_and_supervisord_managed_runner()
 
     assert watcher["name"] == "worker_runner_watch"
     assert watcher["command"] == f"{sys.executable} -m archivebox manage runner_watch --bind-url=http://127.0.0.1:8000"
-
-
-def _free_port():
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def test_server_daemon_starts_real_plugin_owned_sonic_worker(archivebox_daemon_server):
@@ -279,7 +279,7 @@ def test_sonic_worker_is_disabled_when_sonic_disabled(tmp_path):
             DATA_DIR=str(tmp_path),
             SEARCH_BACKEND_SONIC_ENABLED=False,
             SEARCH_BACKEND_SONIC_HOST_NAME="127.0.0.1",
-            SEARCH_BACKEND_SONIC_PORT=_free_port(),
+            SEARCH_BACKEND_SONIC_PORT=get_free_port(),
             SEARCH_BACKEND_SONIC_PASSWORD="SecretPassword",
             SONIC_BINARY="sonic",
         ),
@@ -294,7 +294,7 @@ def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemo
     from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler
     from abx_plugins.plugins.search_backend_sonic.daemon import prepare_sonic_daemon
 
-    sonic_port = _free_port()
+    sonic_port = get_free_port()
     server = archivebox_daemon_server(
         SEARCH_BACKEND_ENGINE="sonic",
         SEARCH_BACKEND_SONIC_PORT=str(sonic_port),
@@ -329,7 +329,7 @@ def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemo
     asyncio.run(run_test())
 
 
-def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, process, db):
+def test_supervisord_sync_does_not_start_duplicate_sonic_listener(initialized_archive, db):
     from abx_plugins.plugins.search_backend_sonic.daemon import get_sonic_supervisord_worker
     from archivebox.tests.test_orm_helpers import use_archivebox_db
     from archivebox.workers.supervisord_util import (
@@ -339,9 +339,6 @@ def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, proc
         sync_supervisord_workers,
     )
 
-    os.chdir(tmp_path)
-    assert process.returncode == 0, process.stderr
-
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -349,7 +346,7 @@ def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, proc
     sonic_port = listener.getsockname()[1]
     worker = get_sonic_supervisord_worker(
         SimpleNamespace(
-            DATA_DIR=str(tmp_path),
+            DATA_DIR=str(initialized_archive),
             SEARCH_BACKEND_ENGINE="sonic",
             SEARCH_BACKEND_SONIC_HOST_NAME="127.0.0.1",
             SEARCH_BACKEND_SONIC_PORT=sonic_port,
@@ -360,7 +357,7 @@ def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, proc
     assert worker is not None
 
     try:
-        with use_archivebox_db(tmp_path):
+        with use_archivebox_db(initialized_archive):
             supervisor = get_or_create_supervisord_process(daemonize=False)
             state = sync_supervisord_workers(supervisor, [(worker, False)], prune=True)
             sonic_state = state["worker_sonic"]
@@ -368,11 +365,11 @@ def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, proc
             assert get_worker(supervisor, "worker_sonic")["statename"] != "RUNNING"
     finally:
         listener.close()
-        with use_archivebox_db(tmp_path):
+        with use_archivebox_db(initialized_archive):
             stop_existing_supervisord_process()
 
 
-def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db):
+def test_supervisord_takeover_stops_all_live_process_rows(initialized_archive, db):
     import psutil
     from django.utils import timezone
 
@@ -380,23 +377,22 @@ def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db)
     from archivebox.machine.models import Machine, Process
     from archivebox.tests.test_orm_helpers import use_archivebox_db
 
-    assert process.returncode == 0, process.stderr
-    env = os.environ.copy()
-    env.update({"DATA_DIR": str(tmp_path), "USE_COLOR": "False", "SHOW_PROGRESS": "False"})
+    env = cli_env()
     procs = []
     try:
         for _index in range(2):
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "archivebox", "run", "--daemon"],
-                cwd=tmp_path,
+            proc = run_archivebox_cmd(
+                ["run", "--daemon"],
+                cwd=initialized_archive,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                wait=False,
             )
             procs.append(proc)
             started_at = datetime.fromtimestamp(psutil.Process(proc.pid).create_time(), tz=timezone.get_current_timezone())
-            with use_archivebox_db(tmp_path):
+            with use_archivebox_db(initialized_archive):
                 Process.objects.create(
                     machine=Machine.current(),
                     process_type=Process.TypeChoices.SUPERVISORD,
@@ -408,14 +404,14 @@ def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db)
                     status=Process.StatusChoices.RUNNING,
                 )
 
-        with use_archivebox_db(tmp_path):
+        with use_archivebox_db(initialized_archive):
             from archivebox.workers.supervisord_util import stop_existing_supervisord_process
 
             stop_existing_supervisord_process()
 
         for proc in procs:
             proc.wait(timeout=10)
-        with use_archivebox_db(tmp_path):
+        with use_archivebox_db(initialized_archive):
             assert not Process.objects.filter(
                 process_type=Process.TypeChoices.SUPERVISORD,
                 status=Process.StatusChoices.RUNNING,
@@ -425,3 +421,154 @@ def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db)
         for proc in procs:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGKILL)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    ("stop_signal", "expected_notice"),
+    [
+        (signal.SIGHUP, "Got SIGHUP"),
+        (signal.SIGINT, "Got SIGINT"),
+        (signal.SIGTERM, "Got SIGTERM"),
+        (signal.SIGKILL, None),
+    ],
+)
+def test_live_server_signal_exit_and_resume_uses_existing_supervisor_state(initialized_archive, stop_signal, expected_notice):
+
+    env = cli_env(live=True)
+    port = get_free_port()
+    server = None
+    resumed = None
+    try:
+        server = start_archivebox_server(initialized_archive, port=port, log_name=f"server-{stop_signal.name}.log", env=env)
+        server_log = server.log_path
+
+        os.kill(server.pid, stop_signal)
+        try:
+            server.wait(timeout=20 if stop_signal != signal.SIGKILL else 5)
+        except subprocess.TimeoutExpired:
+            os.kill(server.pid, signal.SIGKILL)
+            server.wait(timeout=5)
+
+        if expected_notice:
+            log_text = server_log.read_text(encoding="utf-8", errors="replace")
+            assert expected_notice in log_text
+            assert "ArchiveBox server shut down gracefully" in log_text
+            assert_no_processes_for_data_dir(initialized_archive, timeout=12)
+
+        resumed = start_archivebox_server(initialized_archive, port=port, log_name=f"server-{stop_signal.name}-resumed.log", env=env)
+        resumed_log = resumed.log_path
+        _cmd_result = run_archivebox_cmd(["status"], cwd=initialized_archive, env=env, timeout=60)
+        stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+        assert returncode == 0, stderr or stdout
+
+        os.kill(resumed.pid, signal.SIGTERM)
+        resumed.wait(timeout=20)
+        resumed_text = resumed_log.read_text(encoding="utf-8", errors="replace")
+        assert "Got SIGTERM" in resumed_text
+        assert "ArchiveBox server shut down gracefully" in resumed_text
+        assert_no_processes_for_data_dir(initialized_archive, timeout=12)
+    finally:
+        for proc in (server, resumed):
+            if proc is not None and proc.poll() is None:
+                stop_archivebox_process(proc, signal.SIGKILL)
+        kill_processes_for_data_dir(initialized_archive)
+
+
+@pytest.mark.timeout(180)
+def test_live_daemonized_server_keeps_supervisord_owned_by_archivebox_parent(initialized_archive):
+
+    env = cli_env(live=True)
+    port = get_free_port()
+    bind_url = f"http://127.0.0.1:{port}"
+    try:
+        _cmd_result = run_archivebox_cmd(
+            ["server", "--daemonize", f"127.0.0.1:{port}"],
+            cwd=initialized_archive,
+            env=env,
+            timeout=90,
+        )
+        stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+        assert returncode == 0, stderr or stdout
+        wait_for_port_open("127.0.0.1", port, timeout=30)
+
+        server_process = wait_for_process(
+            lambda _proc, command: "archivebox" in command and " server " in f" {command} " and bind_url.replace("http://", "") in command,
+        )
+        supervisord = wait_for_process(
+            lambda proc, command: proc.ppid() == server_process.pid and "supervisord" in command,
+        )
+        wait_for_process(
+            lambda proc, command: proc.ppid() == supervisord.pid and "supervisord_watchdog" in command,
+        )
+
+        os.kill(server_process.pid, signal.SIGKILL)
+        wait_for_pid_to_disappear(server_process.pid, timeout=10)
+        wait_for_pid_to_disappear(supervisord.pid, timeout=20)
+        assert_no_processes_for_data_dir(initialized_archive, timeout=12)
+    finally:
+        kill_processes_for_data_dir(initialized_archive)
+        assert_no_processes_for_data_dir(initialized_archive, timeout=12)
+
+
+@pytest.mark.timeout(240)
+def test_live_servers_in_different_data_dirs_do_not_interfere(initialized_archive):
+
+    first_data_dir = initialized_archive
+    second_data_dir = initialized_archive.parent / f"{initialized_archive.name}-second"
+    second_data_dir.mkdir()
+    second_env = cli_env(live=True)
+    _cmd_result = run_archivebox_cmd(["init"], cwd=second_data_dir, env=second_env, timeout=90)
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+    assert returncode == 0, stderr or stdout
+
+    first_port = get_free_port()
+    second_port = get_free_port()
+    first = None
+    second = None
+    first_resumed = None
+    try:
+        first = start_archivebox_server(
+            first_data_dir,
+            port=first_port,
+            log_name="server-first-data-dir.log",
+            env=cli_env(live=True),
+        )
+        second = start_archivebox_server(second_data_dir, port=second_port, log_name="server-second-data-dir.log", env=second_env)
+
+        _cmd_result = run_archivebox_cmd(
+            ["status"],
+            cwd=first_data_dir,
+            env=cli_env(live=True),
+            timeout=60,
+        )
+        first_stdout, first_stderr, first_returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+        _cmd_result = run_archivebox_cmd(
+            ["status"],
+            cwd=second_data_dir,
+            env=second_env,
+            timeout=60,
+        )
+        second_stdout, second_stderr, second_returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+        assert first_returncode == 0, first_stderr or first_stdout
+        assert second_returncode == 0, second_stderr or second_stdout
+
+        stop_archivebox_process(first, signal.SIGTERM)
+        first = None
+        assert second.poll() is None, "stopping one DATA_DIR server must not stop another DATA_DIR server"
+
+        first_resumed = start_archivebox_server(
+            first_data_dir,
+            port=first_port,
+            log_name="server-first-data-dir-resumed.log",
+            env=cli_env(live=True),
+        )
+        assert second.poll() is None, "restarting one DATA_DIR server must not take over another DATA_DIR supervisor"
+    finally:
+        for proc in (first, first_resumed, second):
+            if proc is not None and proc.poll() is None:
+                stop_archivebox_process(proc, signal.SIGTERM)
+        kill_processes_for_data_dir(first_data_dir)
+        kill_processes_for_data_dir(second_data_dir)
+        assert_no_processes_for_data_dir(first_data_dir, timeout=12)
+        assert_no_processes_for_data_dir(second_data_dir, timeout=12)

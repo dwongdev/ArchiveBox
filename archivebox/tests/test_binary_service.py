@@ -24,10 +24,6 @@ def _link_real_binary(bin_dir: Path, name: str, *, source: str | None = None) ->
     return link
 
 
-def _binary_request(name: str, *, binproviders: str = "env") -> str:
-    return json.dumps({"type": "BinaryRequest", "name": name, "binproviders": binproviders}) + "\n"
-
-
 def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
     return {
         "LIB_DIR": str(data_dir / "lib"),
@@ -100,13 +96,16 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     _link_real_binary(bootstrap_bin_dir, "uv")
     _link_real_binary(provider_bin_dir, name, source="rg")
 
-    stdout, stderr, returncode = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
-        data_dir=initialized_archive,
-        stdin=_binary_request(name),
+        cwd=initialized_archive,
+        stdin=json.dumps({"type": "BinaryRequest", "name": name, "binproviders": "env"}) + "\n",
         timeout=120,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
     assert returncode == 0, stderr
     output_records = parse_jsonl_output(stdout)
@@ -135,12 +134,15 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert binary_processes[-1].exit_code == 0
     assert any(f"--name={name}" in arg for arg in binary_processes[-1].cmd)
 
-    version_stdout, version_stderr, version_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["version"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=60,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    version_stdout, version_stderr, version_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert version_code == 0, version_stderr
     assert name in version_stdout
     assert binary.version in version_stdout
@@ -149,12 +151,15 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     (initialized_archive / "lib" / "bin" / name).unlink(missing_ok=True)
     _link_real_binary(bootstrap_bin_dir, name, source="rg")
 
-    rerun_stdout, rerun_stderr, rerun_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run", f"--binary-id={first_binary_id}"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    rerun_stdout, rerun_stderr, rerun_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
     assert rerun_code == 0, rerun_stdout + rerun_stderr
     with use_archivebox_db(initialized_archive):
@@ -174,13 +179,16 @@ def test_missing_binary_request_stays_queued_then_recovers_when_provider_can_res
     provider_bin_dir = initialized_archive / "lib" / "env" / "bin"
     _link_real_binary(bootstrap_bin_dir, "uv")
 
-    stdout, stderr, returncode = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
-        data_dir=initialized_archive,
-        stdin=_binary_request(name),
+        cwd=initialized_archive,
+        stdin=json.dumps({"type": "BinaryRequest", "name": name, "binproviders": "env"}) + "\n",
         timeout=120,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
     assert returncode == 0, stderr
     assert any(record["type"] == "BinaryRequest" and record["name"] == name for record in parse_jsonl_output(stdout))
@@ -201,12 +209,15 @@ def test_missing_binary_request_stays_queued_then_recovers_when_provider_can_res
 
     _link_real_binary(provider_bin_dir, name, source="rg")
 
-    recover_stdout, recover_stderr, recover_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run", f"--binary-id={queued_id}"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    recover_stdout, recover_stderr, recover_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
     assert recover_code == 0, recover_stdout + recover_stderr
     with use_archivebox_db(initialized_archive):

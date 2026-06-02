@@ -33,10 +33,7 @@ def test_in_process_archivebox_config_uses_temp_data_dir():
 
 def test_cli_helpers_reject_repo_root_runtime_paths():
     with pytest.raises(AssertionError, match="repo root"):
-        test_harness.run_archivebox_cmd(["version"], data_dir=test_harness.REPO_ROOT)
-
-    with pytest.raises(AssertionError, match="repo root"):
-        test_harness.run_archivebox_cmd_cwd(["version"], cwd=test_harness.REPO_ROOT)
+        test_harness.run_archivebox_cmd(["version"], cwd=test_harness.REPO_ROOT)
 
     with pytest.raises(AssertionError, match="repo root"):
         test_harness.run_python_cwd("print('hello')", cwd=test_harness.REPO_ROOT)

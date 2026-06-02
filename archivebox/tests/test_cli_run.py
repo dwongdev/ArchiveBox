@@ -17,17 +17,139 @@ import time
 import pytest
 
 from archivebox.tests.conftest import (
+    cleanup_process_group,
+    cli_env,
     run_archivebox_cmd,
     parse_jsonl_output,
     create_test_url,
     create_test_crawl_json,
     create_test_snapshot_json,
+    pid_is_alive,
+    wait_for_pid_to_disappear,
 )
 
 RUN_TEST_ENV = {
     "PLUGINS": "favicon",
     "SAVE_FAVICON": "True",
 }
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.timeout(90)
+def test_cli_run_signal_cleans_background_hook_process_group(initialized_archive):
+
+    plugins_root = initialized_archive / "runtime_plugins"
+    plugin_dir = plugins_root / "cancel_group"
+    plugin_dir.mkdir(parents=True)
+    daemon_hook = plugin_dir / "on_CrawlSetup__10_daemon.daemon.bg.sh"
+    foreground_hook = plugin_dir / "on_CrawlSetup__20_foreground.sh"
+    daemon_hook.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'test_dir="${LEAK_TEST_DIR:?}"',
+                "sleep 600 &",
+                'echo $$ > "$test_dir/daemon.pid"',
+                'echo $! > "$test_dir/daemon-child.pid"',
+                'echo ready > "$test_dir/daemon.ready"',
+                "trap 'echo cleaned > \"$test_dir/daemon.cleaned\"; exit 0' TERM INT",
+                "wait",
+                "",
+            ],
+        ),
+    )
+    foreground_hook.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'test_dir="${LEAK_TEST_DIR:?}"',
+                'echo $$ > "$test_dir/foreground.pid"',
+                'echo ready > "$test_dir/foreground.ready"',
+                "trap 'echo cleaned > \"$test_dir/foreground.cleaned\"; exit 0' TERM INT",
+                "while true; do sleep 1; done",
+                "",
+            ],
+        ),
+    )
+    daemon_hook.chmod(0o755)
+    foreground_hook.chmod(0o755)
+
+    leak_test_dir = initialized_archive / "leak-check"
+    leak_test_dir.mkdir()
+    env = os.environ.copy()
+    env.update(
+        {
+            "ABX_PLUGINS_DIR": str(plugins_root),
+            "LEAK_TEST_DIR": str(leak_test_dir),
+            "PLUGINS": "cancel_group",
+            "TIMEOUT": "30",
+            "USE_COLOR": "false",
+            "SHOW_PROGRESS": "false",
+        },
+    )
+
+    _cmd_result = run_archivebox_cmd(
+        ["crawl", "create", "https://example.com"],
+        cwd=initialized_archive,
+        env=env,
+        timeout=60,
+    )
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+    assert returncode == 0, stderr or stdout
+    crawl_records = [json.loads(line) for line in stdout.splitlines() if line.strip().startswith("{")]
+    crawl_id = next(record["id"] for record in crawl_records if record.get("type") == "Crawl")
+
+    daemon_pid: int | None = None
+    daemon_child_pid: int | None = None
+    foreground_pid: int | None = None
+    run_process = run_archivebox_cmd(
+        ["run", f"--crawl-id={crawl_id}"],
+        cwd=initialized_archive,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        wait=False,
+    )
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if (leak_test_dir / "daemon.ready").exists() and (leak_test_dir / "foreground.ready").exists():
+                break
+            if run_process.poll() is not None:
+                output = run_process.communicate(timeout=1)[0]
+                raise AssertionError(f"archivebox run exited before hooks were ready:\n{output}")
+            time.sleep(0.05)
+        assert (leak_test_dir / "daemon.ready").exists()
+        assert (leak_test_dir / "foreground.ready").exists()
+
+        daemon_pid = int((leak_test_dir / "daemon.pid").read_text().strip())
+        daemon_child_pid = int((leak_test_dir / "daemon-child.pid").read_text().strip())
+        foreground_pid = int((leak_test_dir / "foreground.pid").read_text().strip())
+        assert pid_is_alive(daemon_pid)
+        assert pid_is_alive(daemon_child_pid)
+        assert pid_is_alive(foreground_pid)
+
+        run_process.send_signal(signal.SIGTERM)
+        output = run_process.communicate(timeout=20)[0]
+        assert "Runner error" not in output
+
+        wait_for_pid_to_disappear(daemon_pid, timeout=5)
+        wait_for_pid_to_disappear(daemon_child_pid, timeout=5)
+        wait_for_pid_to_disappear(foreground_pid, timeout=5)
+        assert (leak_test_dir / "daemon.cleaned").read_text().strip() == "cleaned"
+        assert (leak_test_dir / "foreground.cleaned").read_text().strip() == "cleaned"
+    finally:
+        if run_process.poll() is None:
+            try:
+                os.killpg(run_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            run_process.communicate(timeout=5)
+        cleanup_process_group(daemon_pid, daemon_child_pid)
+        cleanup_process_group(foreground_pid)
 
 
 class TestRunWithCrawl:
@@ -37,13 +159,16 @@ class TestRunWithCrawl:
         """Run creates and processes a new Crawl (no id)."""
         crawl_record = create_test_crawl_json()
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(crawl_record),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0, f"Command failed: {stderr}"
 
@@ -58,17 +183,27 @@ class TestRunWithCrawl:
         url = create_test_url()
 
         # First create a crawl
-        stdout1, _, _ = run_archivebox_cmd(["crawl", "create", url], data_dir=initialized_archive, env=RUN_TEST_ENV)
+        _cmd_result = run_archivebox_cmd(
+            ["crawl", "create", url],
+            cwd=initialized_archive,
+            env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
+        )
+        stdout1, _, _ = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
         crawl = parse_jsonl_output(stdout1)[0]
 
         # Run with the existing crawl
-        stdout2, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(crawl),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout2, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout2)
@@ -82,13 +217,16 @@ class TestRunWithSnapshot:
         """Run creates and processes a new Snapshot (no id, just url)."""
         snapshot_record = create_test_snapshot_json()
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(snapshot_record),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0, f"Command failed: {stderr}"
 
@@ -102,17 +240,27 @@ class TestRunWithSnapshot:
         url = create_test_url()
 
         # First create a snapshot
-        stdout1, _, _ = run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive, env=RUN_TEST_ENV)
+        _cmd_result = run_archivebox_cmd(
+            ["snapshot", "create", url],
+            cwd=initialized_archive,
+            env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
+        )
+        stdout1, _, _ = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
         snapshot = parse_jsonl_output(stdout1)[0]
 
         # Run with the existing snapshot
-        stdout2, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(snapshot),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout2, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout2)
@@ -123,13 +271,16 @@ class TestRunWithSnapshot:
         url = create_test_url()
         url_record = {"url": url}
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(url_record),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout)
@@ -144,15 +295,25 @@ class TestRunWithArchiveResult:
         url = create_test_url()
 
         # Create snapshot and archive result
-        stdout1, _, _ = run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive, env=RUN_TEST_ENV)
+        _cmd_result = run_archivebox_cmd(
+            ["snapshot", "create", url],
+            cwd=initialized_archive,
+            env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
+        )
+        stdout1, _, _ = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
         snapshot = parse_jsonl_output(stdout1)[0]
 
-        stdout2, _, _ = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["archiveresult", "create", "--plugin=favicon"],
             stdin=json.dumps(snapshot),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout2, _, _ = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
         ar = next(r for r in parse_jsonl_output(stdout2) if r.get("type") == "ArchiveResult")
 
         # Update to failed
@@ -160,18 +321,23 @@ class TestRunWithArchiveResult:
         run_archivebox_cmd(
             ["archiveresult", "update", "--status=failed"],
             stdin=json.dumps(ar),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
 
         # Now run should re-queue it
-        stdout3, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(ar),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout3, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout3)
@@ -210,12 +376,15 @@ class TestRunRecovery:
             crawl_id = crawl.id
             snapshot_id = snapshot.id
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run", "--maintenance-only"],
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=90,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0, stdout + stderr
         assert "Repairing" in stderr
@@ -239,11 +408,14 @@ class TestRunPassThrough:
         """Run passes through records with unknown types."""
         unknown_record = {"type": "Unknown", "id": "fake-id", "data": "test"}
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(unknown_record),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout)
@@ -256,13 +428,16 @@ class TestRunPassThrough:
         url = create_test_url()
         crawl_record = create_test_crawl_json(urls=[url])
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(crawl_record),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout)
@@ -287,13 +462,16 @@ class TestRunMixedInput:
             ],
         )
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=stdin,
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
             timeout=120,
             env=RUN_TEST_ENV,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        stdout, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         records = parse_jsonl_output(stdout)
@@ -308,11 +486,14 @@ class TestRunEmpty:
 
     def test_run_empty_stdin(self, initialized_archive):
         """Run with empty stdin returns success."""
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin="",
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        _stdout, _stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
 
@@ -320,11 +501,14 @@ class TestRunEmpty:
         """Run with only pass-through records shows message."""
         unknown = {"type": "Unknown", "id": "fake"}
 
-        stdout, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["run"],
             stdin=json.dumps(unknown),
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        _stdout, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         assert code == 0
         assert "No records to process" in stderr
@@ -344,23 +528,16 @@ class TestRunDaemonMode:
         else:
             piped_stdin = "{this is not jsonl}\n"
 
-        env = os.environ.copy()
-        env.update(
-            {
-                "DATA_DIR": str(initialized_archive),
-                "USE_COLOR": "False",
-                "SHOW_PROGRESS": "False",
-            },
-        )
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "archivebox", "run", "--daemon"],
+        env = cli_env()
+        proc = run_archivebox_cmd(
+            ["run", "--daemon"],
             cwd=initialized_archive,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
+            wait=False,
         )
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -410,24 +587,17 @@ class TestRunDaemonMode:
         from archivebox.core.takeover_util import RUNNER_ACTIVE_WORKER_TYPE
         from archivebox.tests.test_orm_helpers import use_archivebox_db
 
-        env = os.environ.copy()
-        env.update(
-            {
-                "DATA_DIR": str(initialized_archive),
-                "USE_COLOR": "False",
-                "SHOW_PROGRESS": "False",
-            },
-        )
+        env = cli_env()
         procs = [
-            subprocess.Popen(
-                [sys.executable, "-m", "archivebox", "run", "--daemon"],
+            run_archivebox_cmd(
+                ["run", "--daemon"],
                 cwd=initialized_archive,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 start_new_session=True,
+                wait=False,
             )
             for _ in range(2)
         ]
@@ -468,15 +638,15 @@ class TestRunDaemonMode:
                 assert len(active) == 1
 
             os.killpg(active_pid, signal.SIGKILL)
-            replacement = subprocess.Popen(
-                [sys.executable, "-m", "archivebox", "run", "--daemon"],
+            replacement = run_archivebox_cmd(
+                ["run", "--daemon"],
                 cwd=initialized_archive,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 start_new_session=True,
+                wait=False,
             )
             procs.append(replacement)
             deadline = time.monotonic() + 30
@@ -518,7 +688,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -544,7 +714,8 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state, run_due_crawl
+        from archivebox.core.recovery_util import recover_orchestrator_state
+        from archivebox.services.runner import run_due_crawl
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -579,7 +750,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         user_id = get_or_create_system_user_pk()
         queued_crawl = Crawl.objects.create(
@@ -629,7 +800,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -666,7 +837,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -708,7 +879,8 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state, run_due_crawl, run_due_snapshot
+        from archivebox.core.recovery_util import recover_orchestrator_state
+        from archivebox.services.runner import run_due_crawl, run_due_snapshot
 
         old = timezone.now() - timedelta(hours=13)
         crawl = Crawl.objects.create(
@@ -944,7 +1116,7 @@ class TestRecoverOrchestratorState:
 
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         old = timezone.now() - timedelta(hours=13)
         crawl = Crawl.objects.create(
@@ -970,7 +1142,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         future = timezone.now() + timedelta(seconds=45)
         crawl = Crawl.objects.create(
@@ -1007,7 +1179,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         future = timezone.now() + timedelta(seconds=45)
         crawl = Crawl.objects.create(
@@ -1046,7 +1218,7 @@ class TestRecoverOrchestratorState:
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
         from archivebox.machine.models import Machine, NetworkInterface, Process
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         worker = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -1109,7 +1281,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
         from archivebox.workers.models import RETRY_AT_MAX
 
         crawl = Crawl.objects.create(
@@ -1143,7 +1315,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -1319,7 +1491,7 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -1350,7 +1522,8 @@ class TestRecoverOrchestratorState:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state, run_due_snapshot
+        from archivebox.core.recovery_util import recover_orchestrator_state
+        from archivebox.services.runner import run_due_snapshot
 
         crawl = Crawl.objects.create(
             urls="https://example.com",
@@ -1719,7 +1892,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         future = timezone.now() + timedelta(days=1)
         crawl = Crawl.objects.create(
@@ -1755,7 +1928,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         future = timezone.now() + timedelta(days=1)
         crawl = Crawl.objects.create(
@@ -1780,7 +1953,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         future = timezone.now() + timedelta(days=1)
         crawl = Crawl.objects.create(
@@ -1801,7 +1974,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://www.mathjax.org/",
@@ -1834,7 +2007,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
         from archivebox.machine.models import Machine, NetworkInterface, Process
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://revealjs.com/",
@@ -1875,7 +2048,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
         from archivebox.machine.models import Machine, NetworkInterface, Process
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://pdfobject.com/pdf/sample-3pp.pdf",
@@ -1921,7 +2094,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import ArchiveResult, Snapshot
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         crawl = Crawl.objects.create(
             urls="https://mermaid-js.github.io/mermaid/",
@@ -2227,7 +2400,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from archivebox.base_models.models import get_or_create_system_user_pk
         from archivebox.crawls.models import Crawl
         from archivebox.machine.models import Machine, NetworkInterface, Process
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         old = timezone.now() - timedelta(hours=13)
         crawl = Crawl.objects.create(
@@ -2263,7 +2436,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         from django.utils import timezone
 
         from archivebox.machine.models import Machine, NetworkInterface, Process
-        from archivebox.services.runner import recover_orchestrator_state
+        from archivebox.core.recovery_util import recover_orchestrator_state
 
         runtime_dir = tmp_path / "https_example_com" / ".hooks" / "on_Snapshot__01_title.py"
         runtime_dir.mkdir(parents=True)

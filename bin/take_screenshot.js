@@ -15,6 +15,7 @@ Usage:
 
 Environment:
   SESSIONID                  Django session cookie value for admin.archivebox.localhost
+  SCREENSHOT_COOKIE_NAME     Cookie name, defaults to sessionid
   SCREENSHOT_COOKIE_DOMAIN   Cookie domain, defaults to admin.archivebox.localhost
   CHROME_BINARY              Chromium/Chrome executable path
   PUPPETEER_EXECUTABLE_PATH  Chromium/Chrome executable path
@@ -90,7 +91,7 @@ async function main() {
 
     if (process.env.SESSIONID) {
       const cookie = {
-        name: 'sessionid',
+        name: process.env.SCREENSHOT_COOKIE_NAME || 'sessionid',
         value: process.env.SESSIONID,
         path: '/',
       };

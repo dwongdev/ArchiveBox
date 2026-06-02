@@ -313,6 +313,7 @@ def server(
     from archivebox.core.takeover_util import (
         command_owns_runtime_stack,
         current_command,
+        foreground_runner_owner,
         runtime_stack_owner,
         standby_until_runtime_stack_needed,
     )
@@ -354,7 +355,10 @@ def server(
         ):
             while True:
                 standby_result = standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
-                older_owner = runtime_stack_owner(data_dir=CONSTANTS.DATA_DIR, exclude_id=command.id)
+                older_owner = runtime_stack_owner(data_dir=CONSTANTS.DATA_DIR, exclude_id=command.id) or foreground_runner_owner(
+                    data_dir=CONSTANTS.DATA_DIR,
+                    exclude_id=command.id,
+                )
                 takeover_components = active_supervisord_runtime_components(config=config)
                 if older_owner and takeover_components:
                     print(

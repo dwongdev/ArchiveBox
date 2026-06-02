@@ -280,7 +280,7 @@ class SnapshotChangeList(SearchResultsChangeList):
         else:
             self.full_result_count = self.model_admin.get_paginator(
                 request,
-                self.model._default_manager.all().order_by(),
+                self.model._default_manager.all().order_by("-id"),
                 self.list_per_page,
             ).count
         self.show_full_result_count = True
@@ -465,7 +465,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         ),
     )
 
-    ordering = ["-timestamp"]
+    ordering = ["-id"]
     actions = [
         "add_tags",
         "remove_tags",

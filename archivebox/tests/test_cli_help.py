@@ -4,14 +4,12 @@ Tests for archivebox help command.
 Verify command runs successfully and produces output.
 """
 
-import os
-import subprocess
+from archivebox.tests.conftest import run_archivebox_cmd
 
 
 def test_help_runs_successfully(tmp_path):
     """Test that help command runs and produces output."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "help"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["help"])
 
     assert result.returncode == 0
     combined = result.stdout + result.stderr
@@ -19,10 +17,9 @@ def test_help_runs_successfully(tmp_path):
     assert "archivebox" in combined.lower()
 
 
-def test_help_in_initialized_dir(tmp_path, process):
+def test_help_in_initialized_dir(initialized_archive):
     """Test help command in initialized data directory."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "help"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["help"])
 
     assert result.returncode == 0
     combined = result.stdout + result.stderr

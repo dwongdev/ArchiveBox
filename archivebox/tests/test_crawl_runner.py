@@ -1,11 +1,9 @@
 import asyncio
-import json
 import sys
 from pathlib import Path
 
 import pytest
 from asgiref.sync import sync_to_async
-from django.test import RequestFactory
 
 
 pytestmark = pytest.mark.django_db
@@ -61,49 +59,6 @@ def test_cancelled_crawl_projection_emits_abort_event_from_runner_bus():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_enqueue_discovered_snapshots_refreshes_crawl_limits(tmp_path):
-    from archivebox.base_models.models import get_or_create_system_user_pk
-    from archivebox.crawls.models import Crawl
-    from archivebox.core.models import Snapshot
-    from archivebox.services.runner import CrawlRunner
-
-    crawl = Crawl.objects.create(
-        urls="https://example.com",
-        max_depth=0,
-        config={"CRAWL_MAX_URLS": 5},
-        created_by_id=get_or_create_system_user_pk(),
-    )
-    snapshot = Snapshot.objects.create(
-        url="https://example.com",
-        crawl=crawl,
-        status=Snapshot.StatusChoices.SEALED,
-        depth=0,
-    )
-    parser_dir = Path(snapshot.output_dir) / "parse_html_urls"
-    parser_dir.mkdir(parents=True, exist_ok=True)
-    (parser_dir / "urls.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps({"type": "Snapshot", "url": "https://example.com/child-a", "depth": 1}),
-                json.dumps({"type": "Snapshot", "url": "https://example.com/child-b", "depth": 1}),
-                "",
-            ],
-        ),
-    )
-
-    runner = CrawlRunner(crawl)
-    Crawl.objects.filter(id=crawl.id).update(max_depth=1)
-    payload = runner.load_snapshot_payload(str(snapshot.id))
-
-    asyncio.run(runner.enqueue_discovered_snapshots_from_outputs(payload))
-
-    child_snapshots = list(crawl.snapshot_set.filter(depth=1).order_by("url").values_list("url", "status"))
-    assert child_snapshots == [
-        ("https://example.com/child-a", Snapshot.StatusChoices.QUEUED),
-        ("https://example.com/child-b", Snapshot.StatusChoices.QUEUED),
-    ]
-
-
 @pytest.mark.django_db(transaction=True)
 def test_snapshot_payload_uses_crawl_chrome_dirs_by_default():
     from archivebox.base_models.models import get_or_create_system_user_pk
@@ -723,80 +678,6 @@ def test_crawl_runner_resolves_persona_and_crawl_config_for_each_live_snapshot()
 
 
 @pytest.mark.django_db(transaction=True)
-def test_run_snapshot_seals_descendant_when_crawl_max_size_is_reached(tmp_path):
-    from abx_dl.events import CrawlStartEvent, SnapshotEvent
-    from archivebox.base_models.models import get_or_create_system_user_pk
-    from archivebox.crawls.models import Crawl
-    from archivebox.core.models import Snapshot
-    from archivebox.services.runner import CrawlRunner
-
-    crawl = Crawl.objects.create(
-        urls="https://example.com",
-        config={
-            "LIB_DIR": str(tmp_path / "lib"),
-            "PLUGINS": "__archivebox_test_no_plugins__",
-            "CHROME_BINARY": "",
-            "CRAWL_MAX_SIZE": 16,
-        },
-        created_by_id=get_or_create_system_user_pk(),
-    )
-    root = Snapshot.objects.create(
-        url="https://example.com",
-        crawl=crawl,
-        depth=0,
-        status=Snapshot.StatusChoices.SEALED,
-    )
-    child = Snapshot.objects.create(
-        url="https://example.com/child",
-        crawl=crawl,
-        depth=1,
-        parent_snapshot=root,
-        status=Snapshot.StatusChoices.QUEUED,
-    )
-    state_dir = Path(crawl.output_dir) / ".abx-dl"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "limits.json").write_text(
-        json.dumps(
-            {
-                "admitted_snapshot_ids": [str(root.id), str(child.id)],
-                "counted_event_ids": ["proc-1"],
-                "total_size": 32,
-                "stop_reason": "crawl_max_size",
-            },
-        ),
-        encoding="utf-8",
-    )
-
-    runner = CrawlRunner(crawl)
-    runner.load_run_state()
-
-    async def run_child_from_crawl_start() -> list[SnapshotEvent]:
-        async def on_crawl_start(_event: CrawlStartEvent) -> None:
-            await runner.run_snapshot(str(child.id))
-
-        runner.bus.on(CrawlStartEvent, on_crawl_start)
-        crawl_start = runner.bus.emit(
-            CrawlStartEvent(
-                url=root.url,
-                snapshot_id=str(root.id),
-                output_dir=str(crawl.output_dir),
-                event_timeout=30,
-                event_handler_timeout=30,
-            ),
-        )
-        await crawl_start.now()
-        await crawl_start.event_results_list()
-        await runner.bus.wait_until_idle()
-        return await runner.bus.filter(SnapshotEvent, child_of=crawl_start, past=True)
-
-    snapshot_events = asyncio.run(run_child_from_crawl_start())
-
-    child.refresh_from_db()
-    assert child.status == Snapshot.StatusChoices.SEALED
-    assert child.retry_at is None
-    assert snapshot_events == []
-
-
 @pytest.mark.django_db(transaction=True)
 def test_run_pending_crawls_processes_queued_crawl_before_missing_binary_backlog(tmp_path):
     from archivebox.base_models.models import get_or_create_system_user_pk
@@ -839,71 +720,6 @@ def test_run_pending_crawls_processes_queued_crawl_before_missing_binary_backlog
 
 
 @pytest.mark.django_db(transaction=True)
-def test_seal_snapshot_cancels_queued_descendants_after_crawl_max_size():
-    from archivebox.base_models.models import get_or_create_system_user_pk
-    from archivebox.crawls.models import Crawl
-    from archivebox.core.models import Snapshot
-    from archivebox.services.snapshot_service import SnapshotService
-    from abx_dl.events import SnapshotCompletedEvent
-    from abx_dl.orchestrator import create_bus
-
-    crawl = Crawl.objects.create(
-        urls="https://example.com",
-        created_by_id=get_or_create_system_user_pk(),
-        config={"CRAWL_MAX_SIZE": 16},
-    )
-    root = Snapshot.objects.create(
-        url="https://example.com",
-        crawl=crawl,
-        status=Snapshot.StatusChoices.STARTED,
-    )
-    child = Snapshot.objects.create(
-        url="https://example.com/child",
-        crawl=crawl,
-        depth=1,
-        parent_snapshot_id=root.id,
-        status=Snapshot.StatusChoices.QUEUED,
-    )
-
-    state_dir = Path(crawl.output_dir) / ".abx-dl"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "limits.json").write_text(
-        json.dumps(
-            {
-                "admitted_snapshot_ids": [str(root.id), str(child.id)],
-                "counted_event_ids": ["proc-1"],
-                "total_size": 32,
-                "stop_reason": "crawl_max_size",
-            },
-        ),
-        encoding="utf-8",
-    )
-
-    bus = create_bus(name=f"test_snapshot_limit_cancel_{str(crawl.id).replace('-', '_')}")
-    service = SnapshotService(bus, crawl_id=str(crawl.id), schedule_snapshot=lambda snapshot_id: None)
-    try:
-
-        async def emit_event() -> None:
-            await service.on_SnapshotCompletedEvent(
-                SnapshotCompletedEvent(
-                    url=root.url,
-                    snapshot_id=str(root.id),
-                    output_dir=str(root.output_dir),
-                ),
-            )
-
-        asyncio.run(emit_event())
-    finally:
-        asyncio.run(bus.wait_until_idle())
-        asyncio.run(bus.destroy())
-
-    root.refresh_from_db()
-    child.refresh_from_db()
-    assert root.status == Snapshot.StatusChoices.SEALED
-    assert child.status == Snapshot.StatusChoices.SEALED
-    assert child.retry_at is None
-
-
 def test_sealed_crawl_does_not_create_discovered_snapshots():
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.crawls.models import Crawl
@@ -928,35 +744,7 @@ def test_sealed_crawl_does_not_create_discovered_snapshots():
     assert crawl.snapshot_set.count() == 1
 
 
-def test_create_crawl_api_queues_crawl_without_spawning_runner():
-    from django.contrib.auth import get_user_model
-    from archivebox.api.v1_crawls import CrawlCreateSchema, create_crawl
-
-    user = get_user_model().objects.create_superuser(
-        username="runner-api-admin",
-        email="runner-api-admin@example.com",
-        password="testpassword",
-    )
-    request = RequestFactory().post("/api/v1/crawls")
-    request.user = user
-
-    crawl = create_crawl(
-        request,
-        CrawlCreateSchema(
-            urls=["https://example.com"],
-            max_depth=0,
-            tags=[],
-            tags_str="",
-            label="",
-            notes="",
-            config={},
-        ),
-    )
-
-    assert str(crawl.id)
-    assert crawl.status == "queued"
-    assert crawl.retry_at is not None
-    assert crawl.snapshot_set.count() == 0
+# test_create_crawl_api_queues_crawl_without_spawning_runner moved to test_api_v1_crawls_crawls.py.
 
 
 def test_wait_for_snapshot_tasks_surfaces_already_failed_task():

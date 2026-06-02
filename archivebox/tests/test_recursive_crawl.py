@@ -12,6 +12,7 @@ import pytest
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Process
+from archivebox.tests.conftest import run_archivebox_cmd, cli_env
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -39,24 +40,26 @@ def stop_process(proc):
 
 
 def run_add_until(args, env, condition, timeout=120):
-    proc = subprocess.Popen(
-        args,
+    assert args[0] == "archivebox"
+    proc = run_archivebox_cmd(
+        args[1:],
+        cwd=Path.cwd(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env=env,
+        wait=False,
     )
 
     assert wait_for_db_condition(timeout=timeout, condition=condition), f"Timed out waiting for condition while running: {' '.join(args)}"
     return stop_process(proc)
 
 
-def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recursive_test_site):
+def test_background_hooks_dont_block_parser_extractors(tmp_path, initialized_archive, recursive_test_site):
     """Test that background hooks (.bg.) don't block other extractors from running."""
-    os.chdir(tmp_path)
 
-    # Verify init succeeded
-    assert process.returncode == 0, f"archivebox init failed: {process.stderr}"
+    # Verify the initialized_archive fixture prepared the expected data dir.
+    assert initialized_archive == tmp_path
+    assert (initialized_archive / "index.sqlite3").exists()
 
     # Enable only parser extractors and background hooks for this test
     env = os.environ.copy()
@@ -80,12 +83,13 @@ def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recurs
         },
     )
 
-    proc = subprocess.Popen(
-        ["archivebox", "add", "--depth=1", "--plugins=favicon,parse_html_urls", recursive_test_site["root_url"]],
+    proc = run_archivebox_cmd(
+        ["add", "--depth=1", "--plugins=favicon,parse_html_urls", recursive_test_site["root_url"]],
+        cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env=env,
+        wait=False,
     )
 
     assert wait_for_db_condition(
@@ -133,9 +137,8 @@ def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recurs
     )
 
 
-def test_parser_extractors_emit_snapshot_jsonl(tmp_path, process, recursive_test_site):
+def test_parser_extractors_emit_snapshot_jsonl(tmp_path, initialized_archive, recursive_test_site):
     """Test that parser extractors emit Snapshot JSONL to stdout."""
-    os.chdir(tmp_path)
 
     env = os.environ.copy()
     env.update(
@@ -158,10 +161,8 @@ def test_parser_extractors_emit_snapshot_jsonl(tmp_path, process, recursive_test
         },
     )
 
-    result = subprocess.run(
-        ["archivebox", "add", "--depth=0", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["add", "--depth=0", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=60,
     )
@@ -196,9 +197,8 @@ def test_parser_extractors_emit_snapshot_jsonl(tmp_path, process, recursive_test
     assert all(record.get("type") == "Snapshot" for record in records), f"Expected Snapshot JSONL records, got: {records}"
 
 
-def test_recursive_crawl_creates_child_snapshots(tmp_path, process, recursive_test_site):
+def test_recursive_crawl_creates_child_snapshots(tmp_path, initialized_archive, recursive_test_site):
     """Test that recursive crawling creates child snapshots with proper depth and parent_snapshot_id."""
-    os.chdir(tmp_path)
 
     env = os.environ.copy()
     env.update(
@@ -268,11 +268,11 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, process, recursive_te
         assert parent_id == root_id, f"Child snapshot {child_url} should have parent_snapshot_id={root_id}, got {parent_id}"
 
 
-def test_recursive_crawl_respects_depth_limit(tmp_path, process, disable_extractors_dict, recursive_test_site):
+def test_recursive_crawl_respects_depth_limit(tmp_path, initialized_archive, recursive_test_site):
     """Test that recursive crawling stops at max_depth."""
-    os.chdir(tmp_path)
+    env = cli_env(disable_extractors=True)
 
-    env = disable_extractors_dict.copy()
+    env = env.copy()
     env["URL_ALLOWLIST"] = r"127\.0\.0\.1[:/].*"
 
     stdout, stderr = run_add_until(
@@ -304,63 +304,8 @@ def test_recursive_crawl_respects_depth_limit(tmp_path, process, disable_extract
     assert max_depth_found <= 1, f"Max depth should not exceed 1, got {max_depth_found}. Depth distribution: {depth_counts}"
 
 
-def test_recursive_crawl_respects_max_urls(tmp_path, process, disable_extractors_dict, recursive_test_site):
-    """Test that recursive discovery stops creating snapshots at max_urls."""
-    os.chdir(tmp_path)
-
-    env = disable_extractors_dict.copy()
-    env.update(
-        {
-            "URL_ALLOWLIST": r"127\.0\.0\.1[:/].*",
-            "SAVE_WGET": "true",
-            "USE_CHROME": "false",
-            "USE_COLOR": "false",
-            "SHOW_PROGRESS": "false",
-        },
-    )
-
-    result = subprocess.run(
-        [
-            "archivebox",
-            "add",
-            "--depth=2",
-            "--max-urls=4",
-            "--plugins=wget,parse_html_urls",
-            recursive_test_site["root_url"],
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120,
-    )
-    stdout, stderr = result.stdout, result.stderr
-
-    if stderr:
-        print(f"\n=== STDERR ===\n{stderr}\n=== END STDERR ===\n")
-    if stdout:
-        print(f"\n=== STDOUT (last 2000 chars) ===\n{stdout[-2000:]}\n=== END STDOUT ===\n")
-
-    assert result.returncode == 0, result.stderr
-
-    with use_archivebox_db(tmp_path):
-        crawl_obj = Crawl.objects.order_by("-created_at").first()
-        crawl = (crawl_obj.max_depth, crawl_obj.config["CRAWL_MAX_URLS"]) if crawl_obj else None
-        snapshot_rows = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "parent_snapshot_id"))
-        depth_counts = {
-            depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))
-        }
-
-    assert crawl == (2, 4)
-    assert len(snapshot_rows) == 4
-    assert depth_counts.get(0, 0) == 1
-    assert depth_counts.get(1, 0) == 3
-    assert depth_counts.get(2, 0) == 0
-    assert set(recursive_test_site["child_urls"]).issubset({url for url, depth, _parent in snapshot_rows if depth == 1})
-
-
-def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_path, process, recursive_test_site):
+def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_path, initialized_archive, recursive_test_site):
     """Run a real depth=2 crawl and verify DB, output files, and process side effects."""
-    os.chdir(tmp_path)
 
     env = os.environ.copy()
     env.update(
@@ -479,29 +424,27 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
     assert any("wget" in (pwd or "") or "wget" in (cmd or "") for *_rest, pwd, cmd in process_rows)
 
 
-def test_crawl_snapshot_has_parent_snapshot_field(tmp_path, process, disable_extractors_dict):
+def test_crawl_snapshot_has_parent_snapshot_field(tmp_path, initialized_archive):
     """Test that Snapshot model has parent_snapshot field."""
-    os.chdir(tmp_path)
 
     column_names = {field.column for field in Snapshot._meta.local_fields}
 
     assert "parent_snapshot_id" in column_names, f"Snapshot table should have parent_snapshot_id column. Columns: {column_names}"
 
 
-def test_snapshot_depth_field_exists(tmp_path, process, disable_extractors_dict):
+def test_snapshot_depth_field_exists(tmp_path, initialized_archive):
     """Test that Snapshot model has depth field."""
-    os.chdir(tmp_path)
 
     column_names = {field.column for field in Snapshot._meta.local_fields}
 
     assert "depth" in column_names, f"Snapshot table should have depth column. Columns: {column_names}"
 
 
-def test_root_snapshot_has_depth_zero(tmp_path, process, disable_extractors_dict, recursive_test_site):
+def test_root_snapshot_has_depth_zero(tmp_path, initialized_archive, recursive_test_site):
     """Test that root snapshots are created with depth=0."""
-    os.chdir(tmp_path)
+    env = cli_env(disable_extractors=True)
 
-    env = disable_extractors_dict.copy()
+    env = env.copy()
     env["URL_ALLOWLIST"] = r"127\.0\.0\.1[:/].*"
 
     stdout, stderr = run_add_until(
@@ -518,9 +461,8 @@ def test_root_snapshot_has_depth_zero(tmp_path, process, disable_extractors_dict
     assert snapshot[1] == 0, f"Root snapshot should have depth=0, got {snapshot[1]}"
 
 
-def test_archiveresult_worker_queue_filters_by_foreground_extractors(tmp_path, process, recursive_test_site):
+def test_archiveresult_worker_queue_filters_by_foreground_extractors(tmp_path, initialized_archive, recursive_test_site):
     """Test that background hooks don't block foreground extractors from running."""
-    os.chdir(tmp_path)
 
     env = os.environ.copy()
     env.update(

@@ -267,6 +267,22 @@ class SnapshotQuerySet(models.QuerySet):
         "tag": lambda pattern: models.Q(tags__name=pattern),
         "timestamp": lambda pattern: models.Q(timestamp=pattern),
     }
+    FILTER_TYPE_CHOICES = tuple(FILTER_TYPES)
+    FILTER_ARG_KEYS = (
+        "after",
+        "before",
+        "filter_type",
+        "filter_patterns",
+        "status",
+        "url__icontains",
+        "url__istartswith",
+        "tag",
+        "crawl_id",
+        "limit",
+        "sort",
+        "search",
+    )
+    SPECIAL_FILTER_ARG_KEYS = frozenset({"filter_patterns", "filter_type", "query", "search", "tag", "before", "after", "limit", "sort"})
 
     def filter_by_patterns(self, patterns: list[str], filter_type: str = "exact") -> "SnapshotQuerySet":
         """Filter snapshots by URL patterns using specified filter type"""
@@ -282,6 +298,62 @@ class SnapshotQuerySet(models.QuerySet):
                 stderr(f"    {pattern}")
                 raise SystemExit(2)
         return self.filter(q_filter)
+
+    def search(self, **kwargs) -> "SnapshotQuerySet":
+        from datetime import timezone as dt_timezone
+
+        from archivebox.core.snapshot_status import filter_snapshots_by_status
+        from archivebox.search.query import apply_snapshot_search
+
+        queryset = self
+        filter_patterns = tuple(str(pattern) for pattern in kwargs.get("filter_patterns") or ())
+        filter_type = kwargs.get("filter_type") or "substring"
+        query = kwargs.get("query")
+        if isinstance(query, (list, tuple)):
+            query = " ".join(str(part) for part in query)
+        query = (query or (" ".join(filter_patterns) if kwargs.get("search") else "")).strip()
+
+        field_names = {field.name for field in self.model._meta.get_fields()}
+        field_names.update(field.attname for field in self.model._meta.fields)
+        field_filters = {
+            key: value
+            for key, value in kwargs.items()
+            if value is not None and key not in self.SPECIAL_FILTER_ARG_KEYS and key.split("__", 1)[0] in field_names
+        }
+        status = field_filters.pop("status", None)
+        queryset = filter_snapshots_by_status(queryset, status)
+        if field_filters:
+            queryset = queryset.filter(**field_filters)
+        if kwargs.get("tag"):
+            queryset = queryset.filter(tags__name__iexact=kwargs["tag"])
+        if kwargs.get("before") is not None:
+            queryset = queryset.filter(bookmarked_at__lt=datetime.fromtimestamp(float(kwargs["before"]), tz=dt_timezone.utc))
+        if kwargs.get("after") is not None:
+            queryset = queryset.filter(bookmarked_at__gt=datetime.fromtimestamp(float(kwargs["after"]), tz=dt_timezone.utc))
+
+        if query:
+            queryset = apply_snapshot_search(
+                queryset,
+                query,
+                search_mode=kwargs.get("search"),
+                ordering=("-created_at",) if not kwargs.get("sort") else None,
+                max_results=kwargs.get("limit"),
+                skip_backend_when_metadata_satisfies_limit=True,
+                include_metadata_for_forced_backend=True,
+            )
+        elif filter_patterns:
+            queryset = queryset.filter_by_patterns(list(filter_patterns), filter_type)
+
+        if kwargs.get("sort"):
+            queryset = queryset.order_by(kwargs["sort"])
+        elif not queryset.query.order_by:
+            queryset = queryset.order_by("-created_at")
+
+        limit = kwargs.get("limit")
+        if limit is not None and limit > 0:
+            queryset = queryset[:limit]
+
+        return queryset
 
     # =========================================================================
     # Export Methods
@@ -690,6 +762,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         from archivebox.core.routes_util import (
             get_admin_host,
             get_api_host,
+            get_base_host,
             get_listen_host,
             get_public_host,
             get_web_host,
@@ -704,6 +777,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         protected_roots: set[tuple[str, str | None]] = set()
         for host_value in (
             get_listen_host(config=config),
+            get_base_host(config=config),
             get_admin_host(config=config),
             get_web_host(config=config),
             get_api_host(config=config),
@@ -3173,7 +3247,11 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         """Convert to CSV string"""
         data = self.to_dict()
         cols = cols or ["timestamp", "is_archived", "url"]
-        return separator.join(to_json(data.get(col, ""), indent=None).ljust(ljust) for col in cols)
+        invalid_cols = [col for col in dict.fromkeys(cols) if col not in data]
+        if invalid_cols:
+            supported_cols = ", ".join(sorted(data))
+            raise ValueError(f"Invalid CSV field(s): {', '.join(invalid_cols)}\nSupported CSV fields: {supported_cols}")
+        return separator.join(to_json(data[col], indent=None).ljust(ljust) for col in cols)
 
     def write_json_details(self, out_dir: Path | str | None = None) -> None:
         """Write JSON index file for this snapshot to its output directory"""

@@ -13,6 +13,10 @@ from rich.panel import Panel
 
 
 def _command_doc(cmd: str, import_path: str) -> str:
+    def first_doc_line(docstring: str | None) -> str:
+        lines = (docstring or "").splitlines()
+        return lines[0] if lines else ""
+
     modname, _ = import_path.rsplit(".", 1)
     spec = importlib.util.find_spec(modname)
     if spec is None or spec.origin is None:
@@ -26,9 +30,9 @@ def _command_doc(cmd: str, import_path: str) -> str:
     for name in (cmd, "main"):
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name == name:
-                return (ast.get_docstring(node) or "").splitlines()[0]
+                return first_doc_line(ast.get_docstring(node))
 
-    return (ast.get_docstring(tree) or "").splitlines()[0]
+    return first_doc_line(ast.get_docstring(tree))
 
 
 def help() -> None:

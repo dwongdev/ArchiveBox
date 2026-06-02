@@ -6,6 +6,7 @@ import sys
 import toml
 import rich_click as click
 from rich import print
+from pathlib import Path
 
 from archivebox.misc.util import docstring, enforce_types
 from archivebox.misc.toml_util import CustomTOMLEncoder
@@ -30,12 +31,17 @@ def config(
     from archivebox.misc.logging_util import printable_config
     from abx_plugins.plugins.base.utils import resolve_alias
     from archivebox.config.collection import write_config_file
+    from archivebox.config import CONSTANTS_CONFIG
     from archivebox.config.common import ArchiveBoxConfig, get_config, get_all_configs
     from archivebox.plugins.discovery import discover_plugin_configs
 
     check_data_folder()
 
     FLAT_CONFIG = get_config().as_dict()
+    runtime_derived_keys = ArchiveBoxConfig.runtime_derived_config_keys()
+    readonly_config = {key: val for key, val in CONSTANTS_CONFIG.items() if key.isupper() and isinstance(val, Path)}
+    writable_config = {key: val for key, val in FLAT_CONFIG.items() if key not in runtime_derived_keys and key not in readonly_config}
+    readable_config = {**writable_config, **readonly_config}
     CONFIGS = get_all_configs()
     plugin_schemas = {
         plugin_name: schema.get("properties", {}) for plugin_name, schema in discover_plugin_configs().items() if isinstance(schema, dict)
@@ -56,18 +62,23 @@ def config(
             config_options = [
                 core_config_aliases.get(key.upper().strip()) or resolve_alias(key.upper().strip(), plugin_schemas) for key in config_options
             ]
-            matching_config = {key: FLAT_CONFIG[key] for key in config_options if key in FLAT_CONFIG}
+            matching_config = {key: readable_config[key] for key in config_options if key in readable_config}
             for config_section in CONFIGS.values():
                 aliases = {str(field.alias): field_name for field_name, field in type(config_section).model_fields.items() if field.alias}
 
                 for search_key in config_options:
                     # search all aliases in the section
                     for alias_key, key in aliases.items():
-                        if search_key.lower() in alias_key.lower():
+                        if key in readable_config and search_key.lower() in alias_key.lower():
                             matching_config[key] = dict(config_section)[key]
 
                     # search all keys and values in the section
                     for existing_key, value in dict(config_section).items():
+                        if existing_key in readable_config and (
+                            search_key.lower() in existing_key.lower() or search_key.lower() in str(value).lower()
+                        ):
+                            matching_config[existing_key] = value
+                    for existing_key, value in readonly_config.items():
                         if search_key.lower() in existing_key.lower() or search_key.lower() in str(value).lower():
                             matching_config[existing_key] = value
 
@@ -79,14 +90,14 @@ def config(
             config_options = [
                 core_config_aliases.get(key.upper().strip()) or resolve_alias(key.upper().strip(), plugin_schemas) for key in config_options
             ]
-            matching_config = {key: FLAT_CONFIG[key] for key in config_options if key in FLAT_CONFIG}
-            failed_config = [key for key in config_options if key not in FLAT_CONFIG]
+            matching_config = {key: readable_config[key] for key in config_options if key in readable_config}
+            failed_config = [key for key in config_options if key not in readable_config]
             if failed_config:
                 print("\n[red][X] These options failed to get[/red]")
                 print("    {}".format("\n    ".join(config_options)))
                 raise SystemExit(1)
         else:
-            matching_config = FLAT_CONFIG
+            matching_config = readable_config
 
         # Display core config sections
         for config_section in CONFIGS.values():
@@ -100,12 +111,18 @@ def config(
             print(_format_toml(kv_in_section))
             print("[grey53]################################################################[/grey53]")
 
+        readonly_keys = {key: val for key, val in readonly_config.items() if key in matching_config}
+        if readonly_keys:
+            print("[grey53]\\[CONSTANTS]                                        # (read-only)[/grey53]")
+            print(_format_toml(readonly_keys))
+            print("[grey53]################################################################[/grey53]")
+
         plugin_keys = {}
 
         # Collect all plugin config keys
         for schema in plugin_schemas.values():
             for key in schema.keys():
-                if key in matching_config:
+                if key in matching_config and key in writable_config:
                     plugin_keys[key] = matching_config[key]
 
         # Display all plugin config in single [PLUGINS] section
@@ -135,7 +152,7 @@ def config(
                     f"[yellow][i] Note: The config option {raw_key} has been renamed to {key}, please use the new name going forwards.[/yellow]",
                 )
 
-            if key in FLAT_CONFIG:
+            if key in writable_config:
                 new_config[key] = val.strip()
             else:
                 failed_options.append(line)

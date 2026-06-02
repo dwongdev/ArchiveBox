@@ -66,10 +66,6 @@ class ArchiveBoxGroup(click.Group):
         # Introspection commands
         "pluginmap": "archivebox.cli.archivebox_pluginmap.main",
     }
-    legacy_model_commands = {
-        "crawl": "archivebox.cli.archivebox_crawl_compat.main",
-        "snapshot": "archivebox.cli.archivebox_snapshot_compat.main",
-    }
     all_subcommands = {
         **meta_commands,
         **setup_commands,
@@ -81,34 +77,29 @@ class ArchiveBoxGroup(click.Group):
         "import": "add",
         "archive": "add",
     }
-    legacy_model_subcommands = {
-        "crawl": {"create", "list", "update", "delete"},
-        "snapshot": {"create", "list", "update", "delete"},
-    }
 
     @classmethod
     def get_canonical_name(cls, cmd_name):
         return cls.renamed_commands.get(cmd_name, cmd_name)
 
     @classmethod
-    def _should_use_legacy_model_command(cls, cmd_name: str) -> bool:
-        if cmd_name not in cls.legacy_model_commands:
-            return False
+    def _needs_django_for_lazy_import(cls, cmd_name: str) -> bool:
+        wants_help = any(arg in ("-h", "--help", "--version") for arg in sys.argv[1:])
+        return not wants_help and (cmd_name in cls.archive_commands or cmd_name in cls.model_commands)
 
-        try:
-            arg_idx = sys.argv.index(cmd_name)
-        except ValueError:
-            return False
+    @classmethod
+    def _setup_django_for_lazy_import(cls, cmd_name: str) -> None:
+        if not cls._needs_django_for_lazy_import(cmd_name):
+            return
 
-        remaining_args = sys.argv[arg_idx + 1 :]
-        if not remaining_args:
-            return False
+        from django.apps import apps
 
-        first_arg = remaining_args[0]
-        if first_arg in ("-h", "--help"):
-            return False
+        if apps.ready:
+            return
 
-        return first_arg not in cls.legacy_model_subcommands[cmd_name]
+        from archivebox.config.django import setup_django
+
+        setup_django()
 
     def get_command(self, ctx, cmd_name):
         # handle renamed commands
@@ -120,11 +111,9 @@ class ArchiveBoxGroup(click.Group):
             cmd_name = new_name
             ctx.invoked_subcommand = cmd_name
 
-        if self._should_use_legacy_model_command(cmd_name):
-            return self._lazy_load(self.legacy_model_commands[cmd_name])
-
         # handle lazy loading of commands
         if cmd_name in self.all_subcommands:
+            self._setup_django_for_lazy_import(cmd_name)
             return self._lazy_load(cmd_name)
 
         # fall-back to using click's default command lookup
@@ -199,14 +188,11 @@ def cli(ctx, help=False):
                 raise
 
 
-def main(args=None, prog_name=None, stdin=None):
+def main(args=None, prog_name=None):
     # show `docker run archivebox xyz` in help messages if running in docker
     IN_DOCKER = os.environ.get("IN_DOCKER", False) in ("1", "true", "True", "TRUE", "yes")
     IS_TTY = sys.stdin.isatty()
     prog_name = prog_name or (f"docker compose run{'' if IS_TTY else ' -T'} archivebox" if IN_DOCKER else "archivebox")
-
-    # stdin param allows passing input data from caller (used by __main__.py)
-    # currently not used by click-based CLI, but kept for backwards compatibility
 
     previous_unraisablehook = sys.unraisablehook
 

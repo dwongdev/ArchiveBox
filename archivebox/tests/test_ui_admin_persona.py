@@ -1,8 +1,5 @@
 import pytest
-from typing import cast
 
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import UserManager
 from django.urls import reverse
 
 from archivebox.personas.importers import (
@@ -12,21 +9,10 @@ from archivebox.personas.importers import (
     resolve_custom_import_source,
 )
 from archivebox.personas.models import Persona
+from archivebox.tests.conftest import ADMIN_TEST_HOST
 
 
 pytestmark = pytest.mark.django_db
-
-User = get_user_model()
-ADMIN_HOST = "admin.archivebox.localhost:8000"
-
-
-@pytest.fixture
-def admin_user(db):
-    return cast(UserManager, User.objects).create_superuser(
-        username="personaadmin",
-        email="personaadmin@test.com",
-        password="testpassword",
-    )
 
 
 def _make_profile_source(tmp_path):
@@ -108,11 +94,10 @@ def test_discover_persona_template_profiles_finds_data_dir_personas():
     assert matching[0].user_data_dir.parent.parent == CONSTANTS.PERSONAS_DIR.resolve()
 
 
-def test_persona_admin_add_view_renders_import_ui(client, admin_user):
+def test_persona_admin_add_view_renders_import_ui(admin_client):
     source = _make_persona_template_source("RenderImportPersona")
 
-    client.login(username="personaadmin", password="testpassword")
-    response = client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_HOST)
+    response = admin_client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_TEST_HOST)
 
     assert response.status_code == 200
     assert source.source_name.encode() in response.content
@@ -145,13 +130,12 @@ def test_import_persona_from_source_copies_profile_without_browser_export(admin_
     assert not (copied_profile / "Cache").exists()
 
 
-def test_persona_admin_add_post_runs_shared_importer(client, admin_user):
+def test_persona_admin_add_post_runs_shared_importer(admin_client, admin_user):
     from archivebox.personas.models import Persona
 
     source = _make_persona_template_source("AdminPostTemplatePersona")
 
-    client.login(username="personaadmin", password="testpassword")
-    response = client.post(
+    response = admin_client.post(
         reverse("admin:personas_persona_add"),
         {
             "name": "ImportedPersona",
@@ -163,7 +147,7 @@ def test_persona_admin_add_post_runs_shared_importer(client, admin_user):
             "import_copy_profile": "on",
             "_save": "Save",
         },
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 302
@@ -173,9 +157,8 @@ def test_persona_admin_add_post_runs_shared_importer(client, admin_user):
     assert not persona.AUTH_STORAGE_FILE
 
 
-def test_persona_admin_saves_typed_plugin_config(client, admin_user):
-    client.login(username="personaadmin", password="testpassword")
-    add_response = client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_HOST)
+def test_persona_admin_saves_typed_plugin_config(admin_client, admin_user):
+    add_response = admin_client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_TEST_HOST)
     add_form = add_response.context["adminform"].form
     exposed_config_keys = {field["key"] for group in add_form.plugin_groups for card in group["plugins"] for field in card["config_fields"]}
     assert {key for key in exposed_config_keys if key.endswith("_BINARY")}
@@ -189,7 +172,7 @@ def test_persona_admin_saves_typed_plugin_config(client, admin_user):
         & exposed_config_keys
     )
 
-    response = client.post(
+    response = admin_client.post(
         reverse("admin:personas_persona_add"),
         {
             "name": "PluginConfigPersona",
@@ -201,7 +184,7 @@ def test_persona_admin_saves_typed_plugin_config(client, admin_user):
             "plugin_config__wget__WGET_WARC_ENABLED": "false",
             "_save": "Save",
         },
-        HTTP_HOST=ADMIN_HOST,
+        HTTP_HOST=ADMIN_TEST_HOST,
     )
 
     assert response.status_code == 302

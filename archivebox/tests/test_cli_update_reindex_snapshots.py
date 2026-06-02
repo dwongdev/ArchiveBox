@@ -1,22 +1,20 @@
 import json
 import os
-import subprocess
 from datetime import datetime, timedelta
+from archivebox.tests.conftest import run_archivebox_cmd, cli_env
 
 import pytest
 from django.utils import timezone
 
 from archivebox.core.models import Snapshot
 from archivebox.tests.test_orm_helpers import use_archivebox_db
-from .fixtures import disable_extractors_dict, process
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
-FIXTURES = (disable_extractors_dict, process)
 
-
-def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors_dict):
+def test_update_imports_orphaned_snapshots(tmp_path, initialized_archive):
     """Test that archivebox update imports real legacy archive directories."""
+    env = cli_env(disable_extractors=True)
     legacy_timestamp = "1710000000"
     legacy_dir = tmp_path / "archive" / legacy_timestamp
     legacy_dir.mkdir(parents=True, exist_ok=True)
@@ -34,11 +32,9 @@ def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors
     )
 
     # Run the migration phase only; default update also runs queued crawl work.
-    update_process = subprocess.run(
-        ["archivebox", "update", "--migrate-only"],
-        capture_output=True,
-        text=True,
-        env=disable_extractors_dict,
+    update_process = run_archivebox_cmd(
+        ["update", "--migrate-only"],
+        env=env,
         timeout=60,
     )
     assert update_process.returncode == 0, update_process.stderr
@@ -46,7 +42,7 @@ def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors
     with use_archivebox_db(tmp_path):
         row = Snapshot.objects.values_list("url", "fs_version").get()
 
-    assert row == ("https://example.com", "0.9.0")
+    assert row == ("https://example.com", Snapshot._fs_current_version())
     assert legacy_dir.is_symlink()
 
     migrated_dir = legacy_dir.resolve()

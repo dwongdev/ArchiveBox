@@ -18,10 +18,18 @@ def runtime_stack_owner_types():
     from archivebox.machine.models import Process
 
     return (
-        Process.TypeChoices.UPDATE,
         Process.TypeChoices.SERVER,
         Process.TypeChoices.ORCHESTRATOR,
+    )
+
+
+def foreground_runner_owner_types():
+    from archivebox.machine.models import Process
+
+    return (
+        Process.TypeChoices.SERVER,
         Process.TypeChoices.ADD,
+        Process.TypeChoices.UPDATE,
     )
 
 
@@ -70,15 +78,13 @@ def runtime_stack_owner(*, data_dir: str | Path, exclude_id=None):
     if exclude_id is not None:
         base_qs = base_qs.exclude(id=exclude_id)
 
-    top_level_types = (
-        Process.TypeChoices.UPDATE,
-        Process.TypeChoices.SERVER,
-        Process.TypeChoices.ADD,
-    )
     for qs in (
-        base_qs.filter(process_type__in=top_level_types),
+        # Only server parents own HTTP runtime leadership. Foreground add/update
+        # commands can own runner/sonic components, but server startup must never
+        # wait behind them before binding Daphne.
+        base_qs.filter(process_type=Process.TypeChoices.SERVER),
         # A foreground `archivebox run` process is allowed to own the runtime
-        # stack when no server/update/add parent is alive. A runner launched by
+        # stack when no server/add parent is alive. A runner launched by
         # supervisord is only a child worker; after its parent is killed it must
         # not keep stealing leadership from the next foreground command.
         base_qs.filter(process_type=Process.TypeChoices.ORCHESTRATOR).exclude(parent__process_type=Process.TypeChoices.SUPERVISORD),
@@ -95,6 +101,30 @@ def command_owns_runtime_stack(command, *, data_dir: str | Path) -> bool:
     return bool(owner and owner.id == command.id)
 
 
+def foreground_runner_owner(*, data_dir: str | Path, exclude_id=None):
+    from archivebox.machine.models import Machine, Process
+
+    machine = Machine.current()
+    qs = Process.objects.filter(
+        machine=machine,
+        status=Process.StatusChoices.RUNNING,
+        pwd=str(data_dir),
+        process_type__in=foreground_runner_owner_types(),
+    )
+    if exclude_id is not None:
+        qs = qs.exclude(id=exclude_id)
+    for proc in qs.order_by("-created_at", "-modified_at").iterator(chunk_size=50):
+        if proc.is_running:
+            return proc
+        proc.mark_exited(exit_code=proc.exit_code if proc.exit_code is not None else 0)
+    return None
+
+
+def command_owns_foreground_runner(command, *, data_dir: str | Path) -> bool:
+    owner = foreground_runner_owner(data_dir=data_dir)
+    return bool(owner and owner.id == command.id)
+
+
 def runtime_stack_component_label(*, owner=None, data_dir: str | Path) -> str:
     try:
         from archivebox.config.common import get_config
@@ -108,9 +138,9 @@ def runtime_stack_component_label(*, owner=None, data_dir: str | Path) -> str:
     if not names and owner is not None:
         from archivebox.machine.models import Process
 
-        if owner.process_type in {Process.TypeChoices.SERVER, Process.TypeChoices.ADD}:
+        if owner.process_type == Process.TypeChoices.SERVER:
             names = ["orchestrator", "server"]
-        elif owner.process_type in {Process.TypeChoices.UPDATE, Process.TypeChoices.ORCHESTRATOR}:
+        elif owner.process_type == Process.TypeChoices.ORCHESTRATOR:
             names = ["orchestrator"]
 
     return ", ".join(dict.fromkeys(names)) or "runtime stack"
@@ -284,6 +314,29 @@ def standby_until_runtime_stack_needed(command, *, data_dir: str | Path, interva
             previous_owner_pid = owner_pid
             rprint(
                 f"[yellow][*] A newer archivebox process took over the {components} "
+                f"(pid={owner_pid}). Work will continue there, and will resume here if that process exits and work still remains.[/yellow]",
+                file=sys.stderr,
+            )
+            announced = True
+        time.sleep(interval)
+    command.modified_at = timezone.now()
+    command.save(update_fields=["modified_at"])
+    return {"resumed": announced, "previous_owner_pid": previous_owner_pid}
+
+
+def standby_until_foreground_runner_needed(command, *, data_dir: str | Path, interval: float = 2.0) -> dict[str, object]:
+    from archivebox.workers.supervisord_util import reap_foreground_supervisord_process
+
+    announced = False
+    previous_owner_pid = None
+    while not command_owns_foreground_runner(command, data_dir=data_dir):
+        reap_foreground_supervisord_process()
+        if not announced:
+            owner = foreground_runner_owner(data_dir=data_dir)
+            owner_pid = owner.pid if owner else "unknown"
+            previous_owner_pid = owner_pid
+            rprint(
+                f"[yellow][*] A newer archivebox process took over the orchestrator, sonic "
                 f"(pid={owner_pid}). Work will continue there, and will resume here if that process exits and work still remains.[/yellow]",
                 file=sys.stderr,
             )

@@ -1,12 +1,11 @@
 """Integration tests for /web/https://... shortcut (Save Page Now)."""
 
-import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
-from archivebox.tests.conftest import create_test_url
+from archivebox.tests.conftest import cli_env, create_test_url
 
 
 ADMIN_HOST = "admin.archivebox.localhost:8000"
@@ -63,28 +62,10 @@ def _run_savepagenow_script(
         """,
     )
 
-    env = {
-        **os.environ,
-        "DATA_DIR": str(initialized_archive),
-        "USE_COLOR": "False",
-        "SHOW_PROGRESS": "False",
-        "PUBLIC_ADD_VIEW": "True" if public_add_view else "False",
-        "SAVE_ARCHIVEDOTORG": "False",
-        "SAVE_TITLE": "False",
-        "SAVE_FAVICON": "False",
-        "SAVE_WGET": "False",
-        "SAVE_WARC": "False",
-        "SAVE_PDF": "False",
-        "SAVE_SCREENSHOT": "False",
-        "SAVE_DOM": "False",
-        "SAVE_SINGLEFILE": "False",
-        "SAVE_READABILITY": "False",
-        "SAVE_MERCURY": "False",
-        "SAVE_GIT": "False",
-        "SAVE_YTDLP": "False",
-        "SAVE_HEADERS": "False",
-        "SAVE_HTMLTOTEXT": "False",
-    }
+    env = cli_env(
+        disable_extractors=True,
+        PUBLIC_ADD_VIEW="True" if public_add_view else "False",
+    )
 
     return subprocess.run(
         [sys.executable, "-c", script],
@@ -119,28 +100,7 @@ def _run_savepagenow_not_found_script(initialized_archive: Path, request_url: st
         """,
     )
 
-    env = {
-        **os.environ,
-        "DATA_DIR": str(initialized_archive),
-        "USE_COLOR": "False",
-        "SHOW_PROGRESS": "False",
-        "PUBLIC_ADD_VIEW": "False",
-        "SAVE_ARCHIVEDOTORG": "False",
-        "SAVE_TITLE": "False",
-        "SAVE_FAVICON": "False",
-        "SAVE_WGET": "False",
-        "SAVE_WARC": "False",
-        "SAVE_PDF": "False",
-        "SAVE_SCREENSHOT": "False",
-        "SAVE_DOM": "False",
-        "SAVE_SINGLEFILE": "False",
-        "SAVE_READABILITY": "False",
-        "SAVE_MERCURY": "False",
-        "SAVE_GIT": "False",
-        "SAVE_YTDLP": "False",
-        "SAVE_HEADERS": "False",
-        "SAVE_HTMLTOTEXT": "False",
-    }
+    env = cli_env(disable_extractors=True, PUBLIC_ADD_VIEW="False")
 
     return subprocess.run(
         [sys.executable, "-c", script],
@@ -186,28 +146,7 @@ def _run_savepagenow_via_web_host_redirect_script(initialized_archive: Path, req
         """,
     )
 
-    env = {
-        **os.environ,
-        "DATA_DIR": str(initialized_archive),
-        "USE_COLOR": "False",
-        "SHOW_PROGRESS": "False",
-        "PUBLIC_ADD_VIEW": "False",
-        "SAVE_ARCHIVEDOTORG": "False",
-        "SAVE_TITLE": "False",
-        "SAVE_FAVICON": "False",
-        "SAVE_WGET": "False",
-        "SAVE_WARC": "False",
-        "SAVE_PDF": "False",
-        "SAVE_SCREENSHOT": "False",
-        "SAVE_DOM": "False",
-        "SAVE_SINGLEFILE": "False",
-        "SAVE_READABILITY": "False",
-        "SAVE_MERCURY": "False",
-        "SAVE_GIT": "False",
-        "SAVE_YTDLP": "False",
-        "SAVE_HEADERS": "False",
-        "SAVE_HTMLTOTEXT": "False",
-    }
+    env = cli_env(disable_extractors=True, PUBLIC_ADD_VIEW="False")
 
     return subprocess.run(
         [sys.executable, "-c", script],
@@ -247,28 +186,7 @@ def _run_savepagenow_existing_snapshot_script(initialized_archive: Path, request
         """,
     )
 
-    env = {
-        **os.environ,
-        "DATA_DIR": str(initialized_archive),
-        "USE_COLOR": "False",
-        "SHOW_PROGRESS": "False",
-        "PUBLIC_ADD_VIEW": "False",
-        "SAVE_ARCHIVEDOTORG": "False",
-        "SAVE_TITLE": "False",
-        "SAVE_FAVICON": "False",
-        "SAVE_WGET": "False",
-        "SAVE_WARC": "False",
-        "SAVE_PDF": "False",
-        "SAVE_SCREENSHOT": "False",
-        "SAVE_DOM": "False",
-        "SAVE_SINGLEFILE": "False",
-        "SAVE_READABILITY": "False",
-        "SAVE_MERCURY": "False",
-        "SAVE_GIT": "False",
-        "SAVE_YTDLP": "False",
-        "SAVE_HEADERS": "False",
-        "SAVE_HTMLTOTEXT": "False",
-    }
+    env = cli_env(disable_extractors=True, PUBLIC_ADD_VIEW="False")
 
     return subprocess.run(
         [sys.executable, "-c", script],

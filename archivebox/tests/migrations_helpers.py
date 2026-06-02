@@ -8,14 +8,12 @@ This module provides:
 - Helper functions to run archivebox commands and verify results
 """
 
-import os
-import sys
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 
+from archivebox.tests.conftest import cli_env, run_archivebox_cmd
 from archivebox.uuid_compat import uuid7
 
 
@@ -1020,41 +1018,21 @@ def seed_0_8_data(db_path: Path) -> dict[str, list[dict]]:
 # =============================================================================
 
 
-def run_archivebox(data_dir: Path, args: list, timeout: int = 60, env: dict | None = None) -> subprocess.CompletedProcess:
+def run_archivebox_migration_cmd(data_dir: Path, args: list, timeout: int = 60, env: dict | None = None):
     """Run archivebox command in subprocess with given data directory."""
-    base_env = os.environ.copy()
-    base_env["USE_COLOR"] = "False"
-    base_env["SHOW_PROGRESS"] = "False"
-    # Disable ALL extractors for faster tests (can be overridden by env parameter)
-    base_env["PLUGINS"] = "__archivebox_test_no_plugins__"
-    base_env["SAVE_ARCHIVEDOTORG"] = "False"
-    base_env["SAVE_TITLE"] = "False"
-    base_env["SAVE_FAVICON"] = "False"
-    base_env["SAVE_WGET"] = "False"
-    base_env["SAVE_SINGLEFILE"] = "False"
-    base_env["SAVE_SCREENSHOT"] = "False"
-    base_env["SAVE_PDF"] = "False"
-    base_env["SAVE_DOM"] = "False"
-    base_env["SAVE_READABILITY"] = "False"
-    base_env["SAVE_MERCURY"] = "False"
-    base_env["SAVE_GIT"] = "False"
-    base_env["SAVE_YTDLP"] = "False"
-    base_env["SAVE_HEADERS"] = "False"
-    base_env["SAVE_HTMLTOTEXT"] = "False"
-
-    # Override with any custom env vars
+    base_env = cli_env(
+        disable_extractors=True,
+        PLUGINS="__archivebox_test_no_plugins__",
+    )
     if env:
         base_env.update(env)
 
-    cmd = [sys.executable, "-m", "archivebox"] + args
-
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
+    return run_archivebox_cmd(
+        args,
         env=base_env,
-        cwd=str(data_dir),
+        cwd=data_dir,
         timeout=timeout,
+        replace_env=True,
     )
 
 

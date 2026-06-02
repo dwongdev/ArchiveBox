@@ -6,25 +6,23 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
-import socket
 import subprocess
-import sys
 import textwrap
 import time
 from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
-import requests
 
 from .conftest import _ensure_puppeteer, _find_cached_chrome, _find_system_browser, run_python_cwd
 from .conftest import (
-    build_test_env,
-    run_archivebox_cmd_cwd,
-    start_server as start_daemon_server,
+    cli_env,
+    get_free_port,
+    run_archivebox_cmd,
+    start_archivebox_server as start_daemon_server,
+    stop_archivebox_process,
     stop_server as stop_daemon_server,
-    wait_for_http as wait_for_daemon_http,
+    wait_for_http,
 )
 
 
@@ -425,102 +423,6 @@ def _seed_archive(data_dir: Path) -> dict[str, object]:
     return json.loads(stdout.strip())
 
 
-def _get_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_for_http(
-    port: int,
-    host: str,
-    timeout: float = 30.0,
-    process: subprocess.Popen[str] | None = None,
-) -> None:
-    deadline = time.time() + timeout
-    last_error = "server did not answer"
-    while time.time() < deadline:
-        if process is not None and process.poll() is not None:
-            raise AssertionError(f"Server exited before becoming ready with code {process.returncode}")
-        try:
-            response = requests.get(
-                f"http://127.0.0.1:{port}/",
-                headers={"Host": host},
-                timeout=2,
-                allow_redirects=False,
-            )
-            if response.status_code < 500:
-                return
-            last_error = f"HTTP {response.status_code}"
-        except requests.RequestException as exc:
-            last_error = str(exc)
-        time.sleep(0.5)
-    raise AssertionError(f"Timed out waiting for {host}: {last_error}")
-
-
-def _start_server(data_dir: Path, *, mode: str, port: int) -> subprocess.Popen[str]:
-    env = os.environ.copy()
-    env.pop("DATA_DIR", None)
-    env.update(
-        {
-            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-            "BIND_ADDR": f"127.0.0.1:{port}",
-            "BASE_URL": f"http://archivebox.localhost:{port}",
-            "ALLOWED_HOSTS": "*",
-            "SERVER_SECURITY_MODE": mode,
-            "USE_COLOR": "False",
-            "SHOW_PROGRESS": "False",
-            "SAVE_ARCHIVEDOTORG": "False",
-            "SAVE_TITLE": "False",
-            "SAVE_FAVICON": "False",
-            "SAVE_WGET": "False",
-            "SAVE_WARC": "False",
-            "SAVE_PDF": "False",
-            "SAVE_SCREENSHOT": "False",
-            "SAVE_DOM": "False",
-            "SAVE_SINGLEFILE": "False",
-            "SAVE_READABILITY": "False",
-            "SAVE_MERCURY": "False",
-            "SAVE_GIT": "False",
-            "SAVE_YTDLP": "False",
-            "SAVE_HEADERS": "False",
-            "SAVE_HTMLTOTEXT": "False",
-            "USE_CHROME": "False",
-        },
-    )
-    process = subprocess.Popen(
-        [sys.executable, "-m", "archivebox", "server", "--debug", "--nothreading", f"127.0.0.1:{port}"],
-        cwd=data_dir,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
-    try:
-        _wait_for_http(port, f"archivebox.localhost:{port}", process=process)
-    except AssertionError as exc:
-        server_log = _stop_server(process)
-        raise AssertionError(f"{exc}\n\nSERVER LOG:\n{server_log}") from exc
-    return process
-
-
-def _stop_server(process: subprocess.Popen[str]) -> str:
-    try:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                stdout, _ = process.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                stdout, _ = process.communicate(timeout=5)
-        else:
-            stdout, _ = process.communicate(timeout=5)
-    except ProcessLookupError:
-        stdout, _ = process.communicate(timeout=5)
-    return stdout
-
-
 def _build_probe_config(mode: str, port: int, fixture: dict[str, object], runtime: dict[str, Path]) -> dict[str, str]:
     snapshots = fixture["snapshots"]
     attacker = snapshots["attacker"]
@@ -566,8 +468,51 @@ def _run_browser_probe(
     fixture: dict[str, object],
     tmp_path: Path,
 ) -> dict[str, object]:
-    port = _get_free_port()
-    process = _start_server(data_dir, mode=mode, port=port)
+    port = get_free_port()
+    server_env = os.environ.copy()
+    server_env.pop("DATA_DIR", None)
+    server_env.update(
+        {
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "BIND_ADDR": f"127.0.0.1:{port}",
+            "BASE_URL": f"http://archivebox.localhost:{port}",
+            "ALLOWED_HOSTS": "*",
+            "SERVER_SECURITY_MODE": mode,
+            "USE_COLOR": "False",
+            "SHOW_PROGRESS": "False",
+            "SAVE_ARCHIVEDOTORG": "False",
+            "SAVE_TITLE": "False",
+            "SAVE_FAVICON": "False",
+            "SAVE_WGET": "False",
+            "SAVE_WARC": "False",
+            "SAVE_PDF": "False",
+            "SAVE_SCREENSHOT": "False",
+            "SAVE_DOM": "False",
+            "SAVE_SINGLEFILE": "False",
+            "SAVE_READABILITY": "False",
+            "SAVE_MERCURY": "False",
+            "SAVE_GIT": "False",
+            "SAVE_YTDLP": "False",
+            "SAVE_HEADERS": "False",
+            "SAVE_HTMLTOTEXT": "False",
+            "USE_CHROME": "False",
+        },
+    )
+    process = run_archivebox_cmd(
+        ["server", "--debug", "--nothreading", f"127.0.0.1:{port}"],
+        cwd=data_dir,
+        env=server_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        wait=False,
+    )
+    try:
+        wait_for_http(port, f"archivebox.localhost:{port}", process=process)
+    except AssertionError as exc:
+        server_log = stop_archivebox_process(process)
+        raise AssertionError(f"{exc}\n\nSERVER LOG:\n{server_log}") from exc
+
     probe_path = tmp_path / "server_security_probe.js"
     probe_path.write_text(PUPPETEER_PROBE_SCRIPT, encoding="utf-8")
     probe_config = _build_probe_config(mode, port, fixture, runtime)
@@ -589,7 +534,7 @@ def _run_browser_probe(
             timeout=120,
         )
     finally:
-        server_log = _stop_server(process)
+        server_log = stop_archivebox_process(process)
 
     assert result.returncode == 0, f"{result.stderr}\n\nSERVER LOG:\n{server_log}"
     return json.loads(result.stdout.strip())
@@ -797,8 +742,8 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
     from archivebox.core.routes_util import get_snapshot_subdomain
 
     url = "https://example.com"
-    port = _get_free_port()
-    env = build_test_env(
+    port = get_free_port()
+    env = cli_env(
         port,
         PLUGINS="archivewebpage",
         URL_ALLOWLIST="",
@@ -817,13 +762,14 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
 
     try:
         start_daemon_server(initialized_archive, env=env, port=port)
-        wait_for_daemon_http(port, host=f"archivebox.localhost:{port}", path="/")
-        stdout, stderr, returncode = run_archivebox_cmd_cwd(
+        wait_for_http(port, host=f"archivebox.localhost:{port}", path="/")
+        _cmd_result = run_archivebox_cmd(
             ["add", "--bg", "--depth=0", "--max-urls=1", "--plugins=archivewebpage", url],
             cwd=initialized_archive,
             env=env,
             timeout=120,
         )
+        stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
         assert returncode == 0, f"archivebox add --bg failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
 
         capture = _wait_for_archivewebpage_capture(initialized_archive, url, timeout=360)

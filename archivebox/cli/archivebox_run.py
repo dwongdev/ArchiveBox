@@ -259,11 +259,24 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
     from archivebox.config import CONSTANTS
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.machine.models import Machine, Process
-    from archivebox.core.takeover_util import enter_single_runner_gate
-    from archivebox.services.runner import recover_orchestrator_state, run_pending_crawls
+    from archivebox.core.takeover_util import enter_single_runner_gate, standby_until_foreground_runner_needed
+    from archivebox.core.recovery_util import recover_orchestrator_state
+    from archivebox.services.runner import run_pending_crawls
 
     Machine.current()
     current = Process.current()
+    root_command = current.root
+    if daemon and root_command.process_type in (
+        Process.TypeChoices.SERVER,
+        Process.TypeChoices.ADD,
+        Process.TypeChoices.UPDATE,
+    ):
+        # Server-owned daemon runners are persistent supervisor workers, but
+        # foreground add/update commands are allowed to borrow runner/sonic
+        # leadership without taking down Daphne. Waiting here keeps the worker
+        # on the normal runner path while preventing a server restart loop from
+        # immediately stealing the single-runner gate back from the newer CLI.
+        standby_until_foreground_runner_needed(root_command, data_dir=CONSTANTS.DATA_DIR)
     if not enter_single_runner_gate(current, data_dir=CONSTANTS.DATA_DIR):
         current.mark_exited()
         return 0

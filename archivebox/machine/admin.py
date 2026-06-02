@@ -548,6 +548,7 @@ class ProcessAdmin(BaseModelAdmin):
         label="Kill",
         description="Kill this process if it is still running",
         attrs={"class": "deletelink"},
+        methods=("POST",),
     )
     def kill_process(self, request, obj):
         self._terminate_processes(request, [obj])

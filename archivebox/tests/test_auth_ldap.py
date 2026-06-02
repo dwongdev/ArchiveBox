@@ -132,27 +132,33 @@ class TestArchiveBoxWithLDAP:
 
     def test_archivebox_init_without_ldap(self, tmp_path):
         """Test that archivebox init works without LDAP enabled."""
-        _, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["init"],
-            data_dir=tmp_path,
+            cwd=tmp_path,
             timeout=45,
             env={"LDAP_ENABLED": "False"},
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        _, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         # Should succeed
         assert code == 0, f"archivebox init failed: {stderr}"
 
     def test_archivebox_version_with_ldap_config(self, tmp_path):
         """Test that archivebox version works with LDAP config set."""
-        _, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["version"],
-            data_dir=tmp_path,
+            cwd=tmp_path,
             timeout=10,
             env={
                 "LDAP_ENABLED": "False",
                 "LDAP_SERVER_URI": "ldap://ldap-test.localhost:389",
             },
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        _, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         # Should succeed
         assert code == 0, f"archivebox version failed: {stderr}"
@@ -163,15 +169,18 @@ class TestLDAPConfigValidationInArchiveBox:
 
     def test_archivebox_init_with_incomplete_ldap_config(self, tmp_path):
         """Test that archivebox init fails with helpful error when LDAP config is incomplete."""
-        _, stderr, code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["init"],
-            data_dir=tmp_path,
+            cwd=tmp_path,
             timeout=45,
             env={
                 "LDAP_ENABLED": "True",
                 # Missing: LDAP_SERVER_URI, LDAP_BIND_DN, etc.
             },
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        _, stderr, code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
 
         # Should fail with validation error
         assert code != 0, "Should fail with incomplete LDAP config"

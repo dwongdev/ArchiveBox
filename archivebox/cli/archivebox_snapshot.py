@@ -35,9 +35,9 @@ from collections.abc import Iterable
 
 import rich_click as click
 from rich import print as rprint
-from django.db.models import Case, IntegerField, QuerySet, When
+from django.db.models import QuerySet
 
-from archivebox.cli.cli_util import apply_filters
+SNAPSHOT_FILTER_TYPE_CHOICES = ("exact", "substring", "regex", "domain", "tag", "timestamp")
 
 
 # =============================================================================
@@ -178,72 +178,63 @@ def create_snapshots(
 # =============================================================================
 
 
+def snapshot_filter_options(*, default_filter_type: str):
+    def decorate(func):
+        for decorator in reversed(
+            (
+                click.option("--status", "-s", help="Filter by status (queued, started, sealed)"),
+                click.option("--url__icontains", help="Filter by URL contains"),
+                click.option("--url__istartswith", help="Filter by URL starts with"),
+                click.option("--tag", "-t", help="Filter by tag name"),
+                click.option("--crawl-id", help="Filter by crawl ID"),
+                click.option("--limit", "-n", type=int, help="Limit number of results"),
+                click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at"),
+                click.option("--search", help="Search mode to use for positional query"),
+                click.option("--before", type=float, help="Only snapshots bookmarked before timestamp"),
+                click.option("--after", type=float, help="Only snapshots bookmarked after timestamp"),
+                click.option(
+                    "--filter-type",
+                    "-f",
+                    type=click.Choice(SNAPSHOT_FILTER_TYPE_CHOICES),
+                    default=default_filter_type,
+                    help="Type of pattern matching to use for positional filters",
+                ),
+                click.argument("filter_patterns", nargs=-1),
+            ),
+        ):
+            func = decorator(func)
+        return func
+
+    return decorate
+
+
+def snapshot_output_options(func):
+    for decorator in reversed(
+        (
+            click.option("--csv", "-C", type=str, help="Print output as CSV with the provided fields, e.g.: timestamp,url,title"),
+            click.option("--json", "as_json", is_flag=True, help="Print output as a JSON array"),
+            click.option("--html", "as_html", is_flag=True, help="Print output as HTML"),
+            click.option("--with-headers", is_flag=True, help="Include column headers in structured output"),
+        ),
+    ):
+        func = decorator(func)
+    return func
+
+
 def build_snapshot_queryset(
-    *,
-    status: str | None = None,
-    url__icontains: str | None = None,
-    url__istartswith: str | None = None,
-    tag: str | None = None,
-    crawl_id: str | None = None,
-    sort: str | None = None,
-    search: str | None = None,
-    query: str | None = None,
-    limit: int | None = None,
+    **kwargs,
 ) -> QuerySet:
     from archivebox.core.models import Snapshot
-    from archivebox.search.query import apply_snapshot_search
 
-    queryset = Snapshot.objects.order_by("-created_at")
-    queryset = apply_filters(
-        queryset,
-        {
-            "status": status,
-            "url__icontains": url__icontains,
-            "url__istartswith": url__istartswith,
-            "crawl_id": crawl_id,
-        },
-    )
-
-    if tag:
-        queryset = queryset.filter(tags__name__iexact=tag)
-
-    query = (query or "").strip()
-    if query:
-        try:
-            queryset = apply_snapshot_search(
-                queryset,
-                query,
-                search_mode=search,
-                ordering=("-created_at",) if not sort else None,
-                max_results=limit,
-                skip_backend_when_metadata_satisfies_limit=True,
-                include_metadata_for_forced_backend=True,
-            )
-        except Exception as err:
-            rprint(
-                f"[yellow]Search backend error, falling back to metadata search: {err}[/yellow]",
-                file=sys.stderr,
-            )
-            queryset = apply_snapshot_search(queryset, query, search_mode="meta")
-
-    if sort:
-        queryset = queryset.order_by(sort)
-
-    return queryset
+    return Snapshot.objects.order_by("-created_at").search(**kwargs)
 
 
 def list_snapshots(
-    status: str | None = None,
-    url__icontains: str | None = None,
-    url__istartswith: str | None = None,
-    tag: str | None = None,
-    crawl_id: str | None = None,
-    limit: int | None = None,
-    sort: str | None = None,
     csv: str | None = None,
+    as_json: bool = False,
+    as_html: bool = False,
     with_headers: bool = False,
-    search: str | None = None,
-    query: str | None = None,
+    **kwargs,
 ) -> int:
     """
     List Snapshots as JSONL with optional filters.
@@ -252,90 +243,71 @@ def list_snapshots(
         0: Success (even if no results)
     """
     from archivebox.misc.jsonl import write_record
-    from archivebox.core.models import Snapshot
 
-    if with_headers and not csv:
-        rprint("[red]--with-headers requires --csv[/red]", file=sys.stderr)
+    output_formats = sum(bool(output_format) for output_format in (csv, as_json, as_html))
+    if output_formats > 1:
+        rprint("[red]Choose only one output format: --csv, --json, or --html[/red]", file=sys.stderr)
+        return 2
+    if with_headers and not output_formats:
+        rprint("[red]--with-headers requires --csv, --json, or --html[/red]", file=sys.stderr)
         return 2
 
-    is_tty = sys.stdout.isatty() and not csv
+    is_tty = sys.stdout.isatty() and not output_formats
 
-    queryset = build_snapshot_queryset(
-        status=status,
-        url__icontains=url__icontains,
-        url__istartswith=url__istartswith,
-        tag=tag,
-        crawl_id=crawl_id,
-        sort=sort,
-        search=search,
-        query=query,
-        limit=limit,
-    )
-
-    if not is_tty:
-        if limit:
-            limited_ids = list(queryset.values_list("id", flat=True)[:limit])
-            preserved_order = Case(
-                *(When(id=snapshot_id, then=position) for position, snapshot_id in enumerate(limited_ids)),
-                output_field=IntegerField(),
-            )
-            queryset = Snapshot.objects.filter(id__in=limited_ids).order_by(preserved_order)
-        queryset = queryset.prefetch_related("tags")
-    elif limit:
-        queryset = queryset[:limit]
+    try:
+        queryset = build_snapshot_queryset(**kwargs)
+    except ValueError as err:
+        rprint(f"[red]{err}[/red]", file=sys.stderr)
+        return 2
 
     count = 0
+    if as_json:
+        queryset = queryset.prefetch_related("tags")
+        output = queryset.to_json(with_headers=with_headers)
+        sys.stdout.write(output)
+        if output and not output.endswith("\n"):
+            sys.stdout.write("\n")
+        rprint(f"[dim]Listed {queryset.count()} snapshots[/dim]", file=sys.stderr)
+        return 0
+
+    if as_html:
+        queryset = queryset.prefetch_related("tags")
+        output = queryset.to_html(with_headers=with_headers)
+        sys.stdout.write(output)
+        if output and not output.endswith("\n"):
+            sys.stdout.write("\n")
+        rprint(f"[dim]Listed {queryset.count()} snapshots[/dim]", file=sys.stderr)
+        return 0
+
     if csv:
         cols = [col.strip() for col in csv.split(",") if col.strip()]
         if not cols:
             rprint("[red]No CSV columns provided[/red]", file=sys.stderr)
             return 2
-        rows: list[str] = []
         if with_headers:
-            rows.append(",".join(cols))
-        simple_cols = {
-            "id",
-            "crawl_id",
-            "url",
-            "title",
-            "timestamp",
-            "depth",
-            "status",
-            "fs_version",
-            "bookmarked_at",
-            "created_at",
-            "modified_at",
-            "retry_at",
-            "downloaded_at",
-        }
-        from archivebox.misc.util import to_json
-
-        for snapshot in queryset.iterator(chunk_size=500):
-            if set(cols).issubset(simple_cols):
-                rows.append(
-                    ",".join(to_json(snapshot.serializable_value(col), indent=None) for col in cols),
-                )
-            else:
-                rows.append(snapshot.to_csv(cols=cols, separator=","))
+            sys.stdout.write(",".join(cols))
+            sys.stdout.write("\n")
+        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=500):
+            sys.stdout.write(snapshot.to_csv(cols=cols, separator=","))
+            sys.stdout.write("\n")
             count += 1
-        output = "\n".join(rows)
-        if output:
-            sys.stdout.write(output)
-            if not output.endswith("\n"):
-                sys.stdout.write("\n")
         rprint(f"[dim]Listed {count} snapshots[/dim]", file=sys.stderr)
         return 0
 
-    for snapshot in queryset:
-        if is_tty:
-            status_color = {
-                "queued": "yellow",
-                "started": "blue",
-                "sealed": "green",
-            }.get(snapshot.status, "dim")
-            rprint(f"[{status_color}]{snapshot.status:8}[/{status_color}] [dim]{snapshot.id}[/dim] {snapshot.url[:60]}")
-        else:
+    if not is_tty:
+        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=500):
             write_record(snapshot.to_json())
+            count += 1
+        rprint(f"[dim]Listed {count} snapshots[/dim]", file=sys.stderr)
+        return 0
+
+    for snapshot in queryset.iterator(chunk_size=500):
+        status_color = {
+            "queued": "yellow",
+            "started": "blue",
+            "sealed": "green",
+        }.get(snapshot.status, "dim")
+        rprint(f"[{status_color}]{snapshot.status:8}[/{status_color}] [dim]{snapshot.id}[/dim] {snapshot.url[:60]}")
         count += 1
 
     rprint(f"[dim]Listed {count} snapshots[/dim]", file=sys.stderr)
@@ -494,46 +466,11 @@ def create_cmd(urls: tuple, tag: str, status: str, depth: int):
 
 
 @main.command("list")
-@click.option("--status", "-s", help="Filter by status (queued, started, sealed)")
-@click.option("--url__icontains", help="Filter by URL contains")
-@click.option("--url__istartswith", help="Filter by URL starts with")
-@click.option("--tag", "-t", help="Filter by tag name")
-@click.option("--crawl-id", help="Filter by crawl ID")
-@click.option("--limit", "-n", type=int, help="Limit number of results")
-@click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
-@click.option("--csv", "-C", type=str, help="Print output as CSV with the provided fields, e.g.: timestamp,url,title")
-@click.option("--with-headers", is_flag=True, help="Include column headers in structured output")
-@click.option("--search", help="Search mode to use for the query")
-@click.argument("query", nargs=-1)
-def list_cmd(
-    status: str | None,
-    url__icontains: str | None,
-    url__istartswith: str | None,
-    tag: str | None,
-    crawl_id: str | None,
-    limit: int | None,
-    sort: str | None,
-    csv: str | None,
-    with_headers: bool,
-    search: str | None,
-    query: tuple[str, ...],
-):
+@snapshot_output_options
+@snapshot_filter_options(default_filter_type="substring")
+def list_cmd(**kwargs):
     """List Snapshots as JSONL."""
-    sys.exit(
-        list_snapshots(
-            status=status,
-            url__icontains=url__icontains,
-            url__istartswith=url__istartswith,
-            tag=tag,
-            crawl_id=crawl_id,
-            limit=limit,
-            sort=sort,
-            csv=csv,
-            with_headers=with_headers,
-            search=search,
-            query=" ".join(query),
-        ),
-    )
+    sys.exit(list_snapshots(**kwargs))
 
 
 @main.command("update")

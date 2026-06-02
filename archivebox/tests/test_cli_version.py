@@ -6,44 +6,9 @@ Verify version output and system information reporting.
 
 import os
 import re
-import sys
 import tempfile
-import subprocess
 from pathlib import Path
-
-from .fixtures import process
-
-FIXTURES = (process,)
-
-
-def _archivebox_cli() -> str:
-    cli = Path(sys.executable).with_name("archivebox")
-    return str(cli if cli.exists() else "archivebox")
-
-
-def _run_real_cli(
-    args: list[str],
-    cwd: Path,
-    *,
-    home_dir: Path,
-    timeout: int = 180,
-    extra_env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env.pop("DATA_DIR", None)
-    env["HOME"] = str(home_dir)
-    env["USE_COLOR"] = "False"
-    env["SHOW_PROGRESS"] = "False"
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(
-        [_archivebox_cli(), *args],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-    )
+from archivebox.tests.conftest import run_archivebox_cmd
 
 
 def _make_deep_collection_dir(tmp_path: Path) -> Path:
@@ -66,8 +31,7 @@ def _extract_location_path(output: str, key: str) -> Path:
 
 def test_version_quiet_outputs_version_number(tmp_path):
     """Test that version --quiet outputs just the version number."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version", "--quiet"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version", "--quiet"])
 
     assert result.returncode == 0
     version = result.stdout.strip()
@@ -79,8 +43,7 @@ def test_version_quiet_outputs_version_number(tmp_path):
 
 def test_version_flag_outputs_version_number(tmp_path):
     """Test that top-level --version reports the package version."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "--version"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["--version"])
 
     assert result.returncode == 0
     version = result.stdout.strip()
@@ -88,10 +51,9 @@ def test_version_flag_outputs_version_number(tmp_path):
     assert len(version.split(".")) >= 2
 
 
-def test_version_shows_system_info_in_initialized_dir(tmp_path, process):
+def test_version_shows_system_info_in_initialized_dir(tmp_path, initialized_archive):
     """Test that version shows system metadata in initialized directory."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version"])
 
     output = result.stdout
     assert "ArchiveBox" in output
@@ -99,20 +61,18 @@ def test_version_shows_system_info_in_initialized_dir(tmp_path, process):
     assert any(x in output for x in ["ARCH=", "OS=", "PYTHON="])
 
 
-def test_version_shows_binaries_after_init(tmp_path, process):
+def test_version_shows_binaries_after_init(tmp_path, initialized_archive):
     """Test that version shows binary dependencies in initialized directory."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version"])
 
     output = result.stdout
     # Should show binary section
     assert "Binary" in output or "Dependencies" in output
 
 
-def test_version_shows_data_locations(tmp_path, process):
+def test_version_shows_data_locations(tmp_path, initialized_archive):
     """Test that version shows data directory locations."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version"])
 
     output = result.stdout
     # Should show paths
@@ -123,9 +83,8 @@ def test_version_in_uninitialized_dir_still_works(tmp_path):
     """Test that version command works even without initialized data dir."""
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
-    os.chdir(empty_dir)
 
-    result = subprocess.run(["archivebox", "version", "--quiet"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version", "--quiet"], cwd=empty_dir)
 
     # Should still output version
     assert result.returncode == 0
@@ -140,11 +99,17 @@ def test_version_auto_selects_short_tmp_dir_for_deep_collection_path(tmp_path):
 
     with tempfile.TemporaryDirectory(prefix="abx-home-") as home_tmp:
         home_dir = Path(home_tmp)
+        env = {
+            "HOME": str(home_dir),
+            "USE_COLOR": "False",
+            "SHOW_PROGRESS": "False",
+            **extra_env,
+        }
 
-        init_result = _run_real_cli(["init", "--quick"], cwd=data_dir, home_dir=home_dir, extra_env=extra_env)
+        init_result = run_archivebox_cmd(["init", "--quick"], cwd=data_dir, env=env, timeout=180)
         assert init_result.returncode == 0, init_result.stdout + init_result.stderr
 
-        version_result = _run_real_cli(["version"], cwd=data_dir, home_dir=home_dir, extra_env=extra_env)
+        version_result = run_archivebox_cmd(["version"], cwd=data_dir, env=env, timeout=180)
         output = version_result.stdout + version_result.stderr
 
     assert version_result.returncode == 0, output
@@ -163,8 +128,7 @@ def test_version_auto_selects_short_tmp_dir_for_deep_collection_path(tmp_path):
 
 def test_version_help_lists_quiet_flag(tmp_path):
     """Test that version --help documents the quiet output mode."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version", "--help"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version", "--help"])
 
     assert result.returncode == 0
     assert "--quiet" in result.stdout or "-q" in result.stdout
@@ -172,7 +136,6 @@ def test_version_help_lists_quiet_flag(tmp_path):
 
 def test_version_invalid_option_fails(tmp_path):
     """Test that invalid version options fail cleanly."""
-    os.chdir(tmp_path)
-    result = subprocess.run(["archivebox", "version", "--invalid-option"], capture_output=True, text=True)
+    result = run_archivebox_cmd(["version", "--invalid-option"])
 
     assert result.returncode != 0

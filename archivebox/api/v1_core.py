@@ -29,7 +29,7 @@ from ninja.errors import HttpError
 
 from archivebox.core.models import Snapshot, ArchiveResult, Tag
 from archivebox.core.permissions import public_snapshots_queryset
-from archivebox.api.auth import auth_using_token
+from archivebox.api.auth import authenticated_user_from_request
 from archivebox.config.common import get_config
 from archivebox.core.routes_util import build_web_url
 from archivebox.misc.util import filter_queryset_by_uuid_substring, validate_url_length
@@ -49,9 +49,10 @@ from archivebox.core.tag_util import (
     rename_tag as rename_tag_record,
 )
 from archivebox.crawls.models import Crawl
-from archivebox.api.v1_crawls import CrawlSchema
+from archivebox.api.v1_crawls import CrawlSchema, get_crawl_by_ref
 from archivebox.search.config import get_search_mode, get_search_mode_backend
 from archivebox.search.query import apply_snapshot_search
+from archivebox.core.snapshot_status import filter_snapshots_by_status, normalize_snapshot_status
 
 
 router = Router(tags=["Core Models"])
@@ -79,7 +80,7 @@ class CustomPagination(PaginationBase):
     def paginate_queryset(self, queryset, pagination: Input, request: HttpRequest, **params):
         limit = min(pagination.limit, 500)
         offset = pagination.offset or (pagination.page * limit)
-        total = queryset.count()
+        total = queryset.values("pk").distinct().count() if queryset.query.distinct else queryset.count()
         total_pages = math.ceil(total / limit)
         current_page = math.ceil(offset / (limit + 1))
         items = queryset[offset : offset + limit]
@@ -212,7 +213,10 @@ class ArchiveResultFilterSchema(FilterSchema):
 @paginate(CustomPagination)
 def get_archiveresults(request: HttpRequest, filters: Query[ArchiveResultFilterSchema]):
     """List all ArchiveResult entries matching these filters."""
-    return filters.filter(ArchiveResult.objects.all()).distinct()
+    queryset = filters.filter(ArchiveResult.objects.all())
+    if filters.search or filters.snapshot_tag:
+        return queryset.distinct()
+    return queryset
 
 
 def _uuid_ref_query(field_name: str, ref: str) -> Q:
@@ -854,6 +858,7 @@ class SnapshotFilterSchema(FilterSchema):
     modified_at__lt: Annotated[datetime | None, FilterLookup("modified_at__lt")] = None
     search: str | None = None
     search_mode: str | None = None
+    status: str | None = None
     url: Annotated[str | None, FilterLookup("url")] = None
     tag: Annotated[str | None, FilterLookup("tags__name")] = None
     title: Annotated[str | None, FilterLookup("title__icontains")] = None
@@ -867,13 +872,20 @@ class SnapshotFilterSchema(FilterSchema):
     def filter_search_mode(self, value: str | None) -> Q:
         return Q()
 
+    def filter_status(self, value: str | None) -> Q:
+        return Q()
+
 
 @router.get("/snapshots", response=list[SnapshotSchema], url_name="get_snapshots")
 @paginate(CustomPagination)
 def get_snapshots(request: HttpRequest, filters: Query[SnapshotFilterSchema], with_archiveresults: bool = False):
     """List all Snapshot entries matching these filters."""
     setattr(request, "with_archiveresults", with_archiveresults)
-    queryset = filters.filter(Snapshot.objects.all()).distinct()
+    try:
+        queryset = filter_snapshots_by_status(Snapshot.objects.all(), filters.status)
+    except ValueError as err:
+        raise HttpError(400, str(err)) from err
+    queryset = filters.filter(queryset).distinct()
     query = (filters.search or "").strip()
     if not query:
         return queryset
@@ -916,18 +928,16 @@ def get_snapshots_rss(
 def get_snapshot(request: HttpRequest, snapshot_id: str, with_archiveresults: bool = True):
     """Get a specific Snapshot by id."""
     setattr(request, "with_archiveresults", with_archiveresults)
-    queryset = Snapshot.objects.all()
-    try:
-        return queryset.get(_uuid_ref_query("id", snapshot_id) | Q(timestamp__startswith=snapshot_id))
-    except Snapshot.DoesNotExist:
-        return queryset.get(_uuid_ref_query("id", snapshot_id))
+    return _get_snapshot_by_ref(snapshot_id)
 
 
 @router.post("/snapshots", response=SnapshotSchema, url_name="create_snapshot")
 def create_snapshot(request: HttpRequest, data: SnapshotCreateSchema):
     tags = normalize_tag_list(data.tags)
-    if data.status is not None and data.status not in Snapshot.StatusChoices.values:
-        raise HttpError(400, f"Invalid status: {data.status}")
+    try:
+        status = normalize_snapshot_status(data.status)
+    except ValueError as err:
+        raise HttpError(400, str(err)) from err
     if not data.url.strip():
         raise HttpError(400, "URL is required")
     try:
@@ -938,7 +948,7 @@ def create_snapshot(request: HttpRequest, data: SnapshotCreateSchema):
         raise HttpError(400, "depth must be between 0 and 4")
 
     if data.crawl_id:
-        crawl = filter_queryset_by_uuid_substring(Crawl.objects.all(), data.crawl_id).get()
+        crawl = get_crawl_by_ref(data.crawl_id)
         crawl_tags = normalize_tag_list(crawl.tags_str.split(","))
         tags = tags or crawl_tags
     else:
@@ -955,7 +965,7 @@ def create_snapshot(request: HttpRequest, data: SnapshotCreateSchema):
         "depth": data.depth,
         "title": data.title,
         "timestamp": str(timezone.now().timestamp()),
-        "status": data.status or Snapshot.StatusChoices.QUEUED,
+        "status": status or Snapshot.StatusChoices.QUEUED,
         "retry_at": timezone.now(),
     }
     snapshot, _ = Snapshot.objects.get_or_create(
@@ -968,10 +978,8 @@ def create_snapshot(request: HttpRequest, data: SnapshotCreateSchema):
     if data.title is not None and snapshot.title != data.title:
         snapshot.title = data.title
         update_fields.append("title")
-    if data.status is not None and snapshot.status != data.status:
-        if data.status not in Snapshot.StatusChoices.values:
-            raise HttpError(400, f"Invalid status: {data.status}")
-        snapshot.status = data.status
+    if status is not None and snapshot.status != status:
+        snapshot.status = status
         update_fields.append("status")
     if update_fields:
         update_fields.append("modified_at")
@@ -992,10 +1000,7 @@ def create_snapshot(request: HttpRequest, data: SnapshotCreateSchema):
 @router.patch("/snapshot/{snapshot_id}", response=SnapshotSchema, url_name="patch_snapshot")
 def patch_snapshot(request: HttpRequest, snapshot_id: str, data: SnapshotUpdateSchema):
     """Update a snapshot (e.g., set status=sealed to cancel queued work)."""
-    try:
-        snapshot = Snapshot.objects.get(Q(id__startswith=snapshot_id) | Q(timestamp__startswith=snapshot_id))
-    except Snapshot.DoesNotExist:
-        snapshot = filter_queryset_by_uuid_substring(Snapshot.objects.all(), snapshot_id).get()
+    snapshot = _get_snapshot_by_ref(snapshot_id)
 
     payload = data.dict(exclude_unset=True)
     update_fields = ["modified_at"]
@@ -1018,9 +1023,10 @@ def patch_snapshot(request: HttpRequest, snapshot_id: str, data: SnapshotUpdateS
         raise HttpError(400, f"Invalid action: {action}")
 
     if "status" in payload:
-        if payload["status"] not in Snapshot.StatusChoices.values:
-            raise HttpError(400, f"Invalid status: {payload['status']}")
-        snapshot.status = payload["status"]
+        try:
+            snapshot.status = normalize_snapshot_status(payload["status"])
+        except ValueError as err:
+            raise HttpError(400, str(err)) from err
         if snapshot.status == Snapshot.StatusChoices.SEALED and "retry_at" not in payload:
             snapshot.retry_at = None
         update_fields.append("status")
@@ -1289,16 +1295,7 @@ def _public_tag_listing_enabled() -> bool:
 
 
 def _request_has_tag_autocomplete_access(request: HttpRequest) -> bool:
-    user = request.user
-    if user.is_authenticated:
-        return True
-
-    token = request.GET.get("api_key") or request.headers.get("X-ArchiveBox-API-Key")
-    auth_header = request.headers.get("Authorization", "")
-    if not token and auth_header.lower().startswith("bearer "):
-        token = auth_header.split(None, 1)[1].strip()
-
-    if token and auth_using_token(token=token, request=request):
+    if authenticated_user_from_request(request):
         return True
 
     return _public_tag_listing_enabled()

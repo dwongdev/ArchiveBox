@@ -23,6 +23,7 @@ from archivebox.misc.logging_util import (
     log_removal_finished,
     TimedProgress,
 )
+from archivebox.cli.archivebox_snapshot import snapshot_filter_options
 
 
 @enforce_types
@@ -34,48 +35,54 @@ def remove(
     before: float | None = None,
     yes: bool = False,
     out_dir: Path = CONSTANTS.DATA_DIR,
-) -> QuerySet:
+    timeout: float | None = None,
+    **kwargs,
+) -> dict[str, object]:
     """Remove the specified URLs from the archive"""
 
     setup_django()
     check_data_folder()
+    timeout = float(timeout) if timeout is not None else None
 
-    from archivebox.cli.archivebox_search import get_snapshots
+    from archivebox.core.models import Snapshot
 
+    filter_kwargs = {
+        **kwargs,
+        "filter_patterns": filter_patterns,
+        "filter_type": filter_type,
+        "after": after,
+        "before": before,
+    }
     pattern_list = list(filter_patterns)
 
     log_list_started(pattern_list or None, filter_type)
     timer = TimedProgress(360, prefix="      ")
     try:
-        snapshots = get_snapshots(
-            snapshots=snapshots,
-            filter_patterns=pattern_list or None,
-            filter_type=filter_type,
-            after=after,
-            before=before,
-        )
+        if snapshots is None:
+            snapshots = Snapshot.objects.order_by("-created_at").search(**filter_kwargs)
+        # Freeze the target set up-front so a concurrent daemon writing new
+        # snapshots can't extend the deletion under us, and so the cursor isn't
+        # held open across the per-row deletes below.
+        snapshot_pks = list(snapshots.values_list("pk", flat=True))
     finally:
         timer.end()
 
-    if not snapshots.exists():
+    if not snapshot_pks:
         log_removal_finished(0, 0)
         raise SystemExit(1)
 
-    log_list_finished(snapshots)
-    log_removal_started(snapshots, yes=yes)
+    if not yes:
+        log_list_finished(snapshots)
+        log_removal_started(snapshots, yes=False)
 
-    from archivebox.core.models import Snapshot
     from archivebox.search.query import flush_search_index
 
-    # Freeze the target set up-front so a concurrent daemon writing new
-    # snapshots can't extend the deletion under us, and so the cursor isn't
-    # held open across the per-row deletes below.
-    snapshot_pks = list(snapshots.values_list("pk", flat=True))
-    to_remove = len(snapshot_pks)
+    started_at = time.monotonic()
+    deadline = started_at + timeout if timeout is not None else None
 
     # Search-index flush touches a separate backend (FTS / sonic), not the
     # main index.sqlite3 writer lock, so it's safe to do once up front.
-    flush_search_index(snapshots=Snapshot.objects.filter(pk__in=snapshot_pks))
+    flush_search_index(snapshots=snapshots)
 
     # Delete one snapshot at a time. Each ``.delete()`` is its own short
     # Django-atomic block, so the writer lock is released between rows and
@@ -90,40 +97,59 @@ def remove(
     # own retry loop at this outer (non-atomic) level. Each attempt is a
     # fresh atomic; an exception cleanly rolls it back before we sleep.
     retry_interval = 1.0
-    retry_timeout = 60.0
-    for pk in snapshot_pks:
-        deadline = time.monotonic() + retry_timeout
+    deleted_snapshot_pks = []
+    timed_out = False
+    timeout_error = ""
+    for index, pk in enumerate(snapshot_pks):
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            timeout_error = f"Remove timed out after {timeout:g}s with {len(snapshot_pks) - index} snapshots remaining."
+            break
         while True:
             try:
-                Snapshot.objects.filter(pk=pk).delete()
+                deleted_count, _ = Snapshot.objects.filter(pk=pk).delete()
+                if deleted_count:
+                    deleted_snapshot_pks.append(pk)
                 break
             except OperationalError as err:
-                if "database is locked" not in str(err) or time.monotonic() >= deadline:
+                if "database is locked" not in str(err):
                     raise
-                time.sleep(retry_interval)
+                remaining_time = deadline - time.monotonic() if deadline is not None else None
+                if remaining_time is not None and remaining_time <= 0:
+                    timed_out = True
+                    timeout_error = f"Remove timed out after {timeout:g}s while waiting for the database lock."
+                    break
+                time.sleep(min(retry_interval, remaining_time) if remaining_time is not None else retry_interval)
+        if timed_out:
+            break
 
     all_snapshots = Snapshot.objects.all()
-    log_removal_finished(all_snapshots.count(), to_remove)
+    remaining_count = all_snapshots.count()
+    deleted_snapshot_id_set = set(deleted_snapshot_pks)
+    remaining_snapshot_pks = [snapshot_id for snapshot_id in snapshot_pks if snapshot_id not in deleted_snapshot_id_set]
+    log_removal_finished(remaining_count, len(deleted_snapshot_pks))
 
-    return all_snapshots
+    return {
+        "removed_count": len(deleted_snapshot_pks),
+        "removed_snapshot_ids": [str(snapshot_id) for snapshot_id in deleted_snapshot_pks],
+        "not_removed_count": len(remaining_snapshot_pks),
+        "not_removed_snapshot_ids": [str(snapshot_id) for snapshot_id in remaining_snapshot_pks],
+        "success": not timed_out,
+        "error": timeout_error,
+        "timeout": timeout,
+    }
 
 
 @click.command()
 @click.option("--yes", is_flag=True, help="Remove links instantly without prompting to confirm")
-@click.option("--before", type=float, help="Remove only URLs bookmarked before timestamp")
-@click.option("--after", type=float, help="Remove only URLs bookmarked after timestamp")
-@click.option(
-    "--filter-type",
-    "-f",
-    type=click.Choice(("exact", "substring", "domain", "regex", "tag")),
-    default="exact",
-    help="Type of pattern matching to use when filtering URLs",
-)
-@click.argument("filter_patterns", nargs=-1)
+@click.option("--timeout", type=float, default=None, help="Maximum seconds to spend deleting snapshots")
+@snapshot_filter_options(default_filter_type="exact")
 @docstring(remove.__doc__)
 def main(**kwargs):
     """Remove the specified URLs from the archive"""
-    remove(**kwargs)
+    result = remove(**kwargs)
+    if not result["success"]:
+        raise SystemExit(124)
 
 
 if __name__ == "__main__":

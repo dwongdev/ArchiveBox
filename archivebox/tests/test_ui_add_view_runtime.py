@@ -1,4 +1,3 @@
-import os
 import re
 import time
 
@@ -9,13 +8,13 @@ from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl, CrawlSchedule
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 from .conftest import (
-    build_test_env,
+    cli_env,
     create_admin_and_token,
     get_depth_counts,
     get_free_port,
     init_archive,
-    run_archivebox_cmd_cwd,
-    start_server,
+    run_archivebox_cmd,
+    start_archivebox_server,
     stop_server,
     wait_for_http,
 )
@@ -25,11 +24,10 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.timeout(180)
 def test_add_view_restarts_stopped_supervisord_runner(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(
+    env = cli_env(
         port,
         PLUGINS="wget",
         PUBLIC_ADD_VIEW="True",
@@ -38,7 +36,7 @@ def test_add_view_restarts_stopped_supervisord_runner(tmp_path, recursive_test_s
     create_admin_and_token(tmp_path)
 
     try:
-        start_server(tmp_path, env=env, port=port)
+        start_archivebox_server(tmp_path, env=env, port=port)
         _wait_for_worker_state(tmp_path, "worker_runner", "RUNNING")
         _stop_worker(tmp_path, "worker_runner")
         assert _worker_state(tmp_path, "worker_runner") != "RUNNING"
@@ -119,7 +117,8 @@ supervisor = get_existing_supervisord_process()
 worker = get_worker(supervisor, {worker_name!r}) if supervisor else None
 print(json.dumps(worker))
 """
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(["manage", "shell", "-c", script], cwd=cwd, timeout=60)
+    _cmd_result = run_archivebox_cmd(["manage", "shell", "-c", script], cwd=cwd, timeout=60)
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, stderr or stdout
     import json
 
@@ -135,7 +134,8 @@ assert supervisor is not None
 stop_worker(supervisor, {worker_name!r})
 print("stopped")
 """
-    stdout, stderr, returncode = run_archivebox_cmd_cwd(["manage", "shell", "-c", script], cwd=cwd, timeout=60)
+    _cmd_result = run_archivebox_cmd(["manage", "shell", "-c", script], cwd=cwd, timeout=60)
+    stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert returncode == 0, stderr or stdout
 
 
@@ -152,15 +152,14 @@ def _wait_for_worker_state(cwd, worker_name: str, statename: str, timeout: int =
 
 @pytest.mark.timeout(180)
 def test_add_view_post_creates_schedule_over_server(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(port, PUBLIC_ADD_VIEW="True")
+    env = cli_env(port=port, server=True, PUBLIC_ADD_VIEW="True")
     create_admin_and_token(tmp_path)
 
     try:
-        start_server(tmp_path, env=env, port=port)
+        start_archivebox_server(tmp_path, env=env, port=port)
         session = requests.Session()
         wait_for_http(port, host=f"admin.archivebox.localhost:{port}", path="/admin/login/")
         login_page = session.get(
@@ -219,11 +218,10 @@ def test_add_view_post_creates_schedule_over_server(tmp_path, recursive_test_sit
 
 @pytest.mark.timeout(240)
 def test_add_view_depth_two_crawl_renders_outputs_over_server(tmp_path, recursive_test_site):
-    os.chdir(tmp_path)
     init_archive(tmp_path)
 
     port = get_free_port()
-    env = build_test_env(
+    env = cli_env(
         port,
         PLUGINS="wget,parse_html_urls",
         PUBLIC_INDEX="True",
@@ -232,7 +230,7 @@ def test_add_view_depth_two_crawl_renders_outputs_over_server(tmp_path, recursiv
     create_admin_and_token(tmp_path)
 
     try:
-        start_server(tmp_path, env=env, port=port)
+        start_archivebox_server(tmp_path, env=env, port=port)
         session = requests.Session()
         wait_for_http(port, host=f"admin.archivebox.localhost:{port}", path="/admin/login/")
         login_page = session.get(

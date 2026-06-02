@@ -5,8 +5,8 @@ Verify install detects and records binary dependencies in DB.
 """
 
 import os
-import subprocess
 from pathlib import Path
+from archivebox.tests.conftest import run_archivebox_cmd
 
 import pytest
 
@@ -18,13 +18,10 @@ from archivebox.tests.test_orm_helpers import use_archivebox_db
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-def test_install_runs_successfully(tmp_path, process):
+def test_install_runs_successfully(initialized_archive):
     """Test that install command runs without error."""
-    os.chdir(tmp_path)
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
@@ -32,28 +29,23 @@ def test_install_runs_successfully(tmp_path, process):
     assert result.returncode in [0, 1]  # May return 1 if binaries missing
 
 
-def test_install_creates_binary_records_in_db(tmp_path, process):
+def test_install_creates_binary_records_in_db(initialized_archive):
     """Test that install creates Binary records in database."""
-    os.chdir(tmp_path)
 
-    subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
+    run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         Binary.objects.count()
 
 
-def test_install_dry_run_does_not_install(tmp_path, process):
+def test_install_dry_run_does_not_install(initialized_archive):
     """Test that --dry-run doesn't actually install anything."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
@@ -61,14 +53,11 @@ def test_install_dry_run_does_not_install(tmp_path, process):
     assert "dry" in result.stdout.lower() or result.returncode in [0, 1]
 
 
-def test_install_detects_system_binaries(tmp_path, process):
+def test_install_detects_system_binaries(initialized_archive):
     """Test that install detects existing system binaries."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
@@ -76,14 +65,11 @@ def test_install_detects_system_binaries(tmp_path, process):
     assert result.returncode in [0, 1]
 
 
-def test_install_shows_binary_status(tmp_path, process):
+def test_install_shows_binary_status(initialized_archive):
     """Test that install shows status of binaries."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
@@ -92,13 +78,10 @@ def test_install_shows_binary_status(tmp_path, process):
     assert len(output) > 50
 
 
-def test_install_dry_run_prints_dry_run_message(tmp_path, process):
+def test_install_dry_run_prints_dry_run_message(initialized_archive):
     """Test that install --dry-run clearly reports that no changes will be made."""
-    os.chdir(tmp_path)
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
         timeout=60,
     )
 
@@ -108,11 +91,8 @@ def test_install_dry_run_prints_dry_run_message(tmp_path, process):
 
 def test_install_help_lists_dry_run_flag(tmp_path):
     """Test that install --help documents the dry-run option."""
-    os.chdir(tmp_path)
-    result = subprocess.run(
-        ["archivebox", "install", "--help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--help"],
     )
 
     assert result.returncode == 0
@@ -121,11 +101,8 @@ def test_install_help_lists_dry_run_flag(tmp_path):
 
 def test_install_invalid_option_fails(tmp_path):
     """Test that invalid install options fail cleanly."""
-    os.chdir(tmp_path)
-    result = subprocess.run(
-        ["archivebox", "install", "--invalid-option"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--invalid-option"],
     )
 
     assert result.returncode != 0
@@ -133,11 +110,8 @@ def test_install_invalid_option_fails(tmp_path):
 
 def test_install_from_empty_dir_initializes_collection(tmp_path):
     """Test that install bootstraps an empty dir before performing work."""
-    os.chdir(tmp_path)
-    result = subprocess.run(
-        ["archivebox", "install", "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "--dry-run"],
     )
 
     output = result.stdout + result.stderr
@@ -145,11 +119,10 @@ def test_install_from_empty_dir_initializes_collection(tmp_path):
     assert "Initializing" in output or "Dry run" in output or "init" in output.lower()
 
 
-def test_install_updates_binary_table(tmp_path, process):
+def test_install_updates_binary_table(initialized_archive):
     """Test that install completes and only mutates dependency state."""
-    os.chdir(tmp_path)
     env = os.environ.copy()
-    tmp_short = Path("/tmp") / f"abx-install-{tmp_path.name}"
+    tmp_short = Path("/tmp") / f"abx-install-{initialized_archive.name}"
     tmp_short.mkdir(parents=True, exist_ok=True)
     env.update(
         {
@@ -158,10 +131,8 @@ def test_install_updates_binary_table(tmp_path, process):
         },
     )
 
-    result = subprocess.run(
-        ["archivebox", "install", "git"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["install", "git"],
         timeout=120,
         env=env,
     )
@@ -169,7 +140,7 @@ def test_install_updates_binary_table(tmp_path, process):
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
 
-    with use_archivebox_db(tmp_path):
+    with use_archivebox_db(initialized_archive):
         binary_counts = {
             status: Binary.objects.filter(status=status).count() for status in Binary.objects.values_list("status", flat=True).distinct()
         }

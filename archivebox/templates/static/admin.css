@@ -134,12 +134,22 @@ body.change-list #content .object-tools {
     clear: both;
 }
 
-#content .object-tools a:link, #content .object-tools a:visited {
+#content .object-tools a:link,
+#content .object-tools a:visited,
+#content .object-tools form button {
     border-radius: 0px;
     background-color: #f5dd5d;
     color: #333;
     font-size: 12px;
     font-weight: 800;
+}
+#content .object-tools form {
+    display: inline;
+    margin: 0;
+}
+#content .object-tools form button {
+    border: 0;
+    cursor: pointer;
 }
 
 #content .object-tools a.addlink {

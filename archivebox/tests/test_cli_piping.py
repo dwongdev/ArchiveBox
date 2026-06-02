@@ -15,6 +15,7 @@ import pytest
 from archivebox.core.models import Snapshot
 from archivebox.machine.models import Binary
 from archivebox.tests.conftest import (
+    assert_jsonl_only,
     create_test_url,
     parse_jsonl_output,
     run_archivebox_cmd,
@@ -39,20 +40,6 @@ class MockTTYStringIO(StringIO):
 
     def isatty(self) -> bool:
         return self._is_tty
-
-
-def _stdout_lines(stdout: str) -> list[str]:
-    return [line for line in stdout.splitlines() if line.strip()]
-
-
-def _assert_stdout_is_jsonl_only(stdout: str) -> None:
-    lines = _stdout_lines(stdout)
-    assert lines, "Expected stdout to contain JSONL records"
-    assert all(line.lstrip().startswith("{") for line in lines), stdout
-
-
-def _uuid(value: str) -> uuid.UUID:
-    return uuid.UUID(value)
 
 
 def test_parse_line_accepts_supported_piping_inputs():
@@ -196,30 +183,36 @@ def test_crawl_create_stdout_pipes_into_run(initialized_archive):
     """`archivebox crawl create | archivebox run` should queue and materialize snapshots."""
     url = create_test_url()
 
-    create_stdout, create_stderr, create_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["crawl", "create", url],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    create_stdout, create_stderr, create_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert create_code == 0, create_stderr
-    _assert_stdout_is_jsonl_only(create_stdout)
+    assert_jsonl_only(create_stdout)
 
     crawl = next(record for record in parse_jsonl_output(create_stdout) if record.get("type") == "Crawl")
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
         stdin=create_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert run_code == 0, run_stderr
-    _assert_stdout_is_jsonl_only(run_stdout)
+    assert_jsonl_only(run_stdout)
 
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") == "Crawl" and record.get("id") == crawl["id"] for record in run_records)
 
     with use_archivebox_db(initialized_archive):
-        snapshot_count = Snapshot.objects.filter(crawl_id=_uuid(crawl["id"])).count()
+        snapshot_count = Snapshot.objects.filter(crawl_id=uuid.UUID(crawl["id"])).count()
     assert isinstance(snapshot_count, int)
     assert snapshot_count >= 1
 
@@ -228,40 +221,52 @@ def test_snapshot_list_stdout_pipes_into_run(initialized_archive):
     """`archivebox snapshot list | archivebox run` should requeue listed snapshots."""
     url = create_test_url()
 
-    create_stdout, create_stderr, create_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["snapshot", "create", url],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    create_stdout, create_stderr, create_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert create_code == 0, create_stderr
     snapshot = next(record for record in parse_jsonl_output(create_stdout) if record.get("type") == "Snapshot")
 
-    list_stdout, list_stderr, list_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["snapshot", "list", "--status=queued", f"--url__icontains={snapshot['id']}"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    list_stdout, list_stderr, list_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     if list_code != 0 or not parse_jsonl_output(list_stdout):
-        list_stdout, list_stderr, list_code = run_archivebox_cmd(
+        _cmd_result = run_archivebox_cmd(
             ["snapshot", "list", f"--url__icontains={url}"],
-            data_dir=initialized_archive,
+            cwd=initialized_archive,
+            default_cli_env=True,
+            disable_extractors=True,
         )
+        list_stdout, list_stderr, list_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert list_code == 0, list_stderr
-    _assert_stdout_is_jsonl_only(list_stdout)
+    assert_jsonl_only(list_stdout)
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
         stdin=list_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert run_code == 0, run_stderr
-    _assert_stdout_is_jsonl_only(run_stdout)
+    assert_jsonl_only(run_stdout)
 
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") == "Snapshot" and record.get("id") == snapshot["id"] for record in run_records)
 
     with use_archivebox_db(initialized_archive):
-        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=_uuid(snapshot["id"]))
+        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=uuid.UUID(snapshot["id"]))
     assert snapshot_status == "sealed"
 
 
@@ -269,48 +274,62 @@ def test_archiveresult_list_stdout_pipes_into_run(initialized_archive):
     """`archivebox archiveresult list | archivebox run` should preserve clean JSONL stdout."""
     url = create_test_url()
 
-    snapshot_stdout, snapshot_stderr, snapshot_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["snapshot", "create", url],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    snapshot_stdout, snapshot_stderr, snapshot_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert snapshot_code == 0, snapshot_stderr
 
-    ar_create_stdout, ar_create_stderr, ar_create_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["archiveresult", "create", "--plugin=favicon"],
         stdin=snapshot_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    ar_create_stdout, ar_create_stderr, ar_create_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert ar_create_code == 0, ar_create_stderr
 
     run_archivebox_cmd(
         ["run"],
         stdin=ar_create_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
 
-    list_stdout, list_stderr, list_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["archiveresult", "list", "--plugin=favicon"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    list_stdout, list_stderr, list_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert list_code == 0, list_stderr
-    _assert_stdout_is_jsonl_only(list_stdout)
+    assert_jsonl_only(list_stdout)
     listed_records = parse_jsonl_output(list_stdout)
     archiveresult = next(record for record in listed_records if record.get("type") == "ArchiveResult")
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
         stdin=list_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert run_code == 0, run_stderr
-    _assert_stdout_is_jsonl_only(run_stdout)
+    assert_jsonl_only(run_stdout)
 
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") == "ArchiveResult" and record.get("id") == archiveresult["id"] for record in run_records)
@@ -318,29 +337,35 @@ def test_archiveresult_list_stdout_pipes_into_run(initialized_archive):
 
 def test_binary_create_stdout_pipes_into_run(initialized_archive):
     """`archivebox binary create | archivebox run` should queue the binary record for processing."""
-    create_stdout, create_stderr, create_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["binary", "create", "--name=python3", f"--abspath={sys.executable}", "--version=test"],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    create_stdout, create_stderr, create_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert create_code == 0, create_stderr
-    _assert_stdout_is_jsonl_only(create_stdout)
+    assert_jsonl_only(create_stdout)
 
     binary = next(record for record in parse_jsonl_output(create_stdout) if record.get("type") in {"BinaryRequest", "Binary"})
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
         stdin=create_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert run_code == 0, run_stderr
-    _assert_stdout_is_jsonl_only(run_stdout)
+    assert_jsonl_only(run_stdout)
 
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") in {"BinaryRequest", "Binary"} and record.get("id") == binary["id"] for record in run_records)
 
     with use_archivebox_db(initialized_archive):
-        status = Binary.objects.values_list("status", flat=True).get(pk=_uuid(binary["id"]))
+        status = Binary.objects.values_list("status", flat=True).get(pk=uuid.UUID(binary["id"]))
     assert status in {"queued", "installed"}
 
 
@@ -348,43 +373,55 @@ def test_multi_stage_pipeline_into_run(initialized_archive):
     """`crawl create | snapshot create | archiveresult create | run` should preserve JSONL and finish work."""
     url = create_test_url()
 
-    crawl_stdout, crawl_stderr, crawl_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["crawl", "create", url],
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    crawl_stdout, crawl_stderr, crawl_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert crawl_code == 0, crawl_stderr
-    _assert_stdout_is_jsonl_only(crawl_stdout)
+    assert_jsonl_only(crawl_stdout)
 
-    snapshot_stdout, snapshot_stderr, snapshot_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["snapshot", "create"],
         stdin=crawl_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    snapshot_stdout, snapshot_stderr, snapshot_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert snapshot_code == 0, snapshot_stderr
-    _assert_stdout_is_jsonl_only(snapshot_stdout)
+    assert_jsonl_only(snapshot_stdout)
 
-    archiveresult_stdout, archiveresult_stderr, archiveresult_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["archiveresult", "create", "--plugin=favicon"],
         stdin=snapshot_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    archiveresult_stdout, archiveresult_stderr, archiveresult_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert archiveresult_code == 0, archiveresult_stderr
-    _assert_stdout_is_jsonl_only(archiveresult_stdout)
+    assert_jsonl_only(archiveresult_stdout)
 
-    run_stdout, run_stderr, run_code = run_archivebox_cmd(
+    _cmd_result = run_archivebox_cmd(
         ["run"],
         stdin=archiveresult_stdout,
-        data_dir=initialized_archive,
+        cwd=initialized_archive,
         timeout=120,
         env=PIPE_TEST_ENV,
+        default_cli_env=True,
+        disable_extractors=True,
     )
+    run_stdout, run_stderr, run_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
     assert run_code == 0, run_stderr
-    _assert_stdout_is_jsonl_only(run_stdout)
+    assert_jsonl_only(run_stdout)
 
     run_records = parse_jsonl_output(run_stdout)
     snapshot = next(record for record in run_records if record.get("type") == "Snapshot")
     assert any(record.get("type") == "ArchiveResult" for record in run_records)
 
     with use_archivebox_db(initialized_archive):
-        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=_uuid(snapshot["id"]))
+        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=uuid.UUID(snapshot["id"]))
     assert snapshot_status == "sealed"

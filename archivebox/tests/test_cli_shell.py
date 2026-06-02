@@ -4,19 +4,15 @@ Tests for archivebox shell command.
 Verify shell command starts Django shell (basic smoke tests only).
 """
 
-import os
-import subprocess
+from archivebox.tests.conftest import run_archivebox_cmd
 
 
-def test_shell_command_exists(tmp_path, process):
+def test_shell_command_exists(initialized_archive):
     """Test that shell command is recognized."""
-    os.chdir(tmp_path)
 
     # Test that the command exists (will fail without input but should recognize command)
-    result = subprocess.run(
-        ["archivebox", "shell", "--help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["shell", "--help"],
         timeout=10,
     )
 
@@ -24,14 +20,11 @@ def test_shell_command_exists(tmp_path, process):
     assert result.returncode in [0, 1, 2]
 
 
-def test_shell_c_executes_python(tmp_path, process):
+def test_shell_c_executes_python(initialized_archive):
     """shell -c should fully initialize Django and run the provided command."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "shell", "-c", 'print("shell-ok")'],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["shell", "-c", 'print("shell-ok")'],
         timeout=30,
     )
 

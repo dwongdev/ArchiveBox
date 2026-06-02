@@ -56,7 +56,6 @@ from abxbus.event_bus import EventBus, get_current_event, in_handler_context
 from abxbus.event_handler import EventHandlerAbortedError, EventHandlerCancelledError
 
 from archivebox.config.common import ArchiveBoxBaseConfig, normalize_runtime_config
-from archivebox.core.recovery_util import recover_orchestrator_state
 from archivebox.misc.db import run_db_analyze_batch
 from archivebox.core.shutdown_util import foreground_shutdown_signals, raise_if_shutdown_requested
 from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler
@@ -930,15 +929,14 @@ class CrawlRunner:
                             event_handler_slow_timeout=slow_warning_timeout(crawl_setup_phase_timeout),
                         ),
                     )
-                    # Normal crawl shutdown drives cleanup synchronously so
-                    # ProcessKillEvent handlers get their grace period. During
-                    # OS-signal shutdown, asyncio is already cancelling tasks;
-                    # keep the child event attached for any remaining bus tick,
-                    # but do not call now()/wait() because the bus context may
-                    # disappear before delivery and produce noisy shutdown
-                    # exceptions instead of useful cleanup.
-                    if not self._signal_abort_requested:
-                        await _run_event_now(cleanup_event, crawl_setup_phase_timeout)
+                    # Cleanup owns ProcessKillEvent emission for crawl-scoped
+                    # setup hooks. Even during OS-signal shutdown we must drive
+                    # it synchronously before bus teardown; otherwise daemon/bg
+                    # setup hooks can outlive the foreground runner that
+                    # launched them. _run_event_now() is already bounded by the
+                    # crawl setup timeout and cleanup handlers provide their own
+                    # hook-level grace periods.
+                    await _run_event_now(cleanup_event, crawl_setup_phase_timeout)
             finally:
                 cancel_watcher.cancel()
                 await asyncio.gather(cancel_watcher, return_exceptions=True)
@@ -2134,6 +2132,8 @@ def run_pending_crawls(
         if daemon:
             now_monotonic = time.monotonic()
             if now_monotonic - last_recovery_at >= 30.0:
+                from archivebox.core.recovery_util import recover_orchestrator_state
+
                 recover_orchestrator_state()
                 last_recovery_at = now_monotonic
             # SQLite query plans degrade as the snapshot/archiveresult tables grow

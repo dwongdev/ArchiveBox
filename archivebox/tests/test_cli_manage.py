@@ -4,18 +4,14 @@ Tests for archivebox manage command.
 Verify manage command runs Django management commands.
 """
 
-import os
-import subprocess
+from archivebox.tests.conftest import run_archivebox_cmd
 
 
-def test_manage_help_works(tmp_path, process):
+def test_manage_help_works(initialized_archive):
     """Test that manage help command works."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "manage", "help"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["manage", "help"],
         timeout=30,
     )
 
@@ -23,14 +19,11 @@ def test_manage_help_works(tmp_path, process):
     assert len(result.stdout) > 100
 
 
-def test_manage_showmigrations_works(tmp_path, process):
+def test_manage_showmigrations_works(initialized_archive):
     """Test that manage showmigrations works."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "manage", "showmigrations"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["manage", "showmigrations"],
         timeout=30,
     )
 
@@ -39,14 +32,11 @@ def test_manage_showmigrations_works(tmp_path, process):
     assert "core" in result.stdout or "[" in result.stdout
 
 
-def test_manage_dbshell_command_exists(tmp_path, process):
+def test_manage_dbshell_command_exists(initialized_archive):
     """Test that manage dbshell command is recognized."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "manage", "help", "dbshell"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["manage", "help", "dbshell"],
         timeout=30,
     )
 
@@ -55,14 +45,11 @@ def test_manage_dbshell_command_exists(tmp_path, process):
     assert "dbshell" in result.stdout or "database" in result.stdout.lower()
 
 
-def test_manage_check_works(tmp_path, process):
+def test_manage_check_works(initialized_archive):
     """Test that manage check works."""
-    os.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["archivebox", "manage", "check"],
-        capture_output=True,
-        text=True,
+    result = run_archivebox_cmd(
+        ["manage", "check"],
         timeout=30,
     )
 
