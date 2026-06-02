@@ -478,7 +478,7 @@ class SearchBackendConfig(BaseConfigSet):
     toml_section_header: str = "SEARCH_BACKEND_CONFIG"
     _scope: str = PrivateAttr(default=_SCOPE_SERVER)
 
-    SEARCH_BACKEND_ENGINE: str = Field(default="ripgrep")
+    SEARCH_BACKEND_ENGINE: str = Field(default="ripgrep", json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
 
 
 def _plugin_user_config_value(value: Any) -> str:
@@ -598,18 +598,13 @@ class ArchiveBoxBaseConfig(
             if isinstance(prop_schema, Mapping) and prop_schema.get("x-scope"):
                 scope = str(prop_schema["x-scope"])
             elif scope is None:
-                if str(plugin_name).startswith("search_backend_"):
-                    scope = _SCOPE_SERVER
-                else:
-                    scope = _SCOPE_CRAWL_FROZEN
+                scope = _SCOPE_CRAWL_FROZEN
         return scope
 
     @classmethod
     @lru_cache(maxsize=None)
     def scope_for_key(cls, key: str) -> str:
         for plugin_name, schema in PLUGIN_CONFIG_SCHEMAS.items():
-            if str(plugin_name).startswith("search_backend_"):
-                continue
             properties = schema.get("properties") if isinstance(schema, dict) else None
             if isinstance(properties, dict) and key == f"{str(plugin_name).upper()}_ENABLED" and key in properties:
                 return _SCOPE_CRAWL_EXECUTION
@@ -684,6 +679,10 @@ class ArchiveBoxBaseConfig(
         model_fields = type(self).model_fields
         for key in type(self).runtime_derived_config_keys():
             config.pop(key, None)
+        # ArchiveBox owns SEARCH_BACKEND_ENGINE and uses it during model
+        # validation to derive the selected backend's *_ENABLED flag. Hooks
+        # only receive the backend-local flags, never the selector itself.
+        config.pop("SEARCH_BACKEND_ENGINE", None)
         if persona is not None:
             for key, value in persona.get_derived_config().items():
                 if scope_by_key.get(key) == _SCOPE_CRAWL_EXECUTION:
@@ -714,7 +713,6 @@ class ArchiveBoxBaseConfig(
             context.update(dict(extra_context))
             config["EXTRA_CONTEXT"] = json.dumps(context, separators=(",", ":"), sort_keys=True)
 
-        _derive_plugin_enabled_config(config)
         return config
 
     @model_validator(mode="after")
@@ -731,6 +729,18 @@ class ArchiveBoxBaseConfig(
             lib_bin_dir = CONSTANTS.DATA_DIR / lib_bin_dir
         self.LIB_BIN_DIR = lib_bin_dir.resolve()
 
+        return self
+
+    @model_validator(mode="after")
+    def derive_plugin_enabled_config(self):
+        plugin_names = _normalize_plugins_config_value(self.PLUGINS)
+        selected_plugins = _plugins_with_required_plugins(plugin_names) if plugin_names else set()
+        search_backend = self.SEARCH_BACKEND_ENGINE.strip().lower()
+        if search_backend:
+            selected_plugins.add(f"search_backend_{search_backend}")
+        for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
+            if plugin_names or plugin_name in selected_plugins:
+                setattr(self, enabled_key, plugin_name in selected_plugins)
         return self
 
 
@@ -803,15 +813,6 @@ def _plugins_with_required_plugins(plugin_names: set[str]) -> set[str]:
                 selected.add(required_plugin_name)
                 pending.append(required_plugin_name)
     return selected
-
-
-def _derive_plugin_enabled_config(config: dict[str, Any]) -> None:
-    plugin_names = _normalize_plugins_config_value(config.get("PLUGINS"))
-    if not plugin_names:
-        return
-    selected_plugins = _plugins_with_required_plugins(plugin_names)
-    for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
-        config[enabled_key] = plugin_name in selected_plugins
 
 
 def get_live_config_url(key: str) -> str:
@@ -1088,8 +1089,6 @@ def get_config(
         if crawl_config_base:
             config_data.update(normalize_runtime_config(dict(crawl.config or {}), exclude_crawl_execution=True, json_safe=False))
         config_data.update(archivebox_scope_overrides)
-
-    _derive_plugin_enabled_config(config_data)
 
     # Decode JSON-encoded complex values (dict/list fields) that came from
     # string-only sources before validation. ``IniConfigSettingsSource`` does

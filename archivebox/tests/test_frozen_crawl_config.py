@@ -131,9 +131,42 @@ def test_config_scopes_are_derived_from_section_and_field_metadata():
     assert ArchiveBoxConfig.scope_for_key("DEBUG") == "crawl_execution"
     assert ArchiveBoxConfig.scope_for_key("DEFAULT_PERSONA") == "crawl_execution"
     assert ArchiveBoxConfig.scope_for_key("WGET_ENABLED") == "crawl_execution"
+    assert ArchiveBoxConfig.scope_for_key("SEARCH_BACKEND_SQLITE_ENABLED") == "crawl_execution"
+    assert ArchiveBoxConfig.scope_for_key("SEARCH_BACKEND_ENGINE") == "crawl_execution"
     assert ArchiveBoxConfig.scope_for_key("WGET_WARC_ENABLED") == "crawl_frozen"
     assert ArchiveBoxConfig.scope_for_key("SECRET_KEY") == "server"
     assert ArchiveBoxConfig.scope_for_key("DATABASE_NAME") == "server"
+
+
+def test_search_backend_engine_derives_default_backend_enabled_without_entering_hook_env():
+    from archivebox.config.common import ArchiveBoxConfig
+
+    default_runtime_config = ArchiveBoxConfig().for_crawl_runtime(extra_context={"snapshot_id": "default-runtime-config"})
+    assert default_runtime_config["SEARCH_BACKEND_RIPGREP_ENABLED"] is True
+    assert default_runtime_config["SEARCH_BACKEND_SQLITE_ENABLED"] is False
+    assert default_runtime_config["SEARCH_BACKEND_SONIC_ENABLED"] is True
+
+    sqlite_runtime_config = ArchiveBoxConfig(SEARCH_BACKEND_ENGINE="sqlite").for_crawl_runtime(
+        extra_context={"snapshot_id": "sqlite-runtime-config"},
+    )
+    assert sqlite_runtime_config["SEARCH_BACKEND_SQLITE_ENABLED"] is True
+
+    config = ArchiveBoxConfig(
+        SEARCH_BACKEND_ENGINE="ripgrep",
+        SEARCH_BACKEND_SQLITE_ENABLED=False,
+        SEARCH_BACKEND_SONIC_ENABLED=True,
+        SECRET_KEY="server-secret",
+        DATABASE_NAME="server-db.sqlite3",
+    )
+
+    runtime_config = config.for_crawl_runtime(extra_context={"snapshot_id": "runtime-config"})
+
+    assert "SEARCH_BACKEND_ENGINE" not in runtime_config
+    assert runtime_config["SEARCH_BACKEND_RIPGREP_ENABLED"] is True
+    assert runtime_config["SEARCH_BACKEND_SQLITE_ENABLED"] is False
+    assert runtime_config["SEARCH_BACKEND_SONIC_ENABLED"] is True
+    assert "SECRET_KEY" not in runtime_config
+    assert "DATABASE_NAME" not in runtime_config
 
 
 def test_plugin_selection_enabled_keys_are_derived_from_plugins_not_frozen_or_env_overridden(archivebox_db, monkeypatch):

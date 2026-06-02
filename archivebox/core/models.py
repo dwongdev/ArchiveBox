@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from statemachine import State, registry
 
 from django.db import models, transaction
-from django.db.models import Case, Q, QuerySet, Sum, Value, When
+from django.db.models import Case, F, Q, QuerySet, Sum, Value, When
 from django.db.models.functions import Coalesce, Concat
 from django.db.models.fields.json import KT
 from django.utils.functional import cached_property
@@ -3803,21 +3803,49 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithNotes):
             or "snapshot_id" in update_fields
         )
         old_snapshot_id = None
+        old_output_size = 0
         if refresh_snapshot_size and not is_new:
-            old_snapshot_id = type(self).objects.filter(pk=self.pk).values_list("snapshot_id", flat=True).first()
+            old_values = type(self).objects.filter(pk=self.pk).values("snapshot_id", "output_size").first()
+            if old_values:
+                old_snapshot_id = old_values["snapshot_id"]
+                old_output_size = int(old_values["output_size"] or 0)
 
-        update_fields = kwargs.get("update_fields")
-        if self.delete_at is None:
-            self.set_delete_at_from_config()
-            if self.delete_at is not None and update_fields is not None:
-                kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "delete_at"]))
-
+        # ArchiveResult rows are updated on every plugin event. Resolving
+        # DELETE_AFTER here is deceptively expensive because the effective
+        # value lives on Snapshot/Crawl config, so a save of an already-loaded
+        # result can still materialize parent objects and parse config. The
+        # orchestrator owns the repair pass for these rows instead: it fills
+        # missing delete_at values from fresh Snapshot/Crawl config when the
+        # queue is idle, outside the hook-result write hot path.
         # Skip ModelWithOutputDir.save() to avoid creating index.json in plugin directories
         # Call the Django Model.save() directly instead
         models.Model.save(self, *args, **kwargs)
         if refresh_snapshot_size:
-            snapshot_ids = {snapshot_id for snapshot_id in (old_snapshot_id, self.snapshot_id) if snapshot_id}
-            transaction.on_commit(lambda: type(self).refresh_snapshot_output_sizes(snapshot_ids))
+            current_snapshot_id = self.snapshot_id
+            snapshot_ids = {snapshot_id for snapshot_id in (old_snapshot_id, current_snapshot_id) if snapshot_id}
+            current_output_size = int(self.output_size or 0)
+            if len(snapshot_ids) > 1:
+                # Moving an ArchiveResult between Snapshots is rare and cannot
+                # be represented as a single delta on one parent row. Keep the
+                # conservative aggregate fallback for that shape.
+                transaction.on_commit(lambda: type(self).refresh_snapshot_output_sizes(snapshot_ids))
+            elif current_snapshot_id:
+                # Hook-result projection updates ArchiveResult rows at very
+                # high frequency during indexing. Re-aggregating every sibling
+                # row for the parent Snapshot on each save turns those short
+                # writes into a table-scan hot path. For the common case where
+                # the result stays attached to the same Snapshot, the persisted
+                # parent total is exactly the old total plus this row's size
+                # delta; F() keeps that update atomic with concurrent result
+                # saves for other plugins on the same Snapshot.
+                size_delta = current_output_size if is_new else current_output_size - old_output_size
+                if size_delta:
+                    transaction.on_commit(
+                        lambda: Snapshot.objects.filter(pk=current_snapshot_id).update(
+                            output_size=F("output_size") + size_delta,
+                            modified_at=timezone.now(),
+                        ),
+                    )
         if is_new or update_fields is None or "status" in update_fields or "snapshot" in update_fields or "snapshot_id" in update_fields:
             transaction.on_commit(type(self).clear_majority_status_cache)
 

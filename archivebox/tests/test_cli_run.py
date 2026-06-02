@@ -1388,6 +1388,41 @@ class TestRecoverOrchestratorState:
 
 @pytest.mark.django_db
 class TestRunDueCrawlState:
+    def test_idle_maintenance_repairs_archive_result_delete_at(self):
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import ArchiveResult, Snapshot
+        from archivebox.services.runner import run_pending_crawls
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com/retention-repair",
+            created_by_id=get_or_create_system_user_pk(),
+            status=Crawl.StatusChoices.SEALED,
+            retry_at=None,
+            config={"DELETE_AFTER": "2h"},
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com/retention-repair",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=None,
+        )
+        result = ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="search_backend_sqlite",
+            hook_name="on_Snapshot__90_index_sqlite.py",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+        )
+
+        # ArchiveResult saves are the plugin-event hot path. They intentionally
+        # do not resolve parent Snapshot/Crawl config on every write; the real
+        # runner's idle maintenance pass owns missing delete_at repair.
+        assert result.delete_at is None
+        assert run_pending_crawls(daemon=False, maintenance_only=True) == 0
+
+        result.refresh_from_db()
+        assert result.delete_at is not None
+
     def test_maintenance_only_runner_does_not_start_regular_queued_crawls(self):
         from django.utils import timezone
 

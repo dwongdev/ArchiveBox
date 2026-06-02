@@ -412,14 +412,25 @@ class NetworkInterface(ModelWithHealthStats):
     def current(cls, refresh: bool = False) -> NetworkInterface:
         global _CURRENT_INTERFACE
         machine = Machine.current(refresh=refresh)
-        if _CURRENT_INTERFACE:
-            if (
-                not refresh
-                and _CURRENT_INTERFACE.machine_id == machine.id
-                and timezone.now() < _CURRENT_INTERFACE.modified_at + timedelta(seconds=NETWORK_INTERFACE_RECHECK_INTERVAL)
-            ):
+        if _CURRENT_INTERFACE and _CURRENT_INTERFACE.machine_id == machine.id:
+            if not refresh:
+                # Callers that pass refresh=False are asking for attribution to
+                # the currently known interface, not for public-IP/ISP probing.
+                # Maintenance paths create many short-lived services per run;
+                # expiring this in-memory object by age forced every crawl to
+                # hit external network APIs even though Process rows only need
+                # a stable existing FK. Active downloading paths opt into live
+                # detection with refresh=True.
                 return _CURRENT_INTERFACE
-            _CURRENT_INTERFACE = None
+            if timezone.now() < _CURRENT_INTERFACE.modified_at + timedelta(seconds=NETWORK_INTERFACE_RECHECK_INTERVAL):
+                return _CURRENT_INTERFACE
+        _CURRENT_INTERFACE = None
+
+        if not refresh:
+            _CURRENT_INTERFACE = cls.objects.filter(machine=machine).order_by("-modified_at", "-created_at").first()
+            if _CURRENT_INTERFACE is not None:
+                return _CURRENT_INTERFACE
+
         net_info = get_host_network()
         lookup = dict(
             machine=machine,

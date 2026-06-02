@@ -199,13 +199,83 @@ def test_server_daemon_restarts_runner_killed_by_signal(archivebox_daemon_server
     assert state["worker_daphne"]["statename"] == "RUNNING", state
 
 
-def test_sonic_worker_is_disabled_when_sonic_disabled_and_engine_not_sonic(tmp_path):
+def test_live_server_machine_search_engine_update_reaches_subsequent_snapshot_runtime(archivebox_daemon_server):
+    server = archivebox_daemon_server(SEARCH_BACKEND_ENGINE="ripgrep")
+    server.wait_for_workers(("worker_daphne", "worker_runner"))
+
+    setup_result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import django;"
+                "django.setup();"
+                "from archivebox.base_models.models import get_or_create_system_user_pk;"
+                "from archivebox.crawls.models import Crawl;"
+                "from archivebox.core.models import Snapshot;"
+                "from archivebox.machine.models import Machine;"
+                "machine = Machine.current(refresh=True);"
+                "machine.config = {**dict(machine.config or {}), 'SEARCH_BACKEND_ENGINE': 'sqlite'};"
+                "machine.save(update_fields=['config', 'modified_at']);"
+                "crawl = Crawl.objects.create("
+                "urls='https://example.com/live-machine-search-config',"
+                "created_by_id=get_or_create_system_user_pk(),"
+                "config={},"
+                ");"
+                "snapshot = Snapshot.objects.create("
+                "url='https://example.com/live-machine-search-config',"
+                "crawl=crawl,"
+                ");"
+                "print(snapshot.id)"
+            ),
+        ],
+        cwd=server.data_dir,
+        env=server.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert setup_result.returncode == 0, setup_result.stderr or setup_result.stdout
+    snapshot_id = setup_result.stdout.strip().splitlines()[-1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import django,json;"
+                "django.setup();"
+                "from archivebox.core.models import Snapshot;"
+                "from archivebox.config.common import get_config;"
+                f"snapshot = Snapshot.objects.select_related('crawl').get(id='{snapshot_id}');"
+                "runtime = get_config(snapshot=snapshot).for_crawl_runtime("
+                "crawl=snapshot.crawl,"
+                "snapshot=snapshot,"
+                "extra_context={'snapshot_id': str(snapshot.id)},"
+                ");"
+                "print(json.dumps({"
+                "'sqlite_enabled': runtime.get('SEARCH_BACKEND_SQLITE_ENABLED'),"
+                "'engine_in_runtime': 'SEARCH_BACKEND_ENGINE' in runtime,"
+                "}))"
+            ),
+        ],
+        cwd=server.data_dir,
+        env=server.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    resolved = json.loads(result.stdout.strip().splitlines()[-1])
+    assert resolved == {"sqlite_enabled": True, "engine_in_runtime": False}
+
+
+def test_sonic_worker_is_disabled_when_sonic_disabled(tmp_path):
     from archivebox.workers.supervisord_util import get_sonic_supervisord_worker_from_plugin
 
     worker = get_sonic_supervisord_worker_from_plugin(
         SimpleNamespace(
             DATA_DIR=str(tmp_path),
-            SEARCH_BACKEND_ENGINE="ripgrep",
             SEARCH_BACKEND_SONIC_ENABLED=False,
             SEARCH_BACKEND_SONIC_HOST_NAME="127.0.0.1",
             SEARCH_BACKEND_SONIC_PORT=_free_port(),
@@ -234,7 +304,7 @@ def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemo
     daemon_event = prepare_sonic_daemon(
         SimpleNamespace(
             DATA_DIR=str(server.data_dir),
-            SEARCH_BACKEND_ENGINE="sonic",
+            SEARCH_BACKEND_SONIC_ENABLED=True,
             SEARCH_BACKEND_SONIC_HOST_NAME="127.0.0.1",
             SEARCH_BACKEND_SONIC_PORT=sonic_port,
             SEARCH_BACKEND_SONIC_PASSWORD="SecretPassword",

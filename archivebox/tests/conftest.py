@@ -231,7 +231,7 @@ def initialized_archive(isolated_data_dir):
 
 
 @pytest.fixture
-def archivebox_daemon_server(tmp_path, process, unused_tcp_port_factory):
+def archivebox_daemon_server(tmp_path, process, free_tcp_port_factory):
     """
     Start a real daemonized ArchiveBox server in this test's DATA_DIR and
     always stop its supervisord before the test exits.
@@ -246,11 +246,11 @@ def archivebox_daemon_server(tmp_path, process, unused_tcp_port_factory):
                 "USE_COLOR": "False",
                 "SHOW_PROGRESS": "False",
                 "SEARCH_BACKEND_SONIC_HOST_NAME": "127.0.0.1",
-                "SEARCH_BACKEND_SONIC_PORT": str(unused_tcp_port_factory()),
+                "SEARCH_BACKEND_SONIC_PORT": str(free_tcp_port_factory()),
                 **{key: str(value) for key, value in env_overrides.items()},
             },
         )
-        port = unused_tcp_port_factory()
+        port = free_tcp_port_factory()
         result = subprocess.run(
             [sys.executable, "-m", "archivebox", "server", "--daemonize", f"127.0.0.1:{port}"],
             cwd=tmp_path,

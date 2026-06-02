@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import nullcontext
 from datetime import timedelta
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -72,6 +72,39 @@ from .tag_service import TagService
 
 
 QUEUED_PLUGIN_RESULT_BATCH_SIZE = 100
+
+
+def _perf_trace(label):
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                    return await func(*args, **kwargs)
+                started_at = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000
+                    print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+            return async_wrapper
+
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                return func(*args, **kwargs)
+            started_at = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+        return sync_wrapper
+
+    return decorator
 
 
 def _bus_name(prefix: str, identifier: str) -> str:
@@ -1728,24 +1761,42 @@ def _run_due_queued_plugin_result(
 
     if not plugin_names:
         return False
-    queued_snapshot_ids = ArchiveResult.objects.filter(
+    now = timezone.now()
+    queued_results = ArchiveResult.objects.filter(
+        snapshot_id=OuterRef("pk"),
         status=ArchiveResult.StatusChoices.QUEUED,
         plugin__in=plugin_names,
-    ).values("snapshot_id")
-    due_snapshots = Snapshot.objects.filter(
-        id__in=queued_snapshot_ids,
-        retry_at__lte=timezone.now(),
-        status=Snapshot.StatusChoices.SEALED,
     )
+    first_due_results = list(
+        ArchiveResult.objects.filter(
+            status=ArchiveResult.StatusChoices.QUEUED,
+            plugin__in=plugin_names,
+            snapshot__retry_at__lte=now,
+            snapshot__status=Snapshot.StatusChoices.SEALED,
+        )
+        .filter(**({"snapshot__crawl_id": crawl_id} if crawl_id else {}))
+        .values("snapshot_id", "snapshot__crawl_id")[:1],
+    )
+    if not first_due_results:
+        return False
+    root_crawl_id = str(first_due_results[0]["snapshot__crawl_id"])
+
+    due_snapshots = Snapshot.objects.filter(
+        retry_at__lte=now,
+        status=Snapshot.StatusChoices.SEALED,
+    ).filter(Exists(queued_results))
     if crawl_id:
         due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
-    due_snapshots = due_snapshots.only("id", "crawl_id", "retry_at", "status").order_by("retry_at", "created_at")
-    first_due_snapshot = due_snapshots.first()
-    if first_due_snapshot is None:
-        return False
-    root_crawl_id = str(first_due_snapshot.crawl_id)
+
     batch_candidates = list(
-        due_snapshots.filter(crawl_id=root_crawl_id)[:QUEUED_PLUGIN_RESULT_BATCH_SIZE],
+        # The crawl picker above starts from enabled queued ArchiveResult rows
+        # and uses a sliced LIMIT 1. Do not use QuerySet.first() here: it adds
+        # ordering and can turn this hot scheduler check into a temp-sort over
+        # hundreds of thousands of plugin rows. Once a crawl is selected,
+        # sibling order is irrelevant; the crawl_id/status index can fetch this
+        # small local batch directly while EXISTS proves the enabled queued
+        # plugin rows via the existing ArchiveResult unique index.
+        due_snapshots.filter(crawl_id=root_crawl_id).order_by()[:QUEUED_PLUGIN_RESULT_BATCH_SIZE],
     )
     if not batch_candidates:
         return False
@@ -1753,7 +1804,9 @@ def _run_due_queued_plugin_result(
     selected_plugins: list[str] | None = None
     claimed_snapshot_ids: list[str] = []
     for snapshot in batch_candidates:
-        snapshot_selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
+        snapshot_selected_plugins = [
+            plugin_name for plugin_name in (queued_plugins_for_snapshot(str(snapshot.id)) or []) if plugin_name in plugin_names
+        ]
         if not snapshot_selected_plugins:
             continue
         if selected_plugins is None:
@@ -1789,6 +1842,7 @@ def _run_due_queued_plugin_result(
         queued_results = ArchiveResult.objects.filter(
             snapshot_id=OuterRef("pk"),
             status=ArchiveResult.StatusChoices.QUEUED,
+            plugin__in=selected_plugins,
         )
         Snapshot.objects.filter(
             id__in=claimed_snapshot_ids,
@@ -1881,6 +1935,7 @@ def run_pending_crawls(
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.plugins.discovery import discover_plugin_configs
+    from archivebox.plugins.hooks import discover_hooks
     from archivebox.machine.models import Process
 
     crawl_claim_lock_seconds = 10
@@ -1891,9 +1946,9 @@ def run_pending_crawls(
         for plugin_name, plugin_config in plugin_configs.items()
         if plugin_config.get("output_mimetypes") and not plugin_name.startswith("search_backend_")
     )
-    search_plugin_names = frozenset(plugin_name for plugin_name in plugin_configs if plugin_name.startswith("search_backend_"))
     last_recovery_at = 0.0
     last_retention_at = 0.0
+    last_retention_repair_at = 0.0
     last_analyze_at = 0.0
     analyze_queue: list[str] | None = None
     analyze_sweep_started_at = 0.0
@@ -1903,10 +1958,12 @@ def run_pending_crawls(
         now_monotonic = time.monotonic()
         if now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
             for model in (ArchiveResult, Snapshot, Crawl, Process):
-                # The runner hot path must only touch indexed scheduler/retention
-                # columns before claiming work. delete_at is hydrated when rows
-                # are saved, while missing_delete_at_candidates() may inspect JSON
-                # config across large tables and can stall worker startup.
+                # Keep the tight scheduler loop anchored on indexed delete_at
+                # columns only. Backfilling missing delete_at values has to read
+                # config JSON for models whose retention policy is scoped to a
+                # Crawl/Snapshot/Process. That repair is still required for
+                # correctness, but it belongs in the idle maintenance block
+                # below, not ahead of every claim attempt.
                 model.delete_expired(batch_size=100, backfill_missing=False)
             last_retention_at = now_monotonic
 
@@ -2019,6 +2076,17 @@ def run_pending_crawls(
         ):
             continue
 
+        # Search backend selection is live crawl-execution config, not an
+        # installed-plugin list. Old queued rows for a backend that is disabled
+        # by the current Machine/Crawl/Snapshot config must remain queued so
+        # they can run if the user re-enables that backend, but they should not
+        # launch a standalone hook process just to skip after imports/config
+        # hydration. Refreshing here preserves mid-run config edits while using
+        # the same enabled-hook discovery path that created ArchiveResult rows.
+        runtime_config = get_config()
+        search_plugin_names = frozenset(
+            hook.parent.name for hook in discover_hooks("Snapshot", config=runtime_config) if hook.parent.name.startswith("search_backend_")
+        )
         if _run_due_queued_plugin_result(
             search_plugin_names,
             crawl_id=crawl_id,
@@ -2066,6 +2134,18 @@ def run_pending_crawls(
         if crawl_id is None and not maintenance_only:
             if _run_due_binary():
                 continue
+
+        now_monotonic = time.monotonic()
+        if now_monotonic - last_retention_repair_at >= (60.0 if daemon else 0.0):
+            for model in (ArchiveResult, Snapshot, Crawl, Process):
+                # No runnable work was found on this scheduler pass. This is
+                # the bounded repair point for missing retention deadlines,
+                # including ArchiveResult rows intentionally saved without
+                # delete_at in the plugin-result hot path. Running it here keeps
+                # DELETE_AFTER resolution fresh without making every hook event
+                # load parent Snapshot/Crawl config.
+                model.delete_expired(batch_size=100, backfill_missing=True)
+            last_retention_repair_at = now_monotonic
 
         if daemon:
             now_monotonic = time.monotonic()

@@ -195,12 +195,15 @@ def get_search_backends() -> dict[str, Any]:
     )
 
 
+@lru_cache(maxsize=1)
 def discover_plugin_configs() -> dict[str, dict[str, Any]]:
     """
     Discover all plugin config.json schemas.
 
     Each plugin can define a config.json file with JSONSchema defining
-    its configuration options.
+    its configuration options. This is intentionally cached because these
+    schemas are plugin package metadata, not live user config; runtime values
+    still come from env/db config at each callsite.
     """
     configs = {}
 
