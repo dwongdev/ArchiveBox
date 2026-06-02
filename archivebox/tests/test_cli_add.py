@@ -547,15 +547,14 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(initialized_a
     system_browser = _find_system_browser()
     if system_browser:
         chrome_env["CHROME_BINARY"] = str(system_browser)
-    else:
-        _cmd_result = run_archivebox_cmd(
-            ["install", "chrome"],
-            cwd=initialized_archive,
-            env=chrome_env,
-            timeout=600,
-        )
-        install_stdout, install_stderr, install_returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
-        assert install_returncode == 0, install_stderr or install_stdout
+    _cmd_result = run_archivebox_cmd(
+        ["install", "chrome"],
+        cwd=initialized_archive,
+        env=chrome_env,
+        timeout=600,
+    )
+    install_stdout, install_stderr, install_returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+    assert install_returncode == 0, install_stderr or install_stdout
     _cmd_result = run_archivebox_cmd(
         [
             "add",
