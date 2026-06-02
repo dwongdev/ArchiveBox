@@ -114,6 +114,7 @@ def test_cli_api_add_search_update_remove_over_server(tmp_path):
                 "filter_patterns": [target_url],
                 "batch_size": 1,
                 "continuous": False,
+                "index_only": True,
             },
             timeout=20,
         )

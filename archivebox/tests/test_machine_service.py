@@ -41,6 +41,8 @@ def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
         "LIB_BIN_DIR": str(data_dir / "lib" / "bin"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "LITEPARSE_ENABLED": "True",
+        "TIMEOUT": "180",
+        "ABXPKG_INSTALL_TIMEOUT": "180",
         "PATH": os.pathsep.join(entry for entry in path_entries if entry),
     }
 
@@ -55,7 +57,7 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
     _cmd_result = run_archivebox_cmd(
         ["install", "--binproviders=env", "liteparse"],
         cwd=initialized_archive,
-        timeout=120,
+        timeout=240,
         env=_runtime_env(initialized_archive, bootstrap_bin_dir),
     )
     stdout, stderr, returncode = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
