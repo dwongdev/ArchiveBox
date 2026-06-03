@@ -94,10 +94,18 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
     from archivebox.config.django import setup_django
 
     setup_django()
-    check_migrations(blocking=True, auto_apply=False)
+    previous_wants_init = os.environ.get("ARCHIVEBOX_WANTS_INIT")
+    os.environ["ARCHIVEBOX_WANTS_INIT"] = "1"
+    try:
+        check_migrations(blocking=True, auto_apply=False)
 
-    for migration_line in apply_migrations(CONSTANTS.DATA_DIR):
-        sys.stdout.write(f"    {migration_line}\n")
+        for migration_line in apply_migrations(CONSTANTS.DATA_DIR):
+            sys.stdout.write(f"    {migration_line}\n")
+    finally:
+        if previous_wants_init is None:
+            os.environ.pop("ARCHIVEBOX_WANTS_INIT", None)
+        else:
+            os.environ["ARCHIVEBOX_WANTS_INIT"] = previous_wants_init
 
     assert os.path.isfile(CONSTANTS.DATABASE_FILE) and os.access(CONSTANTS.DATABASE_FILE, os.R_OK)
     print()

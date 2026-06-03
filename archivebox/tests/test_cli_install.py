@@ -111,13 +111,34 @@ def test_install_invalid_option_fails(tmp_path):
 
 def test_install_from_empty_dir_initializes_collection(tmp_path):
     """Test that install bootstraps an empty dir before performing work."""
+    env = os.environ.copy()
+    tmp_short = Path("/tmp") / f"abx-install-empty-{tmp_path.name}"
+    tmp_short.mkdir(parents=True, exist_ok=True)
+    env.update(
+        {
+            "TMP_DIR": str(tmp_short),
+            "ARCHIVEBOX_ALLOW_NO_UNIX_SOCKETS": "true",
+        },
+    )
+
     result = run_archivebox_cmd(
-        ["install", "--dry-run"],
+        ["install", "git"],
+        cwd=tmp_path,
+        timeout=120,
+        env=env,
     )
 
     output = result.stdout + result.stderr
-    assert result.returncode == 0
-    assert "Initializing" in output or "Dry run" in output or "init" in output.lower()
+    assert result.returncode == 0, output
+    assert "Initializing a new ArchiveBox" in output
+    assert "Installing specific binaries: git" in output
+    assert (tmp_path / "ArchiveBox.conf").is_file()
+    assert (tmp_path / "index.sqlite3").is_file()
+
+    with use_archivebox_db(tmp_path):
+        assert Snapshot.objects.count() == 0
+        assert Crawl.objects.count() == 0
+        assert Binary.objects.filter(status="installed", name="git").count() == 1
 
 
 def test_install_updates_binary_table(initialized_archive):
