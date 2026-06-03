@@ -164,6 +164,7 @@ jobs:
           MIN_CHROMIUM_MAJOR: "149"
           LIB_DIR: ${{ runner.temp }}/abx-lib
           ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_INSTALL_TIMEOUT: "900"
           ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
         run: |
           set -euo pipefail
@@ -274,6 +275,7 @@ jobs:
           MIN_CHROMIUM_MAJOR: "149"
           LIB_DIR: ${{ runner.temp }}/abx-lib
           ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_INSTALL_TIMEOUT: "900"
           ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
         run: |
           set -euo pipefail
