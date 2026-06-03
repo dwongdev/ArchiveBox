@@ -232,55 +232,24 @@ jobs:
           uv sync --dev --all-extras --no-sources --no-cache
           uv pip install -e ./abxpkg -e ./abx-plugins[dev] -e ./abx-dl
 
-      - name: Select Chromium for extension-capable CDP
+      - name: Install Chrome through ArchiveBox
         if: ${{ matrix.plugin.needs_chromium }}
         env:
           MIN_CHROMIUM_MAJOR: "149"
           LIB_DIR: ${{ runner.temp }}/abx-lib
           ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
         run: |
           set -euo pipefail
-          mkdir -p "$LIB_DIR"
+          mkdir -p "$LIB_DIR" "$ABX_CI_DATA_DIR"
           echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
           echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
 
-          candidate="/usr/bin/chromium"
-          version=""
-          major=0
-          if [ -x "$candidate" ]; then
-            version="$("$candidate" --version || true)"
-            major="$(printf '%s\n' "$version" | sed -E 's/.* ([0-9]+)\..*/\1/' | head -1)"
-            case "$major" in
-              ''|*[!0-9]*) major=0 ;;
-            esac
-          fi
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install chrome
 
-          if [ "$major" -ge "$MIN_CHROMIUM_MAJOR" ]; then
-            echo "Using runner Chromium: $candidate ($version)"
-            echo "CHROME_BINARY=$candidate" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          echo "Runner Chromium is unavailable or too old: ${version:-not found}"
-          echo "Installing Playwright Chromium into $LIB_DIR..."
-          uv run --no-sync --no-sources abxpkg install \
-            --binproviders=npm \
-            --lib="$LIB_DIR" \
-            --postinstall-scripts=false \
-            --min-release-age=0 \
-            --no-cache \
-            --overrides='{"npm":{"install_args":["playwright@next"]}}' \
-            playwright
-          uv run --no-sync --no-sources abxpkg install \
-            --binproviders=playwright \
-            --lib="$LIB_DIR" \
-            --bin-dir="$LIB_DIR/env/bin" \
-            --min-version="$MIN_CHROMIUM_MAJOR" \
-            chromium
-
-          candidate="$LIB_DIR/env/bin/chromium"
+          candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="chromium", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
           if [ ! -x "$candidate" ]; then
-            echo "Playwright Chromium shim was not created at $candidate" >&2
+            echo "ArchiveBox did not install an executable Chromium binary: ${candidate:-not found}" >&2
             exit 1
           fi
           version="$("$candidate" --version || true)"
@@ -289,10 +258,10 @@ jobs:
             ''|*[!0-9]*) major=0 ;;
           esac
           if [ "$major" -lt "$MIN_CHROMIUM_MAJOR" ]; then
-            echo "Playwright Chromium is still too old: ${version:-unknown}" >&2
+            echo "ArchiveBox installed Chromium is too old: ${version:-unknown}" >&2
             exit 1
           fi
-          echo "Using Playwright Chromium: $candidate ($version)"
+          echo "Using ArchiveBox-installed Chromium: $candidate ($version)"
           echo "CHROME_BINARY=$candidate" >> "$GITHUB_ENV"
 
       - name: Run plugin tests - ${{ matrix.plugin.name }}
