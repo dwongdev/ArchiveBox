@@ -6,7 +6,7 @@ import json
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
-from archivebox.tests.conftest import run_archivebox_cmd, cli_env
+from archivebox.tests.conftest import cli_env, find_snapshot_dir, parse_jsonl_output, run_archivebox_cmd
 
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
@@ -24,7 +24,7 @@ def create_extract_snapshot(initialized_archive, env, url="https://example.com")
 
 def test_extract_runs_on_snapshot_id(initialized_archive):
     """Test that extract command accepts a snapshot ID."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
     create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
@@ -32,17 +32,47 @@ def test_extract_runs_on_snapshot_id(initialized_archive):
 
     # Run extract on the snapshot
     result = run_archivebox_cmd(
-        ["extract", "--no-wait", str(snapshot_id)],
+        ["extract", "--plugins=wget,title", str(snapshot_id)],
+        cwd=initialized_archive,
         env=env,
+        timeout=90,
     )
 
-    # Should not error about invalid snapshot ID
-    assert "not found" not in result.stderr.lower()
+    assert result.returncode == 0, result.stderr or result.stdout
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot_id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
+    with use_archivebox_db(initialized_archive):
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_with_enabled_extractor_creates_archiveresult(initialized_archive):
     """Test that extract creates ArchiveResult when extractor is enabled."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
     create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
@@ -50,57 +80,143 @@ def test_extract_with_enabled_extractor_creates_archiveresult(initialized_archiv
 
     # Run extract with title extractor enabled
     env = env.copy()
-    env["SAVE_TITLE"] = "true"
-
-    run_archivebox_cmd(
-        ["extract", "--no-wait", str(snapshot_id)],
+    result = run_archivebox_cmd(
+        ["extract", "--plugins=wget,title", str(snapshot_id)],
+        cwd=initialized_archive,
         env=env,
+        timeout=90,
     )
 
+    assert result.returncode == 0, result.stderr or result.stdout
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot_id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
     with use_archivebox_db(initialized_archive):
-        count = ArchiveResult.objects.filter(snapshot_id=snapshot_id).count()
-
-    # May or may not have results depending on timing
-    assert count >= 0
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_plugin_option_accepted(initialized_archive):
     """Test that --plugin option is accepted."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
     create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
 
     result = run_archivebox_cmd(
-        ["extract", "--plugin=title", "--no-wait", str(snapshot_id)],
+        ["extract", "--plugins=wget,title", str(snapshot_id)],
+        cwd=initialized_archive,
         env=env,
+        timeout=90,
     )
 
-    assert "unrecognized arguments: --plugin" not in result.stderr
+    assert result.returncode == 0, result.stderr or result.stdout
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot_id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
+    with use_archivebox_db(initialized_archive):
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_stdin_snapshot_id(initialized_archive):
     """Test that extract reads snapshot IDs from stdin."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
     create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).first()
 
     result = run_archivebox_cmd(
-        ["extract", "--no-wait"],
+        ["extract", "--plugins=wget,title"],
+        cwd=initialized_archive,
         input=f"{snapshot_id}\n",
         env=env,
+        timeout=90,
     )
 
-    # Should not show "not found" error
-    assert "not found" not in result.stderr.lower() or result.returncode == 0
+    assert result.returncode == 0, result.stderr or result.stdout
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot_id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
+    with use_archivebox_db(initialized_archive):
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_stdin_jsonl_input(initialized_archive):
     """Test that extract reads JSONL records from stdin."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
     create_extract_snapshot(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
@@ -109,57 +225,100 @@ def test_extract_stdin_jsonl_input(initialized_archive):
     jsonl_input = json.dumps({"type": "Snapshot", "id": str(snapshot_id)}) + "\n"
 
     result = run_archivebox_cmd(
-        ["extract", "--no-wait"],
+        ["extract", "--plugins=wget,title"],
+        cwd=initialized_archive,
         input=jsonl_input,
         env=env,
+        timeout=90,
     )
 
-    # Should not show "not found" error
-    assert "not found" not in result.stderr.lower() or result.returncode == 0
+    assert result.returncode == 0, result.stderr or result.stdout
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot_id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
+    with use_archivebox_db(initialized_archive):
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_pipeline_from_snapshot(initialized_archive):
     """Test piping snapshot output to extract."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
 
-    # Create snapshot and pipe to extract
-    snapshot_proc = run_archivebox_cmd(
-        ["snapshot", "create", "https://example.com"],
+    result = subprocess.run(
+        ["bash", "-lc", "set -o pipefail; archivebox snapshot create https://example.com | archivebox extract --plugins=wget,title"],
         cwd=initialized_archive,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
+        text=True,
         env=env,
-        wait=False,
+        timeout=90,
     )
-
-    extract_proc = run_archivebox_cmd(
-        ["extract", "--no-wait"],
-        cwd=initialized_archive,
-        stdin=snapshot_proc.stdout,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        wait=False,
-    )
-    if snapshot_proc.stdout is not None:
-        snapshot_proc.stdout.close()
-
-    extract_stdout, extract_stderr = extract_proc.communicate(timeout=60)
-    snapshot_stdout, snapshot_stderr = snapshot_proc.communicate(timeout=60)
-    assert snapshot_proc.returncode == 0, (snapshot_stdout or "") + (snapshot_stderr or "")
+    assert result.returncode == 0, result.stderr or result.stdout
 
     with use_archivebox_db(initialized_archive):
         snapshot = Snapshot.objects.filter(url="https://example.com").first()
 
     assert snapshot is not None, "Snapshot should be created by pipeline"
+    records = parse_jsonl_output(result.stdout)
+    result_records = {
+        record["plugin"]: record
+        for record in records
+        if record.get("type") == "ArchiveResult"
+        and record.get("snapshot_id") == str(snapshot.id)
+        and record.get("plugin") in {"wget", "title"}
+    }
+    assert set(result_records) == {"wget", "title"}, records
+    assert result_records["title"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["title"]["output_str"] == "Example Domain"
+    assert result_records["wget"]["status"] == ArchiveResult.StatusChoices.SUCCEEDED
+    assert result_records["wget"]["output_str"] == "wget/example.com/index.html"
+    with use_archivebox_db(initialized_archive):
+        archiveresults = {row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot.id, plugin__in=("wget", "title"))}
+    snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot.id))
+    assert snapshot_dir is not None
+    title_path = snapshot_dir / "title" / "title.txt"
+    wget_path = snapshot_dir / "wget" / "example.com" / "index.html"
+    assert title_path.is_file()
+    assert wget_path.is_file()
+    assert title_path.read_text(encoding="utf-8").strip() == "Example Domain"
+    assert "Example Domain" in wget_path.read_text(encoding="utf-8")
+    assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["title"].output_str == "Example Domain"
+    assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+    assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert archiveresults["wget"].output_str == "wget/example.com/index.html"
+    assert archiveresults["wget"].output_files["example.com/index.html"]["size"] == wget_path.stat().st_size
 
 
 def test_extract_multiple_snapshots(initialized_archive):
     """Test extracting from multiple snapshots."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env(PLUGINS="wget,title")
 
     create_extract_snapshot(initialized_archive, env, "https://example.com")
-    create_extract_snapshot(initialized_archive, env, "https://iana.org")
+    create_extract_snapshot(initialized_archive, env, "https://example.org")
 
     with use_archivebox_db(initialized_archive):
         snapshot_ids = list(Snapshot.objects.values_list("id", flat=True))
@@ -169,16 +328,45 @@ def test_extract_multiple_snapshots(initialized_archive):
     # Extract from all snapshots
     ids_input = "\n".join(str(snapshot_id) for snapshot_id in snapshot_ids) + "\n"
     result = run_archivebox_cmd(
-        ["extract", "--no-wait"],
+        ["extract", "--plugins=wget,title"],
+        cwd=initialized_archive,
         input=ids_input,
         env=env,
+        timeout=90,
     )
     assert result.returncode == 0, result.stderr
 
     with use_archivebox_db(initialized_archive):
         count = Snapshot.objects.count()
+        result_rows = list(ArchiveResult.objects.filter(plugin__in=("wget", "title")).values_list("snapshot_id", "plugin", "status"))
 
     assert count >= 2, "Both snapshots should still exist after extraction"
+    assert len(result_rows) == len(snapshot_ids) * 2
+    assert {(snapshot_id, plugin) for snapshot_id, plugin, _status in result_rows} == {
+        (snapshot_id, plugin) for snapshot_id in snapshot_ids for plugin in ("wget", "title")
+    }
+    assert all(status == ArchiveResult.StatusChoices.SUCCEEDED for _snapshot_id, _plugin, status in result_rows)
+    for snapshot_id in snapshot_ids:
+        with use_archivebox_db(initialized_archive):
+            snapshot = Snapshot.objects.get(id=snapshot_id)
+            archiveresults = {
+                row.plugin: row for row in ArchiveResult.objects.filter(snapshot_id=snapshot_id, plugin__in=("wget", "title"))
+            }
+        snapshot_dir = find_snapshot_dir(initialized_archive, str(snapshot_id))
+        assert snapshot_dir is not None
+        title_path = snapshot_dir / "title" / "title.txt"
+        domain = snapshot.url.split("://", 1)[1].rstrip("/")
+        wget_path = snapshot_dir / "wget" / domain / "index.html"
+        assert title_path.is_file()
+        assert wget_path.is_file()
+        assert title_path.read_text(encoding="utf-8").strip() == archiveresults["title"].output_str
+        assert "<html" in wget_path.read_text(encoding="utf-8").lower()
+        assert archiveresults["title"].status == ArchiveResult.StatusChoices.SUCCEEDED
+        assert archiveresults["title"].output_str
+        assert archiveresults["title"].output_files["title.txt"]["size"] == title_path.stat().st_size
+        assert archiveresults["wget"].status == ArchiveResult.StatusChoices.SUCCEEDED
+        assert archiveresults["wget"].output_str == f"wget/{domain}/index.html"
+        assert archiveresults["wget"].output_files[f"{domain}/index.html"]["size"] == wget_path.stat().st_size
 
 
 class TestExtractCLI:
@@ -199,9 +387,9 @@ class TestExtractCLI:
         """Test that running without snapshots shows a warning."""
 
         result = run_archivebox_cmd(
-            ["extract", "--no-wait"],
+            ["extract"],
             input="",
         )
 
-        # Should show warning about no snapshots or exit normally (empty input)
-        assert result.returncode == 0 or "No" in result.stderr
+        assert result.returncode == 1
+        assert "No" in result.stderr

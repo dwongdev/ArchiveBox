@@ -27,7 +27,6 @@ __package__ = "archivebox.misc"
 
 import sys
 import json
-import select
 from typing import Any, TextIO
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -110,14 +109,6 @@ def read_stdin(stream: TextIO | None = None) -> Iterator[dict[str, Any]]:
 
     # Don't block if stdin is a tty with no input
     if active_stream.isatty():
-        return
-
-    try:
-        ready, _, _ = select.select([active_stream], [], [], 0)
-    except (OSError, ValueError):
-        ready = [active_stream]
-
-    if not ready:
         return
 
     for line in active_stream:
