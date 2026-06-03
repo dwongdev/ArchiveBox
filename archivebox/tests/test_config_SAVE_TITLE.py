@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from archivebox.tests.conftest import run_archivebox_cmd, cli_env
 
@@ -6,18 +7,14 @@ import pytest
 
 from archivebox.core.models import Snapshot
 from archivebox.tests.test_orm_helpers import use_archivebox_db
-from .conftest import _find_system_browser
+from .conftest import _find_cached_chrome, _find_system_browser
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _install_chrome(tmp_path, env):
     env["CHROME_ISOLATION"] = "snapshot"
-    system_browser = _find_system_browser()
-    if system_browser:
-        env["CHROME_BINARY"] = str(system_browser)
-        return
-
+    env["LIB_DIR"] = str(tmp_path / "lib")
     install_process = run_archivebox_cmd(
         ["install", "chrome"],
         cwd=tmp_path,
@@ -25,6 +22,13 @@ def _install_chrome(tmp_path, env):
         timeout=600,
     )
     assert install_process.returncode == 0, install_process.stderr or install_process.stdout
+    system_browser = _find_system_browser()
+    if system_browser:
+        env["CHROME_BINARY"] = str(system_browser)
+        return
+    cached_browser = _find_cached_chrome(Path(env["LIB_DIR"]))
+    assert cached_browser is not None, install_process.stderr or install_process.stdout
+    env["CHROME_BINARY"] = str(cached_browser)
 
 
 def _wait_for_snapshot_title(data_dir, *, timeout=60):
