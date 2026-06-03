@@ -746,7 +746,7 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
     port = get_free_port()
     env = cli_env(
         port=port,
-        PLUGINS="chrome,archivewebpage",
+        PLUGINS="archivewebpage",
         BASE_URL=f"http://archivebox.localhost:{port}",
         URL_ALLOWLIST="",
         PUBLIC_INDEX="True",
@@ -783,7 +783,7 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
         start_daemon_server(initialized_archive, env=env, port=port)
         wait_for_http(port, host=f"archivebox.localhost:{port}", path="/")
         _cmd_result = run_archivebox_cmd(
-            ["add", "--bg", "--depth=0", "--max-urls=1", "--plugins=chrome,archivewebpage", url],
+            ["add", "--bg", "--depth=0", "--max-urls=1", "--plugins=archivewebpage", url],
             cwd=initialized_archive,
             env=env,
             timeout=120,
