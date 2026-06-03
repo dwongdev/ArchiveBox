@@ -219,20 +219,29 @@ def test_remove_reports_remaining_link_count_correctly(initialized_archive):
 
 def test_remove_after_flag(initialized_archive):
     """Test remove --after flag removes snapshots after date."""
-    env = cli_env(disable_extractors=True)
+    env = cli_env()
 
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
         env=env,
+        check=True,
     )
     run_queued_crawls(initialized_archive, env)
 
-    # Try remove with --after flag (should work or show usage)
+    rows = _snapshot_rows(initialized_archive, env)
+    assert len(rows) == 1
+    snapshot_dir = find_snapshot_dir(initialized_archive, rows[0]["id"])
+    assert snapshot_dir is not None, f"Snapshot output directory not found for {rows[0]['id']}"
+
     result = run_archivebox_cmd(
-        ["remove", "--after=2020-01-01", "--yes"],
+        ["remove", "--after=1577836800", "--yes"],
         env=env,
         timeout=30,
+        check=True,
     )
 
-    # Should complete
-    assert result.returncode in [0, 1, 2]
+    output = result.stdout + result.stderr
+    assert "Removed 1 out of 1 links" in output
+    assert "Index now contains 0 links." in output
+    assert len(_snapshot_rows(initialized_archive, env)) == 0
+    assert not snapshot_dir.exists()

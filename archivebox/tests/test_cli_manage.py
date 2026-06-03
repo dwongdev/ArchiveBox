@@ -53,5 +53,5 @@ def test_manage_check_works(initialized_archive):
         timeout=30,
     )
 
-    # Check should complete
-    assert result.returncode in [0, 1]
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "System check identified no issues" in result.stdout

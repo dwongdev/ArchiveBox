@@ -614,10 +614,12 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(initialized_a
     by_url_plugin = {(url, plugin): status for url, plugin, status, _files, _size, _output in archive_results}
     assert by_url_plugin[("https://example.com", "wget")] == "succeeded"
     assert by_url_plugin[("https://pirate.github.io/stress-tests/challenge.html", "wget")] == "succeeded"
-    assert (chrome_url, "headers") in by_url_plugin
-    assert (chrome_url, "title") in by_url_plugin
-    failed_results = [(url, plugin, output) for url, plugin, status, _files, _size, output in archive_results if status == "failed"]
-    assert len(failed_results) <= 2, failed_results
+    assert by_url_plugin[(chrome_url, "headers")] == "succeeded"
+    assert by_url_plugin[(chrome_url, "title")] == "succeeded"
+    unexpected_results = [
+        (url, plugin, status, output) for url, plugin, status, _files, _size, output in archive_results if status != "succeeded"
+    ]
+    assert not unexpected_results
 
     snapshot_root = initialized_archive / "archive/users/system/snapshots"
     html_outputs = [path for path in snapshot_root.rglob("wget/**/*.html") if path.is_file()]
@@ -625,11 +627,10 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(initialized_a
     title_outputs = [path for path in snapshot_root.rglob("title/title.txt") if path.is_file() and path.stat().st_size > 0]
     index_outputs = [path for path in snapshot_root.rglob("index.jsonl") if path.is_file()]
     assert html_outputs
-    if by_url_plugin[(chrome_url, "headers")] == "succeeded":
-        assert header_outputs
-    if by_url_plugin[(chrome_url, "title")] == "succeeded":
-        assert title_outputs
-        assert any("Example Domain" in path.read_text(errors="ignore") for path in title_outputs)
+    assert header_outputs
+    assert any("example.com" in path.read_text(errors="ignore").lower() for path in header_outputs)
+    assert title_outputs
+    assert any("Example Domain" in path.read_text(errors="ignore") for path in title_outputs)
     assert len(index_outputs) >= len(wget_urls) + 1
 
     combined_html = "\n".join(path.read_text(errors="ignore") for path in html_outputs)

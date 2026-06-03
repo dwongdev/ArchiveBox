@@ -12,9 +12,10 @@ from archivebox.misc.util import docstring
 def shell(args: Iterable[str] = ()) -> None:
     """Enter an interactive ArchiveBox Django shell"""
 
-    from django.core.management import call_command
+    from django.core.management import call_command, get_commands
 
-    call_command("shell_plus", *args)
+    shell_command = "shell_plus" if "shell_plus" in get_commands() else "shell"
+    call_command(shell_command, *args)
 
 
 @click.command(add_help_option=False, context_settings=dict(ignore_unknown_options=True))

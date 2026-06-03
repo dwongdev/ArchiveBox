@@ -6,6 +6,7 @@ Verify install detects and records binary dependencies in DB.
 
 import os
 from pathlib import Path
+
 from archivebox.tests.conftest import run_archivebox_cmd
 
 import pytest
@@ -25,20 +26,21 @@ def test_install_runs_successfully(initialized_archive):
         timeout=60,
     )
 
-    # Dry run should complete quickly
-    assert result.returncode in [0, 1]  # May return 1 if binaries missing
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Dry run - would detect ArchiveBox dependencies" in result.stdout
 
 
 def test_install_creates_binary_records_in_db(initialized_archive):
-    """Test that install creates Binary records in database."""
+    """Test that install --dry-run does not create Binary records in database."""
 
-    run_archivebox_cmd(
+    result = run_archivebox_cmd(
         ["install", "--dry-run"],
         timeout=60,
     )
+    assert result.returncode == 0, result.stderr or result.stdout
 
     with use_archivebox_db(initialized_archive):
-        Binary.objects.count()
+        assert Binary.objects.count() == 0
 
 
 def test_install_dry_run_does_not_install(initialized_archive):
@@ -49,8 +51,8 @@ def test_install_dry_run_does_not_install(initialized_archive):
         timeout=60,
     )
 
-    # Should complete without actually installing
-    assert "dry" in result.stdout.lower() or result.returncode in [0, 1]
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "Dry run - would detect ArchiveBox dependencies and run the abx-dl install flow"
 
 
 def test_install_detects_system_binaries(initialized_archive):
@@ -61,8 +63,8 @@ def test_install_detects_system_binaries(initialized_archive):
         timeout=60,
     )
 
-    # Should detect at least some common binaries (python, curl, etc)
-    assert result.returncode in [0, 1]
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "ArchiveBox dependencies" in result.stdout
 
 
 def test_install_shows_binary_status(initialized_archive):
@@ -73,9 +75,8 @@ def test_install_shows_binary_status(initialized_archive):
         timeout=60,
     )
 
-    output = result.stdout + result.stderr
-    # Should show some binary information
-    assert len(output) > 50
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "Dry run - would detect ArchiveBox dependencies and run the abx-dl install flow"
 
 
 def test_install_dry_run_prints_dry_run_message(initialized_archive):
