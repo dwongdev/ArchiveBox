@@ -49,8 +49,12 @@ jobs:
 
             # Extract a display name for the test
             name="main/$(basename $test_file .py | sed 's/^test_//')"
+            needs_chromium=false
+            if grep -Eiq '(chrom|archivewebpage|PLUGINS=.*title|--plugins=.*title|SAVE_TITLE.*[Tt]rue)' "$test_file"; then
+              needs_chromium=true
+            fi
 
-            json_array+="{\"path\":\"$test_file\",\"name\":\"$name\"}"
+            json_array+="{\"path\":\"$test_file\",\"name\":\"$name\",\"needs_chromium\":$needs_chromium}"
           done
           json_array+="]"
 
@@ -153,6 +157,38 @@ jobs:
         run: |
           uv sync --dev --all-extras --no-sources --no-cache
           uv pip install -e ./abxpkg -e ./abx-plugins[dev] -e ./abx-dl
+
+      - name: Install Chrome through ArchiveBox
+        if: ${{ matrix.test.needs_chromium }}
+        env:
+          MIN_CHROMIUM_MAJOR: "149"
+          LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
+        run: |
+          set -euo pipefail
+          mkdir -p "$LIB_DIR" "$ABX_CI_DATA_DIR"
+          echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
+          echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
+
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install chrome
+
+          candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="chromium", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
+          if [ ! -x "$candidate" ]; then
+            echo "ArchiveBox did not install an executable Chromium binary: ${candidate:-not found}" >&2
+            exit 1
+          fi
+          version="$("$candidate" --version || true)"
+          major="$(printf '%s\n' "$version" | sed -E 's/.* ([0-9]+)\..*/\1/' | head -1)"
+          case "$major" in
+            ''|*[!0-9]*) major=0 ;;
+          esac
+          if [ "$major" -lt "$MIN_CHROMIUM_MAJOR" ]; then
+            echo "ArchiveBox installed Chromium is too old: ${version:-unknown}" >&2
+            exit 1
+          fi
+          echo "Using ArchiveBox-installed Chromium: $candidate ($version)"
+          echo "CHROME_BINARY=$candidate" >> "$GITHUB_ENV"
 
       - name: Run test - ${{ matrix.test.name }}
         run: |

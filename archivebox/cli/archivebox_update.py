@@ -276,6 +276,9 @@ def update(
                 do_index = index_only or not migrate_only
                 do_run_until_idle = do_migrate or do_index
                 ran_post_migrate_runner = False
+                full_update_empty = False
+                maintenance_work_queued = False
+                runner_work_queued = False
 
                 if do_migrate:
                     if (
@@ -312,6 +315,8 @@ def update(
                         )
                         print_stats(stats)
                         touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                        maintenance_work_queued = stats.get("queued", 0) > 0
+                        runner_work_queued = runner_work_queued or maintenance_work_queued
                     else:
                         stats_combined = {"phase1": {}, "phase2": {}}
 
@@ -328,6 +333,17 @@ def update(
                             wait_for_turn=wait_for_turn,
                         )
                         print_combined_stats(stats_combined)
+                        full_update_empty = (
+                            stats_combined["phase1"].get("processed", 0) == 0 and stats_combined["phase2"].get("snapshots", 0) == 0
+                        )
+                        maintenance_work_queued = any(
+                            (
+                                stats_combined["phase1"].get("queued", 0),
+                                stats_combined["phase2"].get("queued", 0),
+                                stats_combined["phase2"].get("crawls_queued", 0),
+                            ),
+                        )
+                        runner_work_queued = runner_work_queued or maintenance_work_queued
 
                     if do_run_until_idle:
                         # Filesystem migration is maintenance on existing
@@ -339,8 +355,17 @@ def update(
                         # rows first, runs the targeted plugins, and may leave
                         # the fs_version maintenance tick hidden behind that
                         # plugin work until another update pass.
-                        print("[*] Phase 3: Running filesystem maintenance until idle...")
-                        if is_filtered_update:
+                        if full_update_empty:
+                            print("[*] No snapshots or legacy archive directories found; skipping filesystem maintenance runner.")
+                        elif not maintenance_work_queued:
+                            print("[*] No filesystem maintenance work queued; skipping filesystem maintenance runner.")
+                        else:
+                            print("[*] Phase 3: Running filesystem maintenance until idle...")
+                        if full_update_empty:
+                            pass
+                        elif not maintenance_work_queued:
+                            pass
+                        elif is_filtered_update:
                             if not touched_snapshot_ids:
                                 print("[*] No matching snapshots queued work for the runner.")
                             for snapshot_id in sorted(touched_snapshot_ids):
@@ -350,75 +375,80 @@ def update(
                         ran_post_migrate_runner = True
 
                 if do_index:
-                    ensure_daemon_stack(reason="search indexing")
-                    search_plugins = _get_search_indexing_plugins()
-                    if not search_plugins:
-                        print("[*] No search indexing plugins are available, nothing to backfill.")
+                    if full_update_empty:
+                        print("[*] No snapshots found; skipping search indexing backfill.")
                     else:
-                        snapshots = _build_filtered_snapshots_queryset(
-                            filter_patterns=filter_patterns,
-                            filter_type=filter_type,
-                            status=status,
-                            url__icontains=url__icontains,
-                            url__istartswith=url__istartswith,
-                            tag=tag,
-                            crawl_id=crawl_id,
-                            limit=limit,
-                            sort=sort,
-                            search=search,
-                            before=before,
-                            after=after,
-                            resume=resume,
-                        )
-                        from django.db.models import Exists, OuterRef, Q
-                        from django.utils import timezone
-                        from archivebox.core.models import ArchiveResult, Snapshot
+                        ensure_daemon_stack(reason="search indexing")
+                        search_plugins = _get_search_indexing_plugins()
+                        if not search_plugins:
+                            print("[*] No search indexing plugins are available, nothing to backfill.")
+                        else:
+                            snapshots = _build_filtered_snapshots_queryset(
+                                filter_patterns=filter_patterns,
+                                filter_type=filter_type,
+                                status=status,
+                                url__icontains=url__icontains,
+                                url__istartswith=url__istartswith,
+                                tag=tag,
+                                crawl_id=crawl_id,
+                                limit=limit,
+                                sort=sort,
+                                search=search,
+                                before=before,
+                                after=after,
+                                resume=resume,
+                            )
+                            from django.db.models import Exists, OuterRef, Q
+                            from django.utils import timezone
+                            from archivebox.core.models import ArchiveResult, Snapshot
 
-                        scoped_snapshot_ids = snapshots.order_by().values("id") if is_filtered_update else None
-                        queued_index_results = ArchiveResult.objects.filter(
-                            status=ArchiveResult.StatusChoices.QUEUED,
-                            plugin__in=search_plugins,
-                        )
-                        if scoped_snapshot_ids is not None:
-                            queued_index_results = queued_index_results.filter(snapshot_id__in=scoped_snapshot_ids)
-
-                        if queued_index_results.exists():
-                            now = timezone.now()
-                            queued_result_for_snapshot = queued_index_results.filter(snapshot_id=OuterRef("pk"))
-                            snapshots_to_wake = (
-                                Snapshot.objects.filter(
-                                    status__in=(Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED),
-                                )
-                                .annotate(
-                                    has_queued_index_result=Exists(queued_result_for_snapshot),
-                                )
-                                .filter(
-                                    has_queued_index_result=True,
-                                )
-                                .filter(
-                                    Q(retry_at__isnull=True) | Q(retry_at__gt=now),
-                                )
+                            scoped_snapshot_ids = snapshots.order_by().values("id") if is_filtered_update else None
+                            queued_index_results = ArchiveResult.objects.filter(
+                                status=ArchiveResult.StatusChoices.QUEUED,
+                                plugin__in=search_plugins,
                             )
                             if scoped_snapshot_ids is not None:
-                                snapshots_to_wake = snapshots_to_wake.filter(id__in=scoped_snapshot_ids)
-                            woken_count = snapshots_to_wake.update(
-                                retry_at=now,
-                                modified_at=now,
-                            )
-                            print(
-                                "[*] Existing queued search index jobs found; "
-                                f"skipping backfill scan and waking {woken_count} snapshot(s) for the runner.",
-                            )
-                        else:
-                            stats = reindex_snapshots(
-                                snapshots,
-                                search_plugins=search_plugins,
-                                batch_size=batch_size,
-                                collect_ids=is_filtered_update,
-                                wait_for_turn=wait_for_turn,
-                            )
-                            print_index_stats(stats)
-                            touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                                queued_index_results = queued_index_results.filter(snapshot_id__in=scoped_snapshot_ids)
+
+                            if queued_index_results.exists():
+                                runner_work_queued = True
+                                now = timezone.now()
+                                queued_result_for_snapshot = queued_index_results.filter(snapshot_id=OuterRef("pk"))
+                                snapshots_to_wake = (
+                                    Snapshot.objects.filter(
+                                        status__in=(Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED),
+                                    )
+                                    .annotate(
+                                        has_queued_index_result=Exists(queued_result_for_snapshot),
+                                    )
+                                    .filter(
+                                        has_queued_index_result=True,
+                                    )
+                                    .filter(
+                                        Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+                                    )
+                                )
+                                if scoped_snapshot_ids is not None:
+                                    snapshots_to_wake = snapshots_to_wake.filter(id__in=scoped_snapshot_ids)
+                                woken_count = snapshots_to_wake.update(
+                                    retry_at=now,
+                                    modified_at=now,
+                                )
+                                print(
+                                    "[*] Existing queued search index jobs found; "
+                                    f"skipping backfill scan and waking {woken_count} snapshot(s) for the runner.",
+                                )
+                            else:
+                                stats = reindex_snapshots(
+                                    snapshots,
+                                    search_plugins=search_plugins,
+                                    batch_size=batch_size,
+                                    collect_ids=True,
+                                    wait_for_turn=wait_for_turn,
+                                )
+                                print_index_stats(stats)
+                                touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                                runner_work_queued = runner_work_queued or stats["queued"] > 0
 
                 if do_run_until_idle and (do_index or not ran_post_migrate_runner):
                     # Search/index backfill intentionally queues targeted
@@ -428,8 +458,17 @@ def update(
                     # For a normal unfiltered `archivebox update`, keep the
                     # historical final pass broad enough to resume genuinely
                     # queued/interrupted crawl work after maintenance is done.
-                    print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
-                    if is_filtered_update:
+                    if full_update_empty:
+                        print("[*] No snapshots found; skipping queued/interrupted crawl runner.")
+                    elif not runner_work_queued:
+                        print("[*] No queued/interrupted crawl work found; skipping queued/interrupted crawl runner.")
+                    else:
+                        print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
+                    if full_update_empty:
+                        pass
+                    elif not runner_work_queued:
+                        pass
+                    elif touched_snapshot_ids:
                         if not touched_snapshot_ids:
                             print("[*] No matching snapshots queued work for the runner.")
                         for snapshot_id in sorted(touched_snapshot_ids):
@@ -693,6 +732,7 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     if resume:
         queryset = queryset.filter(timestamp__lte=resume)
     total = queryset.count()
+    stats["snapshots"] = total
     print(f"[*] Processing {total} snapshots from database (most recent first)...")
 
     def update_in_batches(rows, *, label: str, **updates) -> int:
