@@ -293,6 +293,7 @@ def test_opencode_sse_chunks_are_not_rewritten(monkeypatch):
 def test_opencode_starts_without_opening_browser(tmp_path, monkeypatch):
     from abx_plugins.plugins.opencode import views
 
+    captured_cmd = []
     popen_kwargs = {}
     health_checks = iter([False, False, True])
 
@@ -301,19 +302,35 @@ def test_opencode_starts_without_opening_browser(tmp_path, monkeypatch):
             return None
 
     def fake_popen(cmd, **kwargs):
+        captured_cmd[:] = cmd
         popen_kwargs.update(kwargs)
         return FakeProcess()
 
     monkeypatch.setattr(views, "_health", lambda settings: next(health_checks))
+    monkeypatch.setattr(
+        views,
+        "_resolve_binary",
+        lambda binary, config: (
+            "/opt/archivebox/lib/pnpm/packages/opencode/node_modules/.bin/opencode",
+            {
+                "PATH": "/opt/archivebox/lib/pnpm/packages/opencode/node_modules/.bin",
+                "PNPM_HOME": "/opt/archivebox/lib/pnpm/packages/opencode/node_modules/.bin",
+                "NODE_PATH": "/opt/archivebox/lib/pnpm/packages/opencode/node_modules",
+            },
+        ),
+    )
     monkeypatch.setattr(views.subprocess, "Popen", fake_popen)
 
-    settings = views._settings({"OPENCODE_WORKDIR": str(tmp_path), "OPENCODE_BINARY": "/usr/bin/false"})
+    settings = views._settings({"OPENCODE_WORKDIR": str(tmp_path), "OPENCODE_BINARY": "opencode"})
     ok, error = views._ensure_opencode(settings)
 
     assert ok, error
+    assert captured_cmd[0] == "/opt/archivebox/lib/pnpm/packages/opencode/node_modules/.bin/opencode"
     assert popen_kwargs["cwd"] == tmp_path.resolve()
     assert popen_kwargs["env"]["BROWSER"] == "false"
     assert popen_kwargs["env"]["GIT_CEILING_DIRECTORIES"] == f"{tmp_path.resolve()}{os.pathsep}{tmp_path.parent.resolve()}"
+    assert popen_kwargs["env"]["PNPM_HOME"] == "/opt/archivebox/lib/pnpm/packages/opencode/node_modules/.bin"
+    assert popen_kwargs["env"]["NODE_PATH"] == "/opt/archivebox/lib/pnpm/packages/opencode/node_modules"
     assert popen_kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "true"
     assert popen_kwargs["env"]["XDG_DATA_HOME"] == str(tmp_path / "opencode" / "data")
 

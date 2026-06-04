@@ -276,6 +276,8 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
         --no-install-project \
         --no-install-workspace \
         --no-sources \
+    && uv pip install --upgrade --no-cache \
+        "abx-plugins @ git+https://github.com/ArchiveBox/abx-plugins.git@5f2e95af7053fe49c45ed56d17f23e66fbdfa39f" \
     && apt-get purge -y python3-dev build-essential gcc \
     && apt-get autoremove -y \
     && find /venv -type d -name __pycache__ -prune -exec rm -rf {} + \
