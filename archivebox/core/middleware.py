@@ -185,25 +185,7 @@ def HostRoutingMiddleware(get_response):
         if request.path.startswith("/static/") or request.path in {"/favicon.ico", "/robots.txt"}:
             return get_response(request)
 
-        # In subdomain mode with no explicit BASE_URL we can't safely emit
-        # ``admin.``/``web.``/``snap-*.`` redirects: every URL builder uses the
-        # request's own Host (via the request-host fallback in get_base_url),
-        # so prepending ``admin.`` to whatever the client sent produces a
-        # redirect chain of ``admin.admin.admin.<host>``. Pass the request
-        # through; the misconfig banner on the rendered page tells the user
-        # to pin BASE_URL so the redirects can resume.
-        if config.USES_SUBDOMAIN_ROUTING and not config.BASE_URL:
-            return get_response(request)
-
-        if config.USES_SUBDOMAIN_ROUTING and not host_matches(request_host, admin_host):
-            # ``/add`` is admin-only unless ``PUBLIC_ADD_VIEW`` is on. Without
-            # this redirect, hitting it on public.* falls into AddView's
-            # auth check, bounces through ``/accounts/login/?next=/add/`` →
-            # ``/admin/login/?next=/add/``, and Django admin's LoginView
-            # silently drops ``next`` when the user already has an admin
-            # session — dumping the user on the admin homepage instead of
-            # the add form. Routing the request to admin.* directly lets
-            # AddView run on the host where the session lives.
+        if config.USES_SUBDOMAIN_ROUTING and config.BASE_URL and not host_matches(request_host, admin_host):
             add_should_redirect = not config.PUBLIC_ADD_VIEW and (request.path == "/add" or request.path.startswith("/add/"))
             if (
                 request.path == "/admin"
@@ -216,6 +198,20 @@ def HostRoutingMiddleware(get_response):
                 if request.META.get("QUERY_STRING"):
                     target = f"{target}?{request.META['QUERY_STRING']}"
                 return redirect(target)
+
+        if subdomain and is_snapshot_subdomain(subdomain):
+            view = SnapshotHostView.as_view()
+            return view(request, snapshot_id=subdomain, path=request.path.lstrip("/"))
+
+        # In subdomain mode with no explicit BASE_URL we can't safely emit
+        # ``admin.``/``web.``/``snap-*.`` redirects: every URL builder uses the
+        # request's own Host (via the request-host fallback in get_base_url),
+        # so prepending ``admin.`` to whatever the client sent produces a
+        # redirect chain of ``admin.admin.admin.<host>``. Pass the request
+        # through; the misconfig banner on the rendered page tells the user
+        # to pin BASE_URL so the redirects can resume.
+        if config.USES_SUBDOMAIN_ROUTING and not config.BASE_URL:
+            return get_response(request)
 
         if not config.USES_SUBDOMAIN_ROUTING:
             if host_matches(request_host, listen_host):
@@ -289,9 +285,6 @@ def HostRoutingMiddleware(get_response):
             return get_response(request)
 
         if subdomain:
-            if is_snapshot_subdomain(subdomain):
-                view = SnapshotHostView.as_view()
-                return view(request, snapshot_id=subdomain, path=request.path.lstrip("/"))
             view = OriginalDomainHostView.as_view()
             return view(request, domain=subdomain, path=request.path.lstrip("/"))
 

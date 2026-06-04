@@ -18,7 +18,11 @@ from django.views.generic.list import ListView
 from django.views.generic import FormView
 from django.db.models import Q
 from django.contrib import messages
+from django.conf import settings
+from django.contrib.auth import HASH_SESSION_KEY, SESSION_KEY, get_user_model
 from django.contrib.auth.mixins import UserPassesTestMixin
+from django.contrib.sessions.models import Session
+from django.core import signing
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 
@@ -125,6 +129,125 @@ def _admin_login_redirect_or_forbidden(request: HttpRequest):
     if get_request_config(request).CONTROL_PLANE_ENABLED:
         return redirect(f"/admin/login/?next={request.path}")
     return HttpResponseForbidden("ArchiveBox is running with the control plane disabled in this security mode.")
+
+
+REPLAY_AUTH_SALT = "archivebox.private-snapshot-replay"
+REPLAY_COOKIE_PREFIX = f"archivebox_replay_{CONSTANTS.COLLECTION_ID}_"
+REPLAY_GRANT_MAX_AGE = 60
+
+
+def _replay_cookie_name(snapshot: Snapshot) -> str:
+    return f"{REPLAY_COOKIE_PREFIX}{str(snapshot.id).replace('-', '')[-12:]}"
+
+
+def _clean_replay_next(path: str | None) -> str:
+    """Only allow same-snap relative replay paths; grants must never redirect off-host."""
+    path = f"/{(path or 'index.html').lstrip('/')}"
+    parsed = urlparse(path)
+    if parsed.scheme or parsed.netloc or path.startswith("//"):
+        return "/index.html"
+    return path
+
+
+def _replay_payload_is_valid(payload: dict, snapshot: Snapshot) -> bool:
+    """A replay cookie is not its own auth source; it must point at a live admin session.
+
+    Replayed pages can execute hostile JS, so admin cookies stay host-only on admin.*.
+    The snap host gets only this host-only HttpOnly cookie, and every request checks
+    that the original Django session still exists and still belongs to an active staff user.
+    Logout, session expiry, user deletion/deactivation, or password auth-hash rotation all
+    make the replay cookie inert without needing admin.* to delete a cookie on snap-*.
+    """
+    if payload.get("snapshot_id") != str(snapshot.id):
+        return False
+    try:
+        session = Session.objects.get(session_key=str(payload.get("session_key") or ""))
+        session_data = session.get_decoded()
+        user_id = str(session_data.get(SESSION_KEY) or "")
+        auth_hash = str(session_data.get(HASH_SESSION_KEY) or "")
+        user = get_user_model().objects.get(pk=user_id)
+    except Exception:
+        return False
+    return (
+        str(payload.get("user_id")) == user_id
+        and str(payload.get("auth_hash") or "") == auth_hash
+        and user.is_active
+        and user.is_staff
+        and auth_hash == user.get_session_auth_hash()
+    )
+
+
+def _has_replay_cookie(request: HttpRequest, snapshot: Snapshot) -> bool:
+    value = request.COOKIES.get(_replay_cookie_name(snapshot))
+    if not value:
+        return False
+    try:
+        payload = signing.loads(value, salt=REPLAY_AUTH_SALT, max_age=settings.SESSION_COOKIE_AGE)
+    except signing.BadSignature:
+        return False
+    return isinstance(payload, dict) and _replay_payload_is_valid(payload, snapshot)
+
+
+def _private_snapshot_auth_redirect(request: HttpRequest, snapshot: Snapshot, path: str = "", *, preserve_query: bool = True):
+    next_path = _clean_replay_next(path or "index.html")
+    if preserve_query and request.META.get("QUERY_STRING"):
+        next_path = f"{next_path}?{request.META['QUERY_STRING']}"
+    target = build_admin_url(
+        f"/admin/core/snapshot/replay-auth/?snapshot={snapshot.id}&next={quote(next_path, safe='')}",
+        request=request,
+    )
+    return redirect(target)
+
+
+def _replay_auth_response(request: HttpRequest, snapshot: Snapshot):
+    try:
+        payload = signing.loads(str(request.GET.get("grant") or ""), salt=REPLAY_AUTH_SALT, max_age=REPLAY_GRANT_MAX_AGE)
+    except signing.BadSignature:
+        return _private_snapshot_auth_redirect(request, snapshot, "index.html", preserve_query=False)
+
+    if not isinstance(payload, dict) or not _replay_payload_is_valid(payload, snapshot):
+        return _private_snapshot_auth_redirect(request, snapshot, "index.html", preserve_query=False)
+
+    cookie_value = signing.dumps(payload, salt=REPLAY_AUTH_SALT)
+    response = redirect(_clean_replay_next(request.GET.get("next")))
+    response.set_cookie(
+        _replay_cookie_name(snapshot),
+        cookie_value,
+        max_age=settings.SESSION_COOKIE_AGE,
+        secure=request.is_secure(),
+        httponly=True,
+        samesite="Lax",
+    )
+    return response
+
+
+class SnapshotReplayAuthView(View):
+    """Admin-only handoff that lets a snap host mint its own replay cookie.
+
+    admin.* cannot set a host-only cookie for snap-* (browsers forbid that), and
+    widening the real Django session cookie to *.archivebox.localhost would let XSS
+    in replayed pages hit the admin UI. Instead admin.* proves the user is logged in
+    with a short URL grant, then snap-* validates it and sets a snap-host-only cookie.
+    """
+
+    def get(self, request: HttpRequest):
+        if not is_admin_user(request):
+            return redirect(f"{build_admin_url('/admin/login/', request=request)}?next={quote(request.get_full_path(), safe='')}")
+
+        snapshot = _find_snapshot_by_ref(str(request.GET.get("snapshot") or ""))
+        if not snapshot:
+            raise Http404
+
+        payload = {
+            "snapshot_id": str(snapshot.id),
+            "user_id": str(request.user.pk),
+            "session_key": request.session.session_key,
+            "auth_hash": request.user.get_session_auth_hash(),
+        }
+        grant = signing.dumps(payload, salt=REPLAY_AUTH_SALT)
+        next_path = _clean_replay_next(request.GET.get("next"))
+        target = build_snapshot_url(str(snapshot.id), "_auth", request=request, config=get_request_config(request))
+        return redirect(f"{target}?grant={quote(grant, safe='')}&next={quote(next_path, safe='')}")
 
 
 class HomepageView(View):
@@ -364,7 +487,7 @@ class SnapshotView(View):
                 try:
                     snapshot = Snapshot.objects.get(Q(timestamp=slug) | Q(id__startswith=slug))
                     if not can_view_snapshot(request, snapshot):
-                        return _admin_login_redirect_or_forbidden(request)
+                        return _private_snapshot_auth_redirect(request, snapshot, archivefile or "index.html")
                     canonical_base = snapshot.url_path
                     if canonical_base != snapshot.legacy_archive_path:
                         target_path = f"/{canonical_base}/{archivefile or 'index.html'}"
@@ -573,7 +696,7 @@ class SnapshotPathView(View):
         if snapshot_id:
             snapshot = _find_snapshot_by_ref(snapshot_id)
             if snapshot and not can_view_snapshot(request, snapshot):
-                return _admin_login_redirect_or_forbidden(request)
+                return _private_snapshot_auth_redirect(request, snapshot, path or "index.html")
         else:
             # fuzzy lookup by date + domain/url (most recent)
             username_lookup = "system" if username == "web" else username
@@ -732,7 +855,7 @@ def _replay_path_visible(request: HttpRequest, path: Path) -> bool:
     if not snapshot_id:
         return False
     snapshot = Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").first()
-    if not snapshot or not can_view_snapshot(request, snapshot):
+    if not snapshot or (not can_view_snapshot(request, snapshot) and not _has_replay_cookie(request, snapshot)):
         return False
     request.archivebox_config = get_request_config(request, resolve_plugins=False)
     return True
@@ -955,8 +1078,10 @@ class SnapshotHostView(View):
 
         if not snapshot:
             raise Http404
-        if not can_view_snapshot(request, snapshot):
-            return _admin_login_redirect_or_forbidden(request)
+        if path == "_auth":
+            return _replay_auth_response(request, snapshot)
+        if not can_view_snapshot(request, snapshot) and not _has_replay_cookie(request, snapshot):
+            return _private_snapshot_auth_redirect(request, snapshot, path)
 
         canonical_host = get_snapshot_host(str(snapshot.id), config=request_config)
         if not host_matches(request.get_host(), canonical_host):
@@ -975,8 +1100,10 @@ class SnapshotReplayView(View):
         snapshot = _find_snapshot_by_ref(snapshot_id)
         if not snapshot:
             raise Http404
-        if not can_view_snapshot(request, snapshot):
-            return _admin_login_redirect_or_forbidden(request)
+        if path == "_auth":
+            return _replay_auth_response(request, snapshot)
+        if not can_view_snapshot(request, snapshot) and not _has_replay_cookie(request, snapshot):
+            return _private_snapshot_auth_redirect(request, snapshot, path)
 
         return _serve_snapshot_replay(request, snapshot, path)
 

@@ -19,6 +19,7 @@ from archivebox.core.views import (
     SnapshotView,
     SnapshotPathView,
     SnapshotReplayView,
+    SnapshotReplayAuthView,
     OriginalDomainReplayView,
     PublicIndexView,
     AddView,
@@ -68,6 +69,7 @@ urlpatterns = [
         name="snapshot-path-nodate",
     ),
     path("admin/core/snapshot/add/", RedirectView.as_view(url="/add/")),
+    path("admin/core/snapshot/replay-auth/", SnapshotReplayAuthView.as_view(), name="snapshot-replay-auth"),
     path("add/", AddView.as_view(), name="add"),
     # ``query_string=True`` preserves the ``?next=…`` param that Django's
     # auth/login mixins append, so e.g. ``UserPassesTestMixin`` redirecting

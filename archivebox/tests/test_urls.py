@@ -193,6 +193,10 @@ class TestUrlRouting:
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
 
+    def _set_config(self, *settings: str) -> None:
+        result = run_archivebox_cmd(["config", "--set", *settings], cwd=self.data_dir)
+        assert result.returncode == 0, result.stderr
+
     def test_routes_util_and_public_redirect(self) -> None:
         self._run(
             """
@@ -395,7 +399,8 @@ class TestUrlRouting:
             else:
                 assert snapshot_body == response_file.read_bytes()
 
-            resp = client.get(f"/{response_rel}", HTTP_HOST=original_host)
+            original_response_rel = response_rel.split(f"responses/{snapshot.domain}/", 1)[-1]
+            resp = client.get(f"/{original_response_rel}", HTTP_HOST=original_host)
             assert resp.status_code == 200
             assert response_body(resp) == response_file.read_bytes()
 
@@ -725,133 +730,134 @@ class TestUrlRouting:
         )
 
     def test_default_base_url_preserves_runtime_listen_port(self) -> None:
-        self._run(
-            """
-            client = Client()
+        try:
+            self._set_config("BIND_ADDR=127.0.0.1:8766", "BASE_URL=")
+            self._run(
+                """
+                client = Client()
 
-            assert get_admin_host() == "admin.archivebox.localhost:8766"
-            assert get_web_host() == "web.archivebox.localhost:8766"
-            assert build_admin_url("/admin/") == "http://admin.archivebox.localhost:8766/admin/"
+                assert get_admin_host() == "admin.archivebox.localhost:8766"
+                assert get_web_host() == "web.archivebox.localhost:8766"
+                assert build_admin_url("/admin/") == "http://admin.archivebox.localhost:8766/admin/"
 
-            resp = client.get("/admin/login/", HTTP_HOST="127.0.0.1:8766")
-            assert resp.status_code in (301, 302)
-            assert resp["Location"] == "http://admin.archivebox.localhost:8766/admin/login/"
+                resp = client.get("/admin/login/", HTTP_HOST="127.0.0.1:8766")
+                assert resp.status_code == 200
 
-            print("OK")
-            """,
-            mode="safe-subdomains-fullreplay",
-            env_overrides={
-                "BIND_ADDR": "127.0.0.1:8766",
-                "BASE_URL": "",
-            },
-        )
+                print("OK")
+                """,
+                mode="safe-subdomains-fullreplay",
+            )
+        finally:
+            self._set_config("BIND_ADDR=127.0.0.1:8000", "BASE_URL=http://archivebox.localhost:8000")
 
     def test_subdomain_replay_assets_route_without_base_url(self) -> None:
         chrome_extensions_dir = self.data_dir / "test-chrome-extensions"
-        self._run(
-            """
-            snapshot = get_snapshot()
-            snapshot_host = get_snapshot_host(str(snapshot.id))
-            extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
-            extension_dir.mkdir(parents=True, exist_ok=True)
-            (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui__ = true;\\n", encoding="utf-8")
-            (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw__ = true;\\n", encoding="utf-8")
+        try:
+            self._set_config("BIND_ADDR=127.0.0.1:8766", "BASE_URL=")
+            self._run(
+                """
+                snapshot = get_snapshot()
+                snapshot_host = get_snapshot_host(str(snapshot.id))
+                extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
+                extension_dir.mkdir(parents=True, exist_ok=True)
+                (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui__ = true;\\n", encoding="utf-8")
+                (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw__ = true;\\n", encoding="utf-8")
 
-            client = Client()
-            resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
-            body = response_body(resp).decode("utf-8", "ignore")
+                client = Client()
+                resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
+                body = response_body(resp).decode("utf-8", "ignore")
 
-            assert resp.status_code == 200
-            assert resp["Content-Type"].startswith("application/javascript")
-            assert "window.__archivebox_replay_ui__" in body
+                assert resp.status_code == 200
+                assert resp["Content-Type"].startswith("application/javascript")
+                assert "window.__archivebox_replay_ui__" in body
 
-            print("OK")
-            """,
-            mode="safe-subdomains-fullreplay",
-            env_overrides={
-                "BIND_ADDR": "127.0.0.1:8766",
-                "BASE_URL": "",
-                "CHROME_EXTENSIONS_DIR": str(chrome_extensions_dir),
-            },
-        )
+                print("OK")
+                """,
+                mode="safe-subdomains-fullreplay",
+                env_overrides={"CHROME_EXTENSIONS_DIR": str(chrome_extensions_dir)},
+            )
+        finally:
+            self._set_config("BIND_ADDR=127.0.0.1:8000", "BASE_URL=http://archivebox.localhost:8000")
 
     def test_subdomain_replay_assets_use_derived_chromewebstore_extensions_dir(self) -> None:
         lib_dir = self.data_dir / "test-lib"
-        self._run(
-            """
-            snapshot = get_snapshot()
-            snapshot_host = get_snapshot_host(str(snapshot.id))
-            expected_extensions_dir = Path(SERVER_CONFIG.LIB_DIR) / "chromewebstore" / "extensions"
-            assert Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR).resolve() == expected_extensions_dir.resolve()
+        try:
+            self._set_config("BIND_ADDR=127.0.0.1:8766", "BASE_URL=")
+            self._run(
+                """
+                snapshot = get_snapshot()
+                snapshot_host = get_snapshot_host(str(snapshot.id))
+                expected_extensions_dir = Path(SERVER_CONFIG.LIB_DIR) / "chromewebstore" / "extensions"
+                assert Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR).resolve() == expected_extensions_dir.resolve()
 
-            extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
-            extension_dir.mkdir(parents=True, exist_ok=True)
-            (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui_from_lib__ = true;\\n", encoding="utf-8")
-            (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw_from_lib__ = true;\\n", encoding="utf-8")
+                extension_dir = Path(SERVER_CONFIG.CHROME_EXTENSIONS_DIR) / "test__archivewebpage"
+                extension_dir.mkdir(parents=True, exist_ok=True)
+                (extension_dir / "ui.js").write_text("window.__archivebox_replay_ui_from_lib__ = true;\\n", encoding="utf-8")
+                (extension_dir / "sw.js").write_text("self.__archivebox_replay_sw_from_lib__ = true;\\n", encoding="utf-8")
 
-            client = Client()
-            resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
-            body = response_body(resp).decode("utf-8", "ignore")
+                client = Client()
+                resp = client.get("/replay/ui.js", HTTP_HOST=snapshot_host)
+                body = response_body(resp).decode("utf-8", "ignore")
 
-            assert resp.status_code == 200
-            assert resp["Content-Type"].startswith("application/javascript")
-            assert "window.__archivebox_replay_ui_from_lib__" in body
+                assert resp.status_code == 200
+                assert resp["Content-Type"].startswith("application/javascript")
+                assert "window.__archivebox_replay_ui_from_lib__" in body
 
-            print("OK")
-            """,
-            mode="safe-subdomains-fullreplay",
-            env_overrides={
-                "BIND_ADDR": "127.0.0.1:8766",
-                "BASE_URL": "",
-                "LIB_DIR": str(lib_dir),
-            },
-        )
+                print("OK")
+                """,
+                mode="safe-subdomains-fullreplay",
+                env_overrides={"LIB_DIR": str(lib_dir)},
+            )
+        finally:
+            self._set_config("BIND_ADDR=127.0.0.1:8000", "BASE_URL=http://archivebox.localhost:8000")
 
     def test_onedomain_base_url_overrides_are_preserved_for_external_links(self) -> None:
-        self._run(
-            """
-            snapshot = get_snapshot()
-            snapshot_id = str(snapshot.id)
-            base_host = get_base_host()
+        try:
+            self._set_config("BASE_URL=https://archivebox.example")
+            self._run(
+                """
+                snapshot = get_snapshot()
+                snapshot_id = str(snapshot.id)
+                base_host = get_base_host()
 
-            assert SERVER_CONFIG.SERVER_SECURITY_MODE == "safe-onedomain-nojsreplay"
-            assert get_admin_host() == base_host
-            assert get_web_host() == base_host
+                assert SERVER_CONFIG.SERVER_SECURITY_MODE == "safe-onedomain-nojsreplay"
+                assert get_admin_host() == base_host
+                assert get_web_host() == base_host
 
-            assert get_admin_base_url() == "https://archivebox.example"
-            assert get_web_base_url() == "https://archivebox.example"
-            assert build_admin_url("/admin/login/") == "https://archivebox.example/admin/login/"
-            assert build_snapshot_url(snapshot_id, "index.jsonl") == (
-                f"https://archivebox.example/snapshot/{snapshot_id}/index.jsonl"
+                assert get_admin_base_url() == "https://archivebox.example"
+                assert get_web_base_url() == "https://archivebox.example"
+                assert build_admin_url("/admin/login/") == "https://archivebox.example/admin/login/"
+                assert build_snapshot_url(snapshot_id, "index.jsonl") == (
+                    f"https://archivebox.example/snapshot/{snapshot_id}/index.jsonl"
+                )
+
+                print("OK")
+                """,
+                mode="safe-onedomain-nojsreplay",
             )
-
-            print("OK")
-            """,
-            mode="safe-onedomain-nojsreplay",
-            env_overrides={
-                "BASE_URL": "https://archivebox.example",
-            },
-        )
+        finally:
+            self._set_config("BASE_URL=http://archivebox.localhost:8000")
 
     def test_subdomain_snapshot_urls_inherit_https_archive_base_url(self) -> None:
-        self._run(
-            """
-            snapshot = get_snapshot()
-            snapshot_id = str(snapshot.id)
-            snapshot_host = get_snapshot_host(snapshot_id)
+        try:
+            self._set_config("BASE_URL=https://archivebox.example")
+            self._run(
+                """
+                snapshot = get_snapshot()
+                snapshot_id = str(snapshot.id)
+                snapshot_host = get_snapshot_host(snapshot_id)
 
-            assert SERVER_CONFIG.SERVER_SECURITY_MODE == "safe-subdomains-fullreplay"
-            assert get_web_base_url() == "https://web.archivebox.example"
-            assert build_snapshot_url(snapshot_id, "index.html") == f"https://{snapshot_host}/index.html"
-            assert build_original_url("example.com", "index.html") == f"https://{get_original_host('example.com')}/index.html"
+                assert SERVER_CONFIG.SERVER_SECURITY_MODE == "safe-subdomains-fullreplay"
+                assert get_web_base_url() == "https://web.archivebox.example"
+                assert build_snapshot_url(snapshot_id, "index.html") == f"https://{snapshot_host}/index.html"
+                assert build_original_url("example.com", "index.html") == f"https://{get_original_host('example.com')}/index.html"
 
-            print("OK")
-            """,
-            mode="safe-subdomains-fullreplay",
-            env_overrides={
-                "BASE_URL": "https://archivebox.example",
-            },
-        )
+                print("OK")
+                """,
+                mode="safe-subdomains-fullreplay",
+            )
+        finally:
+            self._set_config("BASE_URL=http://archivebox.localhost:8000")
 
     def test_template_and_admin_links(self) -> None:
         self._run(
@@ -959,7 +965,6 @@ class TestUrlRouting:
             """
             snapshot = get_snapshot()
             web_host = get_web_host()
-
             consolelog_dir = Path(snapshot.output_dir) / "consolelog"
             consolelog_dir.mkdir(parents=True, exist_ok=True)
             (consolelog_dir / "console.jsonl").write_text(
