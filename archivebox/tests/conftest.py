@@ -202,6 +202,7 @@ def run_archivebox_cmd(
         if disable_extractors:
             run_env.update(
                 {
+                    "PLUGINS": "__archivebox_test_no_plugins__",
                     "SAVE_ARCHIVEDOTORG": "False",
                     "SAVE_TITLE": "False",
                     "SAVE_FAVICON": "False",
@@ -592,9 +593,11 @@ def cli_env(
     if disable_extractors or live or server:
         env.update(
             {
+                "PLUGINS": "__archivebox_test_no_plugins__",
                 "SAVE_ARCHIVEDOTORG": "False",
                 "SAVE_TITLE": "False",
                 "SAVE_FAVICON": "False",
+                "SAVE_WGET": "False",
                 "SAVE_WARC": "False",
                 "SAVE_PDF": "False",
                 "SAVE_SCREENSHOT": "False",

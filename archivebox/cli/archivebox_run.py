@@ -342,7 +342,8 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
 @click.option("--snapshot-id", help="Run one snapshot through its crawl")
 @click.option("--binary-id", help="Run one queued binary install directly on the bus")
 @click.option("--maintenance-only", is_flag=True, help="Only process due maintenance ticks on sealed/paused snapshots")
-def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintenance_only: bool):
+@click.option("--no-stdin", is_flag=True, hidden=True, help="Run the scheduler even when stdin is not a TTY")
+def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintenance_only: bool, no_stdin: bool):
     """
     Process queued work.
 
@@ -394,7 +395,7 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintena
         if maintenance_only:
             sys.exit(run_runner(daemon=daemon, maintenance_only=True))
 
-        if not sys.stdin.isatty():
+        if not no_stdin and not sys.stdin.isatty():
             sys.exit(process_stdin_records())
         else:
             sys.exit(run_runner(daemon=daemon, maintenance_only=maintenance_only))

@@ -342,7 +342,7 @@ def update(
                             (
                                 stats_combined["phase1"].get("queued", 0),
                                 stats_combined["phase2"].get("queued", 0),
-                                stats_combined["phase2"].get("crawls_queued", 0),
+                                stats_combined["phase2"].get("crawls_sealed", 0),
                             ),
                         )
                         runner_work_queued = runner_work_queued or maintenance_work_queued
@@ -726,7 +726,7 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
         "updated_db": 0,
         "queued": 0,
         "sealed": 0,
-        "crawls_queued": 0,
+        "crawls_sealed": 0,
     }
     current_fs_version = Snapshot._fs_current_version()
 
@@ -833,7 +833,10 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     queue_stale_fs_batch()
 
     now = timezone.now()
-    stats["crawls_queued"] = (
+    # Crawls with no open child snapshots are already finished. Seal them here
+    # instead of waking the foreground runner; otherwise migration/update can
+    # accidentally re-enter full crawl execution for historical rows.
+    stats["crawls_sealed"] = (
         Crawl.objects.filter(
             status__in=Crawl.RUNNABLE_STATES,
         )
@@ -841,11 +844,12 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
             snapshot_set__status__in=Snapshot.OPEN_STATES,
         )
         .update(
-            retry_at=now,
+            status=Crawl.StatusChoices.SEALED,
+            retry_at=None,
             modified_at=now,
         )
     )
-    stats["updated_db"] += stats["crawls_queued"]
+    stats["updated_db"] += stats["crawls_sealed"]
     return stats
 
 
@@ -983,7 +987,7 @@ Phase 2 (Process DB):
   Updated JSON:     {s2.get("updated_json", 0)}
   Updated DB rows:  {s2.get("updated_db", 0)}
   Sealed snapshots: {s2.get("sealed", 0)}
-  Queued crawls:    {s2.get("crawls_queued", 0)}
+  Sealed crawls:    {s2.get("crawls_sealed", 0)}
 """)
 
 
