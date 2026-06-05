@@ -238,7 +238,7 @@ def test_opencode_starts_with_data_dir_cwd_and_isolated_state(live_opencode):
     assert env["XDG_STATE_HOME"] == str(live_opencode.config.state_dir / "state")
     assert env["XDG_CACHE_HOME"] == str(live_opencode.config.state_dir / "cache")
     assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "true"
-    assert env["GIT_CEILING_DIRECTORIES"] == f"{workdir}{os.pathsep}{live_opencode.config.data_dir.parent.resolve()}"
+    assert env["GIT_CEILING_DIRECTORIES"] == workdir
 
 
 def test_opencode_state_dir_is_separate_from_workdir(tmp_path):

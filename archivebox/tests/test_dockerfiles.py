@@ -108,7 +108,7 @@ def test_dockerfiles_pin_project_binary_paths_for_validation() -> None:
         assert 'GIT_BINARY="$LIB_DIR/env/bin/git"' in text
         assert 'GALLERYDL_BINARY="$LIB_DIR/env/bin/gallery-dl"' in text
         assert 'FORUMDL_BINARY="$LIB_DIR/env/bin/forum-dl"' in text
-        assert 'OPENCODE_BINARY="$LIB_DIR/bin/opencode"' in text
+        assert 'OPENCODE_BINARY="$LIB_DIR/env/bin/opencode"' in text
 
 
 def test_dockerfiles_preinstall_opencode_without_pnpm_home_override() -> None:
