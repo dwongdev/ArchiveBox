@@ -53,8 +53,12 @@ jobs:
             if grep -Eiq '(chrom|archivewebpage|PLUGINS=.*title|--plugins=.*title|SAVE_TITLE.*[Tt]rue)' "$test_file"; then
               needs_chromium=true
             fi
+            needs_sonic=false
+            if grep -Eiq "shutil\\.which\\([\"']sonic|SEARCH_BACKEND_ENGINE=.*sonic|worker_sonic" "$test_file"; then
+              needs_sonic=true
+            fi
 
-            json_array+="{\"path\":\"$test_file\",\"name\":\"$name\",\"needs_chromium\":$needs_chromium}"
+            json_array+="{\"path\":\"$test_file\",\"name\":\"$name\",\"needs_chromium\":$needs_chromium,\"needs_sonic\":$needs_sonic}"
           done
           json_array+="]"
 
@@ -83,8 +87,12 @@ jobs:
             if grep -Riq "chrom" "abx-plugins/abx_plugins/plugins/$plugin_name"; then
               needs_chromium=true
             fi
+            needs_sonic=false
+            if grep -Riq "sonic" "abx-plugins/abx_plugins/plugins/$plugin_name"; then
+              needs_sonic=true
+            fi
 
-            json_array+="{\"plugin\":\"$plugin_name\",\"name\":\"plugin/$plugin_name\",\"needs_chromium\":$needs_chromium}"
+            json_array+="{\"plugin\":\"$plugin_name\",\"name\":\"plugin/$plugin_name\",\"needs_chromium\":$needs_chromium,\"needs_sonic\":$needs_sonic}"
           done
           json_array+="]"
 
@@ -190,6 +198,31 @@ jobs:
           fi
           echo "Using ArchiveBox-installed Chromium: $candidate ($version)"
           echo "CHROME_BINARY=$candidate" >> "$GITHUB_ENV"
+
+      - name: Install Sonic through ArchiveBox
+        if: ${{ matrix.test.needs_sonic }}
+        env:
+          LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_INSTALL_TIMEOUT: "900"
+          ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
+        run: |
+          set -euo pipefail
+          mkdir -p "$LIB_DIR" "$ABX_CI_DATA_DIR"
+          echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
+          echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
+
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install sonic
+
+          candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="sonic", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
+          if [ ! -x "$candidate" ]; then
+            echo "ArchiveBox did not install an executable Sonic binary: ${candidate:-not found}" >&2
+            exit 1
+          fi
+          version="$("$candidate" --version || true)"
+          echo "Using ArchiveBox-installed Sonic: $candidate (${version:-version unknown})"
+          echo "SONIC_BINARY=$candidate" >> "$GITHUB_ENV"
+          echo "$(dirname "$candidate")" >> "$GITHUB_PATH"
 
       - name: Run test - ${{ matrix.test.name }}
         run: |
@@ -301,6 +334,31 @@ jobs:
           fi
           echo "Using ArchiveBox-installed Chromium: $candidate ($version)"
           echo "CHROME_BINARY=$candidate" >> "$GITHUB_ENV"
+
+      - name: Install Sonic through ArchiveBox
+        if: ${{ matrix.plugin.needs_sonic }}
+        env:
+          LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_LIB_DIR: ${{ runner.temp }}/abx-lib
+          ABXPKG_INSTALL_TIMEOUT: "900"
+          ABX_CI_DATA_DIR: ${{ runner.temp }}/archivebox-ci-data
+        run: |
+          set -euo pipefail
+          mkdir -p "$LIB_DIR" "$ABX_CI_DATA_DIR"
+          echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
+          echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
+
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install sonic
+
+          candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="sonic", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
+          if [ ! -x "$candidate" ]; then
+            echo "ArchiveBox did not install an executable Sonic binary: ${candidate:-not found}" >&2
+            exit 1
+          fi
+          version="$("$candidate" --version || true)"
+          echo "Using ArchiveBox-installed Sonic: $candidate (${version:-version unknown})"
+          echo "SONIC_BINARY=$candidate" >> "$GITHUB_ENV"
+          echo "$(dirname "$candidate")" >> "$GITHUB_PATH"
 
       - name: Run plugin tests - ${{ matrix.plugin.name }}
         env:
