@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Q, QuerySet
+from django.db.models import QuerySet
 from django.http import HttpRequest
 
 PERMISSIONS_PUBLIC = "public"
@@ -32,10 +32,7 @@ def is_admin_user(request: HttpRequest) -> bool:
 
 
 def get_snapshot_permissions(snapshot) -> str:
-    permissions = snapshot.permissions
-    if not permissions:
-        permissions = snapshot.crawl.permissions
-    return normalize_permissions(permissions)
+    return normalize_permissions(snapshot.permissions)
 
 
 def can_view_snapshot(request: HttpRequest, snapshot) -> bool:
@@ -56,10 +53,7 @@ def filter_personas_by_permissions(queryset: QuerySet, allowed_permissions: set[
 def filter_snapshots_by_permissions(queryset: QuerySet, *, direct: bool = False, allowed_permissions: set[str] | None = None) -> QuerySet:
     allowed_permissions = allowed_permissions or ({PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED} if direct else {PERMISSIONS_PUBLIC})
     allowed = sorted(allowed_permissions)
-    return queryset.exclude(
-        (Q(permissions__isnull=False) & ~Q(permissions__in=allowed))
-        | (Q(permissions__isnull=True) & (Q(crawl__permissions__isnull=True) | ~Q(crawl__permissions__in=allowed))),
-    )
+    return queryset.filter(permissions__in=allowed)
 
 
 def public_snapshots_queryset(queryset: QuerySet) -> QuerySet:

@@ -155,6 +155,32 @@ class SnapshotTag(models.Model):
 class SnapshotQuerySet(models.QuerySet):
     """Custom QuerySet for Snapshot model with export methods that persist through .filter() etc."""
 
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)
+        missing_crawl_ids = set()
+        from archivebox.core.permissions import PERMISSIONS_VALUES
+
+        for obj in objs:
+            if isinstance(obj, self.model):
+                config = dict(obj.config or {})
+                permission = str(config.get("PERMISSIONS") or "").strip().lower()
+                if permission not in PERMISSIONS_VALUES and obj.crawl_id:
+                    crawl = getattr(obj, "crawl", None)
+                    if not getattr(crawl, "permissions", None):
+                        missing_crawl_ids.add(str(obj.crawl_id))
+
+        crawl_permissions_by_id = {}
+        if missing_crawl_ids:
+            crawl_permissions_by_id = {
+                str(crawl_id): permissions
+                for crawl_id, permissions in Crawl.objects.filter(pk__in=missing_crawl_ids).values_list("pk", "permissions")
+            }
+
+        for obj in objs:
+            if isinstance(obj, self.model):
+                obj.ensure_permissions_config(crawl_permissions=crawl_permissions_by_id.get(str(obj.crawl_id)))
+        return super().bulk_create(objs, *args, **kwargs)
+
     def paged_iterator(self, chunk_size: int = 500):
         """
         Iterate snapshots using bounded keyset pages instead of one streaming cursor.
@@ -505,8 +531,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     )
     config = models.JSONField(default=dict, null=False, blank=False, editable=True)
     permissions = models.GeneratedField(
-        expression=KT("config__PERMISSIONS"),
-        output_field=models.CharField(max_length=16, null=True),
+        expression=Coalesce(KT("config__PERMISSIONS"), Value("private"), output_field=models.CharField(max_length=16)),
+        output_field=models.CharField(max_length=16, null=False),
         db_persist=True,
         db_index=True,
         editable=False,
@@ -836,9 +862,36 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
         return Binary.objects.filter(process_set__archiveresult__snapshot_id=self.id).distinct()
 
+    def ensure_permissions_config(self, crawl_permissions: str | None = None) -> bool:
+        config = dict(self.config or {})
+        permission = str(config.get("PERMISSIONS") or "").strip().lower()
+        from archivebox.core.permissions import PERMISSIONS_VALUES, normalize_permissions
+
+        if permission not in PERMISSIONS_VALUES:
+            if self.crawl_id:
+                crawl = getattr(self, "crawl", None)
+                crawl_permissions = crawl_permissions or getattr(crawl, "permissions", None)
+                if not crawl_permissions:
+                    crawl_permissions = Crawl.objects.filter(pk=self.crawl_id).values_list("permissions", flat=True).first()
+            config["PERMISSIONS"] = normalize_permissions(
+                crawl_permissions,
+                default=normalize_permissions(get_config(include_machine=True).PERMISSIONS),
+            )
+            self.config = config
+            return True
+        elif config.get("PERMISSIONS") != permission:
+            config["PERMISSIONS"] = permission
+            self.config = config
+            return True
+        return False
+
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
         validate_url_field = self._state.adding or update_fields is None or "url" in update_fields
+        if self.ensure_permissions_config():
+            if update_fields is not None:
+                kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "config"]))
+
         if validate_url_field:
             try:
                 validate_url_length(self.url or "")
@@ -2065,6 +2118,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     @admin.display(description="Tags")
     def tags_str(self, nocache=True) -> str | None:
+        if "_tags_str_cached" in self.__dict__:
+            return self.__dict__["_tags_str_cached"]
         calc_tags_str = lambda: ",".join(sorted(tag.name for tag in self.tags.all()))
         prefetched_cache = self.__dict__.get("_prefetched_objects_cache", {})
         if "tags" in prefetched_cache:

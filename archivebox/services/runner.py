@@ -809,11 +809,12 @@ class CrawlRunner:
         install_phase_timeout = compute_install_phase_timeout(get_install_plugins(plugins), config)
         snapshot_hooks = [(plugin, hook) for plugin in plugins.values() for hook in plugin.filter_hooks("Snapshot")]
         max_snapshot_count = max(1, int(config.get("CRAWL_MAX_URLS") or len(snapshot_ids) or 1))
-        snapshot_phase_timeout = compute_phase_timeout(snapshot_hooks, config) * max_snapshot_count
+        snapshot_phase_timeout = compute_phase_timeout(snapshot_hooks, config) + 120.0
+        all_snapshots_phase_timeout = snapshot_phase_timeout * max_snapshot_count
         crawl_cleanup_phase_timeout = crawl_setup_phase_timeout
         crawl_lifecycle_timeout = (
             crawl_setup_phase_timeout
-            + snapshot_phase_timeout
+            + all_snapshots_phase_timeout
             + crawl_cleanup_phase_timeout
             + CrawlCompletedEvent.model_fields["event_timeout"].default
             + 30.0
@@ -916,9 +917,9 @@ class CrawlRunner:
                             url=snapshot["url"],
                             snapshot_id=snapshot["id"],
                             output_dir=str(output_dir),
-                            event_timeout=snapshot_phase_timeout,
-                            event_handler_timeout=snapshot_phase_timeout + 30.0,
-                            event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
+                            event_timeout=all_snapshots_phase_timeout,
+                            event_handler_timeout=all_snapshots_phase_timeout + 30.0,
+                            event_handler_slow_timeout=slow_warning_timeout(all_snapshots_phase_timeout),
                         )
                         self.root_crawl_start_event_id = crawl_start_event.event_id
                         await _run_event_now(event.emit(crawl_start_event), None)
@@ -1077,17 +1078,23 @@ class CrawlRunner:
                     selected_hooks_by_plugin,
                     plugins,
                 )
-                filtered_plugins = {}
-                for plugin_name, plugin in plugins.items():
-                    selected_hook_names = selected_hooks_by_plugin.get(plugin_name)
-                    if selected_hook_names is None:
-                        filtered_plugins[plugin_name] = plugin
-                        continue
-                    filtered_hooks = [
-                        hook for hook in plugin.hooks if hook.name in selected_hook_names or Path(hook.name).stem in selected_hook_names
-                    ]
-                    filtered_plugins[plugin_name] = plugin.model_copy(update={"hooks": filtered_hooks})
-                plugins = filtered_plugins
+                remaining_queued_plugins = await sync_to_async(
+                    queued_plugins_for_snapshot,
+                    thread_sensitive=True,
+                )(snapshot["id"])
+                if snapshot_selected_plugins and remaining_queued_plugins:
+                    remaining_queued_plugins = [plugin for plugin in remaining_queued_plugins if plugin in snapshot_selected_plugins]
+                if not remaining_queued_plugins:
+                    await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id, output_dir=output_dir)
+                    return
+                snapshot_selected_plugins = remaining_queued_plugins
+                plugins = filter_plugins(self.plugins, snapshot_selected_plugins, include_providers=True)
+                # Queued ArchiveResult rows select plugin work, not a mid-plugin
+                # resume cursor. Rerun the full selected plugin lifecycle so
+                # ordered prerequisite hooks like chrome_tab run before barriers
+                # like chrome_wait, while search_backend_* maintenance remains
+                # targeted to only those selected plugins.
+                selected_hooks_by_plugin = None
             abx_snapshot = AbxSnapshot(
                 id=snapshot["id"],
                 url=snapshot["url"],
@@ -1095,7 +1102,7 @@ class CrawlRunner:
                 crawl_id=str(self.crawl.id),
             )
             snapshot_hooks = [(plugin, hook) for plugin in plugins.values() for hook in plugin.filter_hooks("Snapshot")]
-            snapshot_phase_timeout = compute_phase_timeout(snapshot_hooks, config)
+            snapshot_phase_timeout = compute_phase_timeout(snapshot_hooks, config) + 120.0
             await _emit_machine_config(self.bus, config=config, derived_config=derived_config, parent_event=crawl_start_event)
             snapshot_service = HookSnapshotService(
                 self.bus,
@@ -1116,6 +1123,7 @@ class CrawlRunner:
                     output_dir=str(output_dir),
                     depth=int(snapshot["depth"]),
                     event_timeout=snapshot_phase_timeout,
+                    event_handler_timeout=snapshot_phase_timeout,
                     event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
                 )
                 snapshot_event.event_parent_id = crawl_start_event.event_id
@@ -1910,15 +1918,20 @@ def _run_due_queued_plugin_result(
     if not claimed_snapshot_ids or selected_plugins is None:
         return True
 
+    config_overrides = {
+        "CRAWL_MAX_CONCURRENT_SNAPSHOTS": QUEUED_PLUGIN_RESULT_BATCH_SIZE,
+    }
+    for plugin_name in selected_plugins:
+        if plugin_name.startswith("search_backend_"):
+            config_overrides[f"{plugin_name.upper()}_ENABLED"] = True
+
     run_crawl(
         root_crawl_id,
         snapshot_ids=claimed_snapshot_ids,
         selected_plugins=selected_plugins,
         process_discovered_snapshots_inline=True,
         interactive_interrupts=interactive_interrupts,
-        config_overrides={
-            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": QUEUED_PLUGIN_RESULT_BATCH_SIZE,
-        },
+        config_overrides=config_overrides,
         selected_plugins_are_explicit=False,
     )
     if all(plugin.startswith("search_backend_") for plugin in selected_plugins):

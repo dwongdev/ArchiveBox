@@ -194,20 +194,53 @@
     }
 
     .snapshot-preview-cell {
-        width: 106px;
+        width: 116px;
+        min-width: 116px;
+        vertical-align: middle;
     }
 
-    #content .snapshot-preview-cell .snapshot-preview {
-        width: 86px;
-        height: 54px;
-        max-width: 86px;
-        max-height: 54px;
+    .snapshot-preview-cell a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 102px;
+        height: 102px;
+        line-height: 0;
+        vertical-align: middle;
+    }
+
+    #content .public-snapshot-list .snapshot-preview-cell .snapshot-preview,
+    #content .public-snapshot-list .snapshot-preview-cell img.snapshot-preview.screenshot {
+        box-sizing: border-box;
+        display: block;
+        width: 100px;
+        height: 100px;
+        max-width: 100px;
+        max-height: 100px;
         margin: 0;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
         background: #f8fafc;
         object-fit: cover;
         object-position: top;
+    }
+
+    #content .snapshot-preview-cell .snapshot-preview-spinner {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        object-fit: unset;
+    }
+
+    #content .snapshot-preview-cell .snapshot-preview-spinner img {
+        display: block;
+        width: 18px;
+        height: 18px;
+        max-width: 18px;
+        max-height: 18px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
     }
 
     .snapshot-title-cell {
@@ -457,8 +490,12 @@
                 <input type="submit" value="Search">
             </form>
             <div class="public-snapshot-count">
-                {{ page_obj.start_index }}-{{ page_obj.end_index }}{% if page_obj.has_next %}+{% endif %}
-                <span>(page {{ page_obj.number }}{% if page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.num_pages }}{% endif %})</span>
+                {% if public_search_stream_pending %}
+                    <span class="archivebox-search-stream-status" role="status" aria-live="polite">Searching...</span>
+                {% else %}
+                    {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }}
+                    <span>(page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }})</span>
+                {% endif %}
             </div>
         </div>
         <div class="public-snapshot-table-wrap">
@@ -467,7 +504,7 @@
                     <tr>
                         <th class="snapshot-time">Saved</th>
                         <th class="snapshot-preview-cell">Preview</th>
-                        <th>Snapshot{% if page_obj.paginator.has_exact_count %} ({{ page_obj.paginator.count }}){% endif %}</th>
+                        <th>Snapshot ({{ page_obj.paginator.count }})</th>
                         <th class="snapshot-tags-cell">Tags</th>
                         <th class="snapshot-status-cell">Status</th>
                         <th class="snapshot-files-cell">Files</th>
@@ -476,11 +513,13 @@
                 </thead>
                 <tbody>
                     {% for link in object_list %}
-                        {% include 'index_row.html' with link=link compact_public_index=True %}
+                        {% snapshot_index_row link %}
                     {% empty %}
                         <tr>
                             <td colspan="7" class="public-search-empty">
-                                {% if show_search_index_hint %}
+                                {% if public_search_stream_pending %}
+                                    Searching {{ search_mode }} for matching snapshots...
+                                {% elif show_search_index_hint %}
                                     0 results from {{ search_mode }}. If this looks wrong, the search index may need to be updated:
                                     <code>archivebox update --index-only</code>
                                 {% else %}
@@ -493,7 +532,7 @@
             </table>
         </div>
         <div class="public-pagination">
-            Showing {{ page_obj.start_index }}-{{ page_obj.end_index }}{% if page_obj.has_next %}+{% elif page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.count }} total{% endif %}
+            Showing {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }} total
             <br>
             <span class="step-links">
                 {% if page_obj.has_previous %}
@@ -502,13 +541,13 @@
                 {% endif %}
 
                 <span class="current">
-                    Page {{ page_obj.number }}{% if page_obj.paginator.has_exact_count %} of {{ page_obj.paginator.num_pages }}{% endif %}
+                    Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
                 </span>
 
                 {% if page_obj.has_next %}
                     <a href="?{% url_replace page=page_obj.next_page_number %}">next</a>
                 {% endif %}
-                {% if page_obj.has_next and page_obj.paginator.has_exact_count %}
+                {% if page_obj.has_next %}
                     <a href="?{% url_replace page=page_obj.paginator.num_pages %}">last &raquo;</a>
                 {% endif %}
             </span>
@@ -516,24 +555,172 @@
     </div>
     <script>
         (function() {
+            if (window.archiveboxPublicSearchStreamReady) return
+            window.archiveboxPublicSearchStreamReady = true
+
             const storageKey = 'archivebox-admin-search-mode'
-            const params = new URLSearchParams(window.location.search)
-            document.querySelectorAll('.public-search-mode-select').forEach(function(select) {
-                const values = Array.from(select.options).map(option => option.value)
-                const stored = localStorage.getItem(storageKey)
-                if (!params.has('search_mode') && values.includes(stored)) {
-                    select.value = stored
-                    if ((params.get('q') || '').trim()) {
-                        params.set('search_mode', stored)
-                        params.delete('page')
-                        window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash)
-                        return
+            let activeSearch = null
+
+            function initPublicSearchMode() {
+                const params = new URLSearchParams(window.location.search)
+                document.querySelectorAll('.public-search-mode-select').forEach(function(select) {
+                    if (select.dataset.publicSearchModeReady) return
+                    select.dataset.publicSearchModeReady = '1'
+                    const values = Array.from(select.options).map(option => option.value)
+                    const stored = localStorage.getItem(storageKey)
+                    if (!params.has('search_mode') && values.includes(stored)) {
+                        select.value = stored
+                        if ((params.get('q') || '').trim()) {
+                            params.set('search_mode', stored)
+                            params.delete('page')
+                            window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash)
+                            return
+                        }
+                    }
+                    select.addEventListener('change', function() {
+                        localStorage.setItem(storageKey, select.value)
+                    })
+                })
+            }
+
+            function setSearchLoading(controller, text) {
+                if (activeSearch !== controller) return
+                const toolbar = document.querySelector('.public-snapshot-toolbar')
+                if (!toolbar) return
+                let status = toolbar.querySelector('.archivebox-search-stream-status')
+                if (!status) {
+                    status = document.createElement('span')
+                    status.className = 'archivebox-search-stream-status'
+                    status.setAttribute('role', 'status')
+                    status.setAttribute('aria-live', 'polite')
+                    const count = toolbar.querySelector('.public-snapshot-count')
+                    if (count) count.appendChild(status)
+                    else toolbar.appendChild(status)
+                }
+                status.textContent = text || 'Searching...'
+                status.hidden = false
+                toolbar.setAttribute('aria-busy', 'true')
+            }
+
+            function clearSearchLoading(controller) {
+                if (activeSearch && activeSearch !== controller) return
+                const toolbar = document.querySelector('.public-snapshot-toolbar')
+                if (!toolbar) return
+                const status = toolbar.querySelector('.archivebox-search-stream-status')
+                if (status) status.hidden = true
+                toolbar.removeAttribute('aria-busy')
+            }
+
+            function clearStaleSearchResults(mode) {
+                const tbody = document.querySelector('#table-bookmarks tbody')
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="public-search-empty">Searching ' + mode + ' for matching snapshots...</td></tr>'
+                }
+                const snapshotHeading = document.querySelector('#table-bookmarks thead th:nth-child(3)')
+                if (snapshotHeading) snapshotHeading.textContent = 'Snapshot'
+                const pagination = document.querySelector('.public-pagination')
+                if (pagination) pagination.textContent = 'Searching...'
+            }
+
+            function cancelActiveSearch(event) {
+                if (!event.target || (event.target.name !== 'q' && event.target.name !== 'search_mode')) return
+                if (activeSearch) {
+                    const controller = activeSearch
+                    activeSearch.abort()
+                    clearSearchLoading(controller)
+                }
+            }
+
+            function streamPublicSnapshotSearch(eventOrForm) {
+                const form = eventOrForm && eventOrForm.target ? eventOrForm.target : eventOrForm
+                if (!form || form.id !== 'changelist-search') return
+
+                const formData = new FormData(form)
+                const mode = String(formData.get('search_mode') || 'meta')
+                const query = String(formData.get('q') || '').trim()
+                if (!query) return
+
+                if (eventOrForm && eventOrForm.preventDefault) eventOrForm.preventDefault()
+                if (activeSearch) activeSearch.abort()
+
+                const controller = new AbortController()
+                activeSearch = controller
+                setSearchLoading(controller, 'Searching...')
+                let resultVersion = 0
+
+                function buildListUrl() {
+                    const url = new URL(window.location.href)
+                    for (const pair of formData.entries()) url.searchParams.set(pair[0], pair[1])
+                    url.searchParams.delete('page')
+                    url.searchParams.delete('p')
+                    return url
+                }
+
+                async function renderNow() {
+                    const url = buildListUrl()
+                    const response = await fetch(url, {headers: {'X-Requested-With': 'XMLHttpRequest'}, signal: controller.signal})
+                    const html = await response.text()
+                    const doc = new DOMParser().parseFromString(html, 'text/html')
+                    const nextList = doc.querySelector('.public-snapshot-list')
+                    const currentList = document.querySelector('.public-snapshot-list')
+                    if (nextList && currentList) {
+                        currentList.replaceWith(nextList)
+                        initPublicSearchMode()
+                        setSearchLoading(controller, resultVersion ? 'Searching... ' + resultVersion + ' found' : 'Searching...')
                     }
                 }
-                select.addEventListener('change', function() {
-                    localStorage.setItem(storageKey, select.value)
-                })
-            })
+
+                const listUrl = buildListUrl()
+                history.replaceState(null, '', listUrl)
+                clearStaleSearchResults(mode)
+                const streamUrl = new URL("{% url 'public-search-stream' %}", window.location.href)
+                streamUrl.searchParams.set('q', query)
+                streamUrl.searchParams.set('search_mode', mode)
+                streamUrl.searchParams.set('search_url', listUrl.pathname + listUrl.search)
+                fetch(streamUrl, {signal: controller.signal})
+                    .then(function(response) {
+                        const reader = response.body.getReader()
+                        const decoder = new TextDecoder()
+                        let buffer = ''
+                        async function read() {
+                            const result = await reader.read()
+                            buffer += decoder.decode(result.value || new Uint8Array(), {stream: !result.done})
+                            const lines = buffer.split('\n')
+                            buffer = lines.pop()
+                            let shouldRender = false
+                            lines.forEach(function(count) {
+                                count = parseInt(count.trim(), 10)
+                                if (Number.isFinite(count)) {
+                                    resultVersion = count
+                                    if (count > 0) shouldRender = true
+                                } else {
+                                    resultVersion += 1
+                                    shouldRender = true
+                                }
+                            })
+                            setSearchLoading(controller, resultVersion ? 'Searching... ' + resultVersion + ' found' : 'Searching...')
+                            if (shouldRender || result.done) await renderNow()
+                            if (!result.done) return read()
+                        }
+                        return read()
+                    })
+                    .catch(function(error) {
+                        if (error.name !== 'AbortError') throw error
+                    })
+                    .finally(function() {
+                        clearSearchLoading(controller)
+                        if (activeSearch === controller) activeSearch = null
+                    })
+            }
+
+            initPublicSearchMode()
+            document.addEventListener('input', cancelActiveSearch)
+            document.addEventListener('change', cancelActiveSearch)
+            document.addEventListener('submit', streamPublicSnapshotSearch)
+            const initialForm = document.getElementById('changelist-search')
+            if (initialForm && initialForm.tagName === 'FORM' && String(new FormData(initialForm).get('q') || '').trim()) {
+                streamPublicSnapshotSearch(initialForm)
+            }
         })()
     </script>
 {% endblock %}

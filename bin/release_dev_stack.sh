@@ -16,7 +16,7 @@ repo_dir() {
 
 current_version() {
     local repo="$1"
-    python3 - "$repo" <<'PY'
+    uv run python - "$repo" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -32,7 +32,7 @@ PY
 bump_patch_to() {
     local repo="$1"
     local version="$2"
-    python3 - "$repo" "$version" <<'PY'
+    uv run python - "$repo" "$version" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -45,7 +45,7 @@ PY
 }
 
 next_patch_version() {
-    python3 - "$@" <<'PY'
+    uv run python - "$@" <<'PY'
 import re
 import sys
 
@@ -62,7 +62,7 @@ PY
 }
 
 bump_archivebox_rc() {
-    python3 - "${ARCHIVEBOX_REPO}" <<'PY'
+    uv run python - "${ARCHIVEBOX_REPO}" <<'PY'
 from pathlib import Path
 import json
 import re
@@ -91,7 +91,7 @@ set_dependency_version() {
     local repo="$1"
     local package="$2"
     local version="$3"
-    python3 - "$repo" "$package" "$version" <<'PY'
+    uv run python - "$repo" "$package" "$version" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -123,15 +123,20 @@ build_and_prek() {
         rm -rf dist
         uv --no-cache build --out-dir dist
         # prek auto-fixes (ruff-format, add-trailing-comma, end-of-file-fixer,
-        # …) exit with status 1 on first run when they modify a file, which
-        # otherwise tears down the entire release under ``set -e``. Re-run
-        # once: the second pass sees the already-fixed files and exits 0.
-        # A *real* lint failure (anything that can't be auto-fixed) still
-        # fails the second pass and kills the script as before.
-        if ! uv --no-cache run prek run --all-files; then
+        # …) exit with status 1 whenever they modify files. Some hooks expose
+        # edits that trigger later hooks on the next pass, so keep re-running
+        # until the tree is stable. A real lint failure still fails every pass
+        # and kills the script after a bounded number of attempts.
+        for attempt in 1 2 3 4 5; do
+            if uv --no-cache run prek run --all-files; then
+                break
+            fi
+            if [[ "$attempt" -eq 5 ]]; then
+                echo "[X] prek did not converge in $(basename "$repo")" >&2
+                exit 1
+            fi
             echo "[*] prek auto-fixed files in $(basename "$repo"); re-running to verify clean…"
-            uv --no-cache run prek run --all-files
-        fi
+        done
         rm -rf dist
         uv --no-cache build --out-dir dist
     )
@@ -174,7 +179,7 @@ wait_for_pypi() {
     local version="$2"
     local attempts=0
 
-    until python3 - "$package" "$version" <<'PY'
+    until uv run python - "$package" "$version" <<'PY'
 import json
 import sys
 import urllib.request

@@ -41,11 +41,12 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             attrs={
                 "data-url-regex": URL_REGEX.pattern,
                 "placeholder": (
-                    "Enter URLs to archive, as one per line, CSV, JSON, or embedded in text "
-                    "(e.g. markdown, HTML, etc.). Examples:\n"
-                    "https://example.com\n"
-                    "https://news.ycombinator.com,https://news.google.com\n"
-                    "[ArchiveBox](https://github.com/ArchiveBox/ArchiveBox)"
+                    "\n",
+                    "Enter URL(s) to archive. Any format is ok: one per line, CSV, JSON, embedded in text, etc."
+                    "Examples:\n\n"
+                    "https://example.com\n\n"
+                    "https://news.ycombinator.com,https://news.google.com\n\n"
+                    "Or any text-based content [containing URLs](https://github.com/ArchiveBox/ArchiveBox)...",
                 ),
             },
         ),

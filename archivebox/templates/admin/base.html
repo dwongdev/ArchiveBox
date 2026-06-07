@@ -2028,13 +2028,6 @@
                     const scope = document.querySelector(selector)
                     const addLink = scope?.querySelector('.object-tools a.addlink')
                     const actionButtons = scope?.querySelector('.actions-top .action-buttons')
-                    if (addLink && actionButtons && !actionButtons.querySelector('.admin-add-action')) {
-                        const addButton = addLink.cloneNode(true)
-                        addButton.classList.add('button', 'admin-add-action')
-                        addButton.classList.remove('addlink')
-                        addButton.textContent = '➕ Add'
-                        actionButtons.appendChild(addButton)
-                    }
                 })
                 const tagContainer = document.querySelector('.actions-tags')
                 if (tagContainer) {

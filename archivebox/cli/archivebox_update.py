@@ -228,6 +228,7 @@ def update(
         command_owns_foreground_runner,
         current_command,
         ensure_daemon_stack,
+        foreground_runner_owner,
         standby_until_foreground_runner_needed,
     )
     from archivebox.workers.supervisord_util import run_runner_worker, stop_own_supervisord_process
@@ -441,11 +442,19 @@ def update(
                                     f"skipping backfill scan and waking {woken_count} snapshot(s) for the runner.",
                                 )
                             else:
+                                collect_index_ids = (
+                                    is_filtered_update
+                                    or foreground_runner_owner(
+                                        data_dir=CONSTANTS.DATA_DIR,
+                                        exclude_id=command.id,
+                                    )
+                                    is not None
+                                )
                                 stats = reindex_snapshots(
                                     snapshots,
                                     search_plugins=search_plugins,
                                     batch_size=batch_size,
-                                    collect_ids=True,
+                                    collect_ids=collect_index_ids,
                                     wait_for_turn=wait_for_turn,
                                 )
                                 print_index_stats(stats)

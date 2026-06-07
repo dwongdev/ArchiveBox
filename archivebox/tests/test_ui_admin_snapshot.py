@@ -28,6 +28,7 @@ def test_snapshot_changelist_uses_stable_ordering_without_unordered_paginator_wa
     assert not any(issubclass(warning.category, UnorderedObjectListWarning) for warning in caught)
     assert response.context["cl"].queryset.ordered is True
     assert response.context["cl"].queryset.query.order_by[0] == "-created_at"
+    assert b"archivebox-search-stream-status" in response.content
 
 
 def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):
@@ -55,6 +56,37 @@ def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(
     assert response.status_code == 302
     snapshot.refresh_from_db()
     assert snapshot.config["PERMISSIONS"] == "private"
+
+
+def test_snapshot_admin_preview_uses_extension_screenshot_when_standard_screenshot_missing(snapshot):
+    from archivebox.config.common import get_config
+    from archivebox.core.admin_site import archivebox_admin
+    from archivebox.core.admin_snapshots import SnapshotAdmin
+    from archivebox.core.models import ArchiveResult, Snapshot
+
+    ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="chrome_extension_screenshot",
+        status=ArchiveResult.StatusChoices.SUCCEEDED,
+        output_files={
+            "screenshot-1.png": {"size": 2},
+            "screenshot.png": {"size": 1},
+        },
+    )
+
+    admin = SnapshotAdmin(Snapshot, archivebox_admin)
+    request = RequestFactory().get("/", HTTP_HOST="admin.archivebox.localhost:8000")
+    request.archivebox_config = get_config()
+    admin.request = request
+
+    preview = admin._get_preview_data(snapshot)
+
+    assert preview is not None
+    assert "screenshot/screenshot.png" in preview["img_url"]
+    first = preview["fallback_list"].index("chrome_extension_screenshot/screenshot-1.png")
+    second = preview["fallback_list"].index("chrome_extension_screenshot/screenshot.png")
+    assert first < second
+    assert "chrome_extension_screenshot/screenshot-2.png" not in preview["fallback_list"]
 
 
 class TestSnapshotProgressStats:

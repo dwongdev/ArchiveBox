@@ -4,6 +4,9 @@ from django import template
 from django.contrib.admin.templatetags.base import InclusionAdminNode
 from django.utils.safestring import mark_safe
 from django.utils.html import escape
+from django.templatetags.static import static
+from django.utils import timezone
+from django.utils.text import Truncator
 
 from pathlib import Path
 
@@ -510,6 +513,123 @@ def snapshot_base_url(context, snapshot) -> str:
 def snapshot_url(context, snapshot, path: str = "") -> str:
     snapshot_id = _snapshot_id(snapshot)
     return build_snapshot_url(str(snapshot_id), path, request=context.get("request"), config=context.get("CONFIG"))
+
+
+@register.simple_tag(takes_context=True)
+def snapshot_index_row(context, link) -> str:
+    snapshot_id = str(_snapshot_id(link))
+    request = context.get("request")
+    config = context.get("CONFIG")
+    snapshot_base = get_snapshot_base_url(snapshot_id, request=request, config=config)
+    screenshot_plugin_url = build_snapshot_url(snapshot_id, "screenshot/screenshot.png", request=request, config=config)
+    extension_screenshot_1_url = build_snapshot_url(
+        snapshot_id,
+        "chrome_extension_screenshot/screenshot-1.png",
+        request=request,
+        config=config,
+    )
+    extension_screenshot_url = build_snapshot_url(snapshot_id, "chrome_extension_screenshot/screenshot.png", request=request, config=config)
+    favicon_plugin_url = build_snapshot_url(snapshot_id, "favicon/favicon.ico", request=request, config=config)
+    favicon_root_url = build_snapshot_url(snapshot_id, "favicon.ico", request=request, config=config)
+
+    status = getattr(link, "status", None) or "unknown"
+    bookmarked_at = getattr(link, "bookmarked_at", None)
+    timestamp = getattr(link, "timestamp", "")
+    if bookmarked_at:
+        bookmarked_at = timezone.localtime(bookmarked_at)
+        date_text = bookmarked_at.strftime("%Y-%m-%d")
+        time_text = bookmarked_at.strftime("%H:%M")
+        sort_value = str(bookmarked_at.timestamp())
+        title_time = f"Bookmarked: {bookmarked_at} ({timestamp})"
+    else:
+        date_text = ""
+        time_text = ""
+        sort_value = ""
+        title_time = f"Bookmarked: ({timestamp})"
+
+    url = getattr(link, "url", "") or ""
+    title = getattr(link, "title", "") or ""
+    is_pending = status in {"queued", "started", "backoff"}
+    title_text = title or ("Loading..." if is_pending else url)
+    tags_str = link.tags_str() if callable(getattr(link, "tags_str", None)) else getattr(link, "tags_str", "")
+    tag_html = "".join(f'<span class="snapshot-tag">{escape(tag)}</span>' for tag in (tags_str or "").split(",") if tag)
+    if tag_html:
+        tag_cell = f'<span class="snapshot-tags">{tag_html}</span>'
+    else:
+        tag_cell = '<span class="empty-value">...</span>'
+
+    num_outputs = int(getattr(link, "num_outputs", 0) or 0)
+    icons = link.icons() if callable(getattr(link, "icons", None)) else getattr(link, "icons", "")
+    icons_cell = str(icons) if icons else '<span class="empty-value">...</span>'
+    archive_size = int(getattr(link, "archive_size", 0) or 0)
+    size_cell = file_size(archive_size) if archive_size else '<span class="empty-value">...</span>'
+    output_plural = "" if num_outputs == 1 else "s"
+
+    if is_pending:
+        preview_html = (
+            '<span class="snapshot-preview snapshot-preview-spinner" aria-label="Archiving in progress">'
+            f'<img src="{escape(static("spinner.gif"))}" alt="" decoding="async" loading="lazy">'
+            "</span>"
+        )
+    else:
+        preview_html = (
+            f'<img src="{escape(screenshot_plugin_url)}" '
+            f'data-fallbacks="{escape(extension_screenshot_1_url)},{escape(extension_screenshot_url)}" '
+            'onerror="nextPublicSnapshotPreview(this)" class="snapshot-preview screenshot" alt="" decoding="async" loading="lazy">'
+        )
+
+    html = f"""
+<tr class="snapshot-row status-{escape(status)}">
+    <td class="snapshot-time" title="{escape(title_time)}" data-sort="{escape(sort_value)}">
+        <a href="{escape(snapshot_base)}/index.html">
+            <span>{escape(date_text)}</span>
+            <small>{escape(time_text)}</small>
+        </a>
+    </td>
+    <td class="snapshot-preview-cell">
+        <a href="{escape(snapshot_base)}/index.html" title="Open archived snapshot">
+            {preview_html}
+        </a>
+    </td>
+    <td class="snapshot-title-cell" title="{escape(title or url)}">
+        <div class="snapshot-title-line">
+            <a href="{escape(snapshot_base)}/index.html" class="snapshot-favicon-link" title="Open archived snapshot">
+                <img src="{escape(favicon_plugin_url)}"
+                     data-fallbacks="{escape(favicon_root_url)}"
+                     onerror="nextPublicSnapshotPreview(this)"
+                     class="link-favicon"
+                     alt=""
+                     decoding="async"
+                     loading="lazy">
+            </a>
+            <a href="{escape(snapshot_base)}/index.html" class="snapshot-title">
+                {escape(Truncator(title_text).chars(110))}
+            </a>
+        </div>
+        <a href="{escape(url)}" class="snapshot-url" title="{escape(url)}" target="_blank" rel="noopener noreferrer">
+            {escape(url)}
+        </a>
+    </td>
+    <td class="snapshot-tags-cell">
+        {tag_cell}
+    </td>
+    <td class="snapshot-status-cell">
+        <span class="snapshot-status">{escape(status)}</span>
+    </td>
+    <td class="snapshot-files-cell">
+        <span data-number-for="{escape(url)}" title="{num_outputs} successful outputs">
+            {icons_cell}
+        </span>
+    </td>
+    <td class="snapshot-size-cell">
+        <a href="{escape(snapshot_base)}/?files=1" title="View archived files">
+            {size_cell}
+        </a>
+        <small>{num_outputs} output{output_plural}</small>
+    </td>
+</tr>
+"""
+    return mark_safe(html)
 
 
 @register.simple_tag(takes_context=True)

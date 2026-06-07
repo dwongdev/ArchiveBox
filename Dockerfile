@@ -74,7 +74,6 @@ ENV HOME=/home/archivebox \
 ENV UV_COMPILE_BYTECODE=false \
     UV_PYTHON_PREFERENCE=managed \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
-    ARCHIVEBOX_PYTHON_INSTALL_DIR=/opt/archivebox/python \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/venv \
     VIRTUAL_ENV=/venv \
@@ -106,7 +105,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
     --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     echo "[+] UV Installing ArchiveBox dependencies from pyproject.toml..." \
-    && export UV_PYTHON_INSTALL_DIR="$ARCHIVEBOX_PYTHON_INSTALL_DIR" \
     && echo 'Binary::apt::APT::Keep-Downloaded-Packages "1";' > /etc/apt/apt.conf.d/99keep-cache \
     && echo 'APT::Install-Recommends "0";' > /etc/apt/apt.conf.d/99no-install-recommends \
     && echo 'APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/99no-install-suggests \
@@ -120,10 +118,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         --refresh \
         --no-dev \
         --inexact \
-        --all-extras \
         --no-install-project \
         --no-install-workspace \
         --no-sources \
+    && (find /venv/lib/python3.*/site-packages -type f -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true) \
+    && rm -f /venv/bin/uv /venv/bin/uvx \
     && apt-get purge -y build-essential gcc libldap2-dev libsasl2-dev libssl-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
@@ -143,6 +142,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
         fi)" \
     && if [[ "$COMMIT_HASH" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "COMMIT_HASH=$COMMIT_HASH" | tee -a /VERSION.txt; fi \
     && /usr/bin/uv pip install --no-deps "$CODE_DIR" \
+    && rm -f /venv/bin/uv /venv/bin/uvx \
     && (/usr/bin/uv pip show archivebox && which archivebox) | tee -a /VERSION.txt \
     && rm -rf "$CODE_DIR/.git"
 
@@ -162,7 +162,6 @@ LABEL name="archivebox" \
 COPY --from=sonic /usr/local/bin/sonic /usr/local/bin/sonic
 COPY --chown=root:root --chmod=755 "etc/sonic.cfg" /etc/sonic.cfg
 
-COPY --from=archivebox-builder /opt/archivebox/python /opt/archivebox/python
 COPY --from=archivebox-builder /venv /venv
 COPY --from=archivebox-builder /app /app
 COPY --from=archivebox-builder /VERSION.txt /VERSION.txt
@@ -203,7 +202,7 @@ RUN echo "[+] Initializing image collection..." \
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH"
 
-RUN "$LIB_DIR/bin/chromium" --version | tee -a /VERSION.txt \
+RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && "$LIB_DIR/uv/packages/papers-dl/venv/bin/papers-dl" --version | tee -a /VERSION.txt \
     && /usr/bin/rg --version | head -1 | tee -a /VERSION.txt \
     && /usr/local/bin/sonic --version | tee -a /VERSION.txt \

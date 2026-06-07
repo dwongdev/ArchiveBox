@@ -5,9 +5,39 @@
     window.archiveboxSnapshotSearchStreamReady = true;
     var activeSearch = null;
 
+    function setSearchLoading(controller, text) {
+      if (activeSearch !== controller) return;
+      var form = document.querySelector('form#changelist-search');
+      if (!form) return;
+      var status = form.querySelector('.archivebox-search-stream-status');
+      if (!status) {
+        status = document.createElement('span');
+        status.className = 'archivebox-search-stream-status';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        form.appendChild(status);
+      }
+      status.textContent = text || 'Searching...';
+      status.hidden = false;
+      form.setAttribute('aria-busy', 'true');
+    }
+
+    function clearSearchLoading(controller) {
+      if (activeSearch && activeSearch !== controller) return;
+      var form = document.querySelector('form#changelist-search');
+      if (!form) return;
+      var status = form.querySelector('.archivebox-search-stream-status');
+      if (status) status.hidden = true;
+      form.removeAttribute('aria-busy');
+    }
+
     function cancelActiveSearch(event) {
       if (!event.target || (event.target.name !== "q" && event.target.name !== "search_mode")) return;
-      if (activeSearch) activeSearch.abort();
+      if (activeSearch) {
+        var controller = activeSearch;
+        activeSearch.abort();
+        clearSearchLoading(controller);
+      }
     }
 
     function streamSnapshotSearch(eventOrForm) {
@@ -24,6 +54,7 @@
 
       var controller = new AbortController();
       activeSearch = controller;
+      setSearchLoading(controller, "Searching...");
       var resultVersion = 0;
       var pendingRender = null;
       var renderInFlight = false;
@@ -55,6 +86,7 @@
               currentMain.replaceWith(nextMain);
               if (window.archiveboxInitAdminChangelist) window.archiveboxInitAdminChangelist();
               if (window.archiveboxInitChangelistFilters) window.archiveboxInitChangelistFilters();
+              setSearchLoading(controller, resultVersion ? "Searching... " + resultVersion + " found" : "Searching...");
               history.replaceState(null, "", url);
             }
           })
@@ -95,6 +127,7 @@
                 count = parseInt(count.trim(), 10);
                 resultVersion = Number.isFinite(count) ? count : resultVersion + 1;
               });
+              setSearchLoading(controller, resultVersion ? "Searching... " + resultVersion + " found" : "Searching...");
               if (lines.length) renderSoon();
               if (!result.done) return read();
               renderSoon(true);
@@ -104,10 +137,11 @@
         })
         .catch(function(error) {
           if (error.name !== "AbortError") throw error;
-        })
-        .finally(function() {
-          if (activeSearch === controller) activeSearch = null;
-        });
+	        })
+	        .finally(function() {
+	          clearSearchLoading(controller);
+	          if (activeSearch === controller) activeSearch = null;
+	        });
     }
 
     document.addEventListener("input", cancelActiveSearch);

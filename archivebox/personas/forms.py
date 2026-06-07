@@ -62,7 +62,7 @@ class PersonaAdminForm(PluginConfigFormMixin, forms.ModelForm):
         label="Absolute path or CDP URL",
         widget=forms.TextInput(
             attrs={
-                "placeholder": "/Users/alice/Library/Application Support/Google/Chrome  or  ws://127.0.0.1:9222/devtools/browser/...",
+                "placeholder": "/Users/alice/Library/Application Support/Google/Chrome  or  http://127.0.0.1:9222  or  ws://127.0.0.1:9222/devtools/browser/...",
                 "style": "width: 100%; font-family: monospace;",
             },
         ),

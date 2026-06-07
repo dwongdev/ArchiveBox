@@ -15,7 +15,7 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Case, CharField, Count, Q, Value, When
+from django.db.models import Count, F, Q
 
 
 from django_object_actions import action
@@ -80,16 +80,7 @@ def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, 
         failed_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.FAILED),
         started_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.STARTED),
         skipped_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.SKIPPED),
-        snapshot_permissions=Case(
-            When(permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
-            When(permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
-            When(permissions=PERMISSIONS_PRIVATE, then=Value(PERMISSIONS_PRIVATE)),
-            When(crawl__permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
-            When(crawl__permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
-            When(crawl__permissions=PERMISSIONS_PRIVATE, then=Value(PERMISSIONS_PRIVATE)),
-            default=Value(PERMISSIONS_PRIVATE),
-            output_field=CharField(),
-        ),
+        snapshot_permissions=F("permissions"),
     )
 
     page_number = request.GET.get(page_param, 1) if request is not None else 1
@@ -928,11 +919,14 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         now = timezone.now()
         updated = 0
         batch = []
-        for crawl in queryset.only("id", "config").iterator(chunk_size=500):
+        crawls_to_update = []
+        for crawl in queryset.only("id", "config", "permissions").iterator(chunk_size=500):
+            old_permissions = crawl.permissions
             config = dict(crawl.config or {})
             config["PERMISSIONS"] = permissions
             crawl.config = config
             crawl.modified_at = now
+            crawls_to_update.append((crawl, old_permissions))
             batch.append(crawl)
             if len(batch) >= 500:
                 Crawl.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
@@ -941,6 +935,8 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         if batch:
             Crawl.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
             updated += len(batch)
+        for crawl, old_permissions in crawls_to_update:
+            crawl.update_child_snapshot_permissions(old_permissions, permissions)
         return updated
 
     @action(label="Recrawl", description="Create a new crawl with the same settings", methods=("POST",))

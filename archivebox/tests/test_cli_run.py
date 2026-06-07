@@ -34,6 +34,19 @@ RUN_TEST_ENV = {
 }
 
 
+def _install_real_chrome_for_test(data_dir, env, *, isolation):
+    env["CHROME_ISOLATION"] = isolation
+    env["CHROME_HEADLESS"] = "true"
+    env["CHROME_SANDBOX"] = "false"
+    install_process = run_archivebox_cmd(
+        ["install", "chrome"],
+        cwd=data_dir,
+        env=env,
+        timeout=600,
+    )
+    assert install_process.returncode == 0, install_process.stderr or install_process.stdout
+
+
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.timeout(90)
 def test_cli_run_signal_cleans_background_hook_process_group(initialized_archive):
@@ -1468,6 +1481,126 @@ class TestRecoverOrchestratorState:
         snapshot.refresh_from_db()
         assert result.status == ArchiveResult.StatusChoices.FAILED
         assert snapshot.retry_at is None
+
+    @pytest.mark.django_db(transaction=True)
+    @pytest.mark.timeout(300)
+    @pytest.mark.parametrize("chrome_isolation", ["crawl", "snapshot"])
+    def test_resume_queued_chrome_wait_reruns_full_chrome_plugin_lifecycle(
+        self,
+        initialized_archive,
+        recursive_test_site,
+        chrome_isolation,
+    ):
+        from archivebox.core.models import ArchiveResult
+        from archivebox.tests.test_orm_helpers import use_archivebox_db
+
+        env = cli_env(disable_extractors=True)
+        env.update(
+            {
+                "SAVE_TITLE": "false",
+                "TIMEOUT": "60",
+                "CHROME_TIMEOUT": "30",
+            },
+        )
+        _install_real_chrome_for_test(initialized_archive, env, isolation=chrome_isolation)
+
+        add_process = run_archivebox_cmd(
+            [
+                "add",
+                "--depth=0",
+                "--plugins=chrome",
+                recursive_test_site["root_url"],
+            ],
+            cwd=initialized_archive,
+            env=env,
+            timeout=600,
+        )
+        assert add_process.returncode == 0, add_process.stderr or add_process.stdout
+
+        list_process = run_archivebox_cmd(
+            ["archiveresult", "list", "--plugin=chrome"],
+            cwd=initialized_archive,
+            env=env,
+            timeout=60,
+        )
+        assert list_process.returncode == 0, list_process.stderr or list_process.stdout
+        chrome_results = parse_jsonl_output(list_process.stdout)
+        wait_record = next(record for record in chrome_results if record["hook_name"] == "on_Snapshot__11_chrome_wait")
+        snapshot_id = wait_record["snapshot_id"]
+
+        with use_archivebox_db(initialized_archive):
+            tab_result = ArchiveResult.objects.get(
+                snapshot_id=snapshot_id,
+                plugin="chrome",
+                hook_name="on_Snapshot__10_chrome_tab.daemon.bg",
+            )
+            first_tab_process_id = tab_result.process_id
+            assert first_tab_process_id is not None
+
+        update_process = run_archivebox_cmd(
+            ["archiveresult", "update", "--status=queued"],
+            stdin=json.dumps(wait_record) + "\n",
+            cwd=initialized_archive,
+            env=env,
+            timeout=60,
+        )
+        assert update_process.returncode == 0, update_process.stderr or update_process.stdout
+
+        run_process = run_archivebox_cmd(
+            ["run"],
+            cwd=initialized_archive,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            wait=False,
+            start_new_session=True,
+        )
+        assert run_process.stdin is not None
+        run_process.stdin.write(update_process.stdout)
+        run_process.stdin.close()
+
+        resumed_full_plugin = False
+        try:
+            deadline = time.time() + 90
+            last_wait_status = None
+            last_tab_process_id = None
+            while time.time() < deadline:
+                with use_archivebox_db(initialized_archive):
+                    wait_result = ArchiveResult.objects.get(
+                        snapshot_id=snapshot_id,
+                        plugin="chrome",
+                        hook_name="on_Snapshot__11_chrome_wait",
+                    )
+                    tab_result = ArchiveResult.objects.get(
+                        snapshot_id=snapshot_id,
+                        plugin="chrome",
+                        hook_name="on_Snapshot__10_chrome_tab.daemon.bg",
+                    )
+                    last_wait_status = wait_result.status
+                    last_tab_process_id = tab_result.process_id
+                    if wait_result.status == ArchiveResult.StatusChoices.SUCCEEDED and tab_result.process_id != first_tab_process_id:
+                        resumed_full_plugin = True
+                        break
+                if run_process.poll() is not None:
+                    break
+                time.sleep(0.5)
+
+            if resumed_full_plugin:
+                try:
+                    run_process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    cleanup_process_group(run_process.pid)
+                    run_process.wait(timeout=10)
+        finally:
+            if run_process.poll() is None:
+                cleanup_process_group(run_process.pid)
+                run_process.wait(timeout=10)
+
+        assert run_process.returncode == 0
+        assert last_wait_status == ArchiveResult.StatusChoices.SUCCEEDED
+        assert last_tab_process_id is not None
+        assert last_tab_process_id != first_tab_process_id
 
     def test_recover_orchestrator_state_ignores_sealed_downloaded_snapshot_without_results(self):
         from django.utils import timezone

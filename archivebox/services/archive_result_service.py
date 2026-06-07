@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -25,7 +26,7 @@ from .process_service import parse_event_datetime
 
 def _perf_trace(label):
     def decorator(func):
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
 
             @wraps(func)
             async def async_wrapper(*args, **kwargs):

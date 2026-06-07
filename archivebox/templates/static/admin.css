@@ -2211,8 +2211,7 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     color: #fff7fb;
 }
 
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_snapshot_permissions"],
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .admin-add-action {
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_snapshot_permissions"] {
     background: #f6e46f;
     color: #1f2937;
     text-decoration: none;
@@ -2816,12 +2815,6 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
 .model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_crawl_permissions"] {
     background: #f6e46f;
     color: #1f2937;
-}
-
-.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .admin-add-action {
-    background: #f6e46f;
-    color: #1f2937;
-    text-decoration: none;
 }
 
 .model-crawl.change-list #changelist #changelist-form > .actions-top .action-permissions-wrapper {

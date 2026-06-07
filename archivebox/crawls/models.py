@@ -311,6 +311,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "config"]))
 
         super().save(*args, **kwargs)
+        old_permissions = getattr(old_crawl, "permissions", None)
+        if old_crawl is not None and old_permissions != self.permissions:
+            transaction.on_commit(lambda: self.update_child_snapshot_permissions(old_permissions, self.permissions))
         if sync_tags:
             next_tag_names = set(self.parse_tag_names(self.tags_str or ""))
             added_tag_names = next_tag_names - previous_tag_names
@@ -339,6 +342,29 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         #             'status': self.status,
         #         },
         #     )
+
+    def update_child_snapshot_permissions(self, old_permissions: str | None, new_permissions: str | None) -> int:
+        from archivebox.core.models import Snapshot
+
+        normalized_new_permissions = normalize_permissions(new_permissions)
+        now = timezone.now()
+        batch = []
+        updated = 0
+        queryset = self.snapshot_set.filter(Q(permissions=old_permissions) | Q(permissions__isnull=True)).only("id", "config")
+        for snapshot in queryset.iterator(chunk_size=500):
+            config = dict(snapshot.config or {})
+            config["PERMISSIONS"] = normalized_new_permissions
+            snapshot.config = config
+            snapshot.modified_at = now
+            batch.append(snapshot)
+            if len(batch) >= 500:
+                Snapshot.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
+                updated += len(batch)
+                batch.clear()
+        if batch:
+            Snapshot.objects.bulk_update(batch, ["config", "modified_at"], batch_size=500)
+            updated += len(batch)
+        return updated
 
     @property
     def api_url(self) -> str:

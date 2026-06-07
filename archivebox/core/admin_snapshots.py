@@ -31,6 +31,7 @@ from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 
 from archivebox.core.models import Tag, Snapshot, ArchiveResult
 from archivebox.core.admin_archiveresults import render_archiveresults_list
+from archivebox.core.preview_util import EXTENSION_SCREENSHOT_PLUGIN
 from archivebox.progressmonitor.views import progress_endpoint
 from archivebox.core.permissions import (
     PERMISSIONS_CHOICES,
@@ -107,9 +108,7 @@ class SnapshotPermissionsListFilter(admin.SimpleListFilter):
     def queryset(self, request, queryset):
         value = self.value()
         if value:
-            return queryset.filter(
-                Q(permissions=value) | (Q(permissions__isnull=True) & Q(crawl__permissions=value)),
-            )
+            return queryset.filter(permissions=value)
         return queryset
 
 
@@ -229,8 +228,6 @@ class SnapshotResultHealthListFilter(admin.SimpleListFilter):
                         total_results=ArchiveResult.snapshot_count_expr(),
                         matching_results=ArchiveResult.snapshot_count_expr(status=status),
                     ).filter(matching_results__gt=F("total_results") / 2)
-                    queryset._archivebox_count_hint = "model_estimate"
-                    queryset.query._archivebox_count_hint = queryset._archivebox_count_hint
                     return queryset
 
                 # Rare statuses are faster status-first: use the
@@ -320,10 +317,7 @@ class SnapshotAdminForm(forms.ModelForm):
         instance = super().save(commit=False)
         permissions = self.cleaned_data["permissions_config"]
         config = dict(instance.config or {})
-        if permissions == instance.crawl.permissions:
-            config.pop("PERMISSIONS", None)
-        else:
-            config["PERMISSIONS"] = permissions
+        config["PERMISSIONS"] = permissions
         instance.config = config
 
         # Handle tags_editor field
@@ -578,12 +572,9 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if permissions not in dict(PERMISSIONS_CHOICES):
             return HttpResponseBadRequest("Invalid permissions value")
 
-        snapshot = get_object_or_404(Snapshot.objects.select_related("crawl"), pk=object_id)
+        snapshot = get_object_or_404(Snapshot, pk=object_id)
         config = dict(snapshot.config or {})
-        if permissions == snapshot.crawl.permissions:
-            config.pop("PERMISSIONS", None)
-        else:
-            config["PERMISSIONS"] = permissions
+        config["PERMISSIONS"] = permissions
 
         # Keep the quick-edit write to one targeted UPDATE so SQLite only holds
         # the write lock for the permission/config change itself. safe_update()
@@ -606,18 +597,10 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         now = timezone.now()
         updated = 0
         batch = []
-        snapshots = (
-            queryset.select_related(None)
-            .select_related("crawl")
-            .only("id", "config", "crawl__id", "crawl__permissions")
-            .prefetch_related(None)
-        )
+        snapshots = queryset.select_related(None).only("id", "config").prefetch_related(None)
         for snapshot in snapshots.iterator(chunk_size=500):
             config = dict(snapshot.config or {})
-            if permissions == snapshot.crawl.permissions:
-                config.pop("PERMISSIONS", None)
-            else:
-                config["PERMISSIONS"] = permissions
+            config["PERMISSIONS"] = permissions
             snapshot.config = config
             snapshot.modified_at = now
             batch.append(snapshot)
@@ -665,6 +648,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                         "plugin",
                         "status",
                         "output_size",
+                        "output_files",
                     ),
                 ),
             )
@@ -686,7 +670,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 "output_size",
                 "permissions",
                 "crawl__id",
-                "crawl__permissions",
                 "crawl__persona_id",
                 "crawl__status",
                 "crawl__created_by_id",
@@ -707,10 +690,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     def permissions_badge(self, obj):
         permissions = obj.__dict__.get("snapshot_permissions")
         if permissions is None:
-            if obj.permissions:
-                permissions = obj.permissions
-            else:
-                permissions = obj.crawl.permissions
+            permissions = obj.permissions
         permissions = normalize_permissions(permissions)
         icon, label, fg, bg = SNAPSHOT_PERMISSION_META[permissions]
         menu_items = format_html_join(
@@ -961,21 +941,29 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if results is not None:
             has_screenshot = any(r.plugin == "screenshot" for r in results)
             has_favicon = any(r.plugin == "favicon" for r in results)
+            has_extension_screenshot = any(r.plugin == EXTENSION_SCREENSHOT_PLUGIN for r in results)
         else:
-            available_plugins = set(obj.archiveresult_set.filter(plugin__in=("screenshot", "favicon")).values_list("plugin", flat=True))
+            available_plugins = set(
+                obj.archiveresult_set.filter(plugin__in=("screenshot", EXTENSION_SCREENSHOT_PLUGIN, "favicon")).values_list(
+                    "plugin",
+                    flat=True,
+                ),
+            )
             has_screenshot = "screenshot" in available_plugins
             has_favicon = "favicon" in available_plugins
+            has_extension_screenshot = EXTENSION_SCREENSHOT_PLUGIN in available_plugins
 
-        if not has_screenshot and not has_favicon:
+        extension_screenshot_urls = [
+            build_snapshot_url(str(obj.id), f"{EXTENSION_SCREENSHOT_PLUGIN}/screenshot-1.png", request=request, config=config),
+            build_snapshot_url(str(obj.id), f"{EXTENSION_SCREENSHOT_PLUGIN}/screenshot.png", request=request, config=config),
+        ]
+
+        if not has_screenshot and not has_extension_screenshot and not has_favicon:
             return None
 
-        if has_screenshot:
+        if has_screenshot or has_extension_screenshot:
             img_url = build_snapshot_url(str(obj.id), "screenshot/screenshot.png", request=request, config=config)
-            fallbacks = [
-                build_snapshot_url(str(obj.id), "screenshot.png", request=request, config=config),
-                build_snapshot_url(str(obj.id), "favicon/favicon.ico", request=request, config=config),
-                build_snapshot_url(str(obj.id), "favicon.ico", request=request, config=config),
-            ]
+            fallbacks = extension_screenshot_urls
             img_alt = "Screenshot"
             preview_class = "screenshot"
         else:

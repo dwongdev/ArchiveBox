@@ -73,6 +73,7 @@ def test_behavior_update_index_only_keeps_server_http_and_search_visible(tmp_pat
 
     env = cli_env(
         live=True,
+        PLUGINS="wget,parse_html_urls,search_backend_sqlite",
         SEARCH_BACKEND_ENGINE="sqlite",
         SEARCH_BACKEND_SONIC_PORT=str(get_free_port()),
     )

@@ -49,6 +49,8 @@ snapshots/
 logs/
 archivebox-docker-smoke*/
 archivebox-compose-smoke*/
+docker-test/
+docker-test*/
 core
 *.core
 
