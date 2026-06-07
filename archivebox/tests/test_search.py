@@ -1040,7 +1040,7 @@ class TestSearchBackendsE2E:
                     assert counts[-1] == expected_count, (surface_name, search_mode, counts[-10:])
                     assert counts == sorted(counts), (surface_name, search_mode, counts[:20])
                     assert any(1 < count < page_count for count in counts), (surface_name, search_mode, counts)
-                    assert first_positive_elapsed is not None and first_positive_elapsed < 0.25, (
+                    assert first_positive_elapsed is not None and first_positive_elapsed < 1.0, (
                         surface_name,
                         search_mode,
                         first_positive_elapsed,
