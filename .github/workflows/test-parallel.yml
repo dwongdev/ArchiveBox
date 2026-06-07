@@ -88,7 +88,7 @@ jobs:
               needs_chromium=true
             fi
             needs_sonic=false
-            if grep -Riq "sonic" "abx-plugins/abx_plugins/plugins/$plugin_name"; then
+            if [ "$plugin_name" = "search_backend_sonic" ]; then
               needs_sonic=true
             fi
 
@@ -212,7 +212,7 @@ jobs:
           echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
           echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
 
-          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install sonic
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install search_backend_sonic
 
           candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="sonic", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
           if [ ! -x "$candidate" ]; then
@@ -348,7 +348,7 @@ jobs:
           echo "LIB_DIR=$LIB_DIR" >> "$GITHUB_ENV"
           echo "ABXPKG_LIB_DIR=$ABXPKG_LIB_DIR" >> "$GITHUB_ENV"
 
-          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install sonic
+          uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox install search_backend_sonic
 
           candidate="$(uv run --project "$GITHUB_WORKSPACE" --directory "$ABX_CI_DATA_DIR" --no-sync --no-sources archivebox shell -c 'from archivebox.machine.models import Binary; binary = Binary.objects.filter(name="sonic", status="installed").order_by("-modified_at").first(); print(binary.abspath if binary else "")' | tail -n 1)"
           if [ ! -x "$candidate" ]; then
