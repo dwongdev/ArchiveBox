@@ -120,7 +120,11 @@ def test_snapshot_config_overlays_frozen_crawl_without_re_reading_persona(archiv
     assert runtime_config.USER_AGENT == "Crawl UA"
     assert runtime_config.TIMEOUT == 22
     assert runtime_config.ANTHROPIC_API_KEY == "snapshot-secret"
-    assert snapshot.config == {"TIMEOUT": 22, "ANTHROPIC_API_KEY": "snapshot-secret"}
+    assert snapshot.config == {
+        "TIMEOUT": 22,
+        "ANTHROPIC_API_KEY": "snapshot-secret",
+        "PERMISSIONS": "private",
+    }
 
 
 def test_config_scopes_are_derived_from_section_and_field_metadata():
