@@ -601,6 +601,40 @@ class TestRunDaemonMode:
         from archivebox.tests.test_orm_helpers import use_archivebox_db
 
         env = cli_env()
+
+        def active_runners():
+            with use_archivebox_db(initialized_archive):
+                return [
+                    proc
+                    for proc in Process.objects.filter(
+                        process_type=Process.TypeChoices.ORCHESTRATOR,
+                        worker_type=RUNNER_ACTIVE_WORKER_TYPE,
+                        status=Process.StatusChoices.RUNNING,
+                        pwd=str(initialized_archive),
+                    )
+                    if proc.is_running
+                ]
+
+        def wait_for_stable_single_active(*, timeout: float, stable_seconds: float = 1.0, exclude_pid: int | None = None):
+            deadline = time.monotonic() + timeout
+            stable_pid = None
+            stable_since = None
+            while time.monotonic() < deadline:
+                active = active_runners()
+                assert len(active) <= 1
+                if len(active) == 1 and active[0].pid != exclude_pid:
+                    pid = active[0].pid
+                    if pid != stable_pid:
+                        stable_pid = pid
+                        stable_since = time.monotonic()
+                    elif stable_since is not None and time.monotonic() - stable_since >= stable_seconds:
+                        return pid
+                else:
+                    stable_pid = None
+                    stable_since = None
+                time.sleep(0.25)
+            return None
+
         procs = [
             run_archivebox_cmd(
                 ["run", "--daemon"],
@@ -615,40 +649,8 @@ class TestRunDaemonMode:
             for _ in range(2)
         ]
         try:
-            deadline = time.monotonic() + 30
-            active_pid = None
-            while time.monotonic() < deadline:
-                with use_archivebox_db(initialized_archive):
-                    active = [
-                        proc
-                        for proc in Process.objects.filter(
-                            process_type=Process.TypeChoices.ORCHESTRATOR,
-                            worker_type=RUNNER_ACTIVE_WORKER_TYPE,
-                            status=Process.StatusChoices.RUNNING,
-                            pwd=str(initialized_archive),
-                        )
-                        if proc.is_running
-                    ]
-                    assert len(active) <= 1
-                    if len(active) == 1:
-                        active_pid = active[0].pid
-                        break
-                time.sleep(0.25)
-
+            active_pid = wait_for_stable_single_active(timeout=30)
             assert active_pid is not None
-            time.sleep(1)
-            with use_archivebox_db(initialized_archive):
-                active = [
-                    proc
-                    for proc in Process.objects.filter(
-                        process_type=Process.TypeChoices.ORCHESTRATOR,
-                        worker_type=RUNNER_ACTIVE_WORKER_TYPE,
-                        status=Process.StatusChoices.RUNNING,
-                        pwd=str(initialized_archive),
-                    )
-                    if proc.is_running
-                ]
-                assert len(active) == 1
 
             os.killpg(active_pid, signal.SIGKILL)
             replacement = run_archivebox_cmd(
@@ -662,26 +664,7 @@ class TestRunDaemonMode:
                 wait=False,
             )
             procs.append(replacement)
-            deadline = time.monotonic() + 30
-            recovered_pid = None
-            while time.monotonic() < deadline:
-                with use_archivebox_db(initialized_archive):
-                    active = [
-                        proc
-                        for proc in Process.objects.filter(
-                            process_type=Process.TypeChoices.ORCHESTRATOR,
-                            worker_type=RUNNER_ACTIVE_WORKER_TYPE,
-                            status=Process.StatusChoices.RUNNING,
-                            pwd=str(initialized_archive),
-                        )
-                        if proc.is_running
-                    ]
-                    assert len(active) <= 1
-                    if len(active) == 1 and active[0].pid != active_pid:
-                        recovered_pid = active[0].pid
-                        break
-                time.sleep(0.25)
-
+            recovered_pid = wait_for_stable_single_active(timeout=30, exclude_pid=active_pid)
             assert recovered_pid is not None
         finally:
             for proc in procs:
