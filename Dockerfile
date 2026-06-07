@@ -193,7 +193,8 @@ RUN echo "[+] Initializing image collection..." \
         "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
         "$DATA_DIR"/tmp "$DATA_DIR"/tmp/* \
         "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-        2>/dev/null || true)
+        2>/dev/null || true) \
+    && find "$TMP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH"

@@ -142,6 +142,15 @@ ensure_runtime_tree() {
     chmod_if_possible "$path"
 }
 
+ensure_runtime_tmp_tree() {
+    mkdir -p "$TMP_DIR" 2>/dev/null || true
+    [[ -e "$TMP_DIR" ]] || return 0
+    if [[ "$(id -u)" == "0" ]]; then
+        chown -R "$PUID:$PGID" "$TMP_DIR" 2>/dev/null || true
+    fi
+    chmod_if_possible "$TMP_DIR"
+}
+
 run_as_archivebox() {
     if [[ "$(id -u)" == "0" ]]; then
         setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups "$@"
@@ -204,7 +213,7 @@ find /tmp "$TMP_DIR" -maxdepth 1 -type d -name "archivebox-chrome-profile.*" -mm
 
 ensure_dir "/home/$ARCHIVEBOX_USER"
 ensure_runtime_tree "$PLAYWRIGHT_BROWSERS_PATH"
-ensure_runtime_tree "$TMP_DIR"
+ensure_runtime_tmp_tree
 ensure_runtime_tree "$LIB_DIR"
 
 # (this check is written in blood in 2023, QEMU silently breaks things in ways that are not obvious)
