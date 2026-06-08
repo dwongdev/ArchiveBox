@@ -24,12 +24,13 @@ def _link_real_binary(bin_dir: Path, name: str, *, source: str | None = None) ->
     return link
 
 
-def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
+def _runtime_env(data_dir: Path, bin_dir: Path, *, lib_dir: Path | None = None) -> dict[str, str]:
     archivebox_bin = shutil.which("archivebox")
     assert archivebox_bin, "archivebox console script must be available for CLI tests"
+    lib_dir = lib_dir or data_dir / "lib"
     return {
-        "LIB_DIR": str(data_dir / "lib"),
-        "ABXPKG_LIB_DIR": str(data_dir / "lib"),
+        "LIB_DIR": str(lib_dir),
+        "ABXPKG_LIB_DIR": str(lib_dir),
         "PATH": os.pathsep.join([str(bin_dir), str(Path(archivebox_bin).parent), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
     }
 
@@ -172,6 +173,31 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert Path(recovered.abspath).exists()
     assert Path(recovered.abspath).resolve() == Path(shutil.which("rg") or "").resolve()
     assert process_count >= 2
+
+    changed_lib_dir = tmp_path / "changed-lib"
+    changed_provider_bin_dir = changed_lib_dir / "env" / "bin"
+    _link_real_binary(changed_provider_bin_dir, name, source="rg")
+
+    _cmd_result = run_archivebox_cmd(
+        ["run"],
+        cwd=initialized_archive,
+        stdin=json.dumps({"type": "BinaryRequest", "name": name, "binproviders": "env"}) + "\n",
+        timeout=120,
+        env=_runtime_env(initialized_archive, bootstrap_bin_dir, lib_dir=changed_lib_dir),
+        default_cli_env=True,
+        disable_extractors=True,
+    )
+    relib_stdout, relib_stderr, relib_code = _cmd_result.stdout, _cmd_result.stderr, _cmd_result.returncode
+
+    assert relib_code == 0, relib_stdout + relib_stderr
+    with use_archivebox_db(initialized_archive):
+        relibbed = Binary.objects.get(pk=first_binary_id)
+
+    assert relibbed.status == Binary.StatusChoices.INSTALLED
+    assert relibbed.version == binary.version
+    assert Path(relibbed.abspath) == changed_provider_bin_dir / name
+    assert Path(relibbed.abspath).exists()
+    assert Path(relibbed.abspath).resolve() == Path(shutil.which("rg") or "").resolve()
 
 
 def test_missing_binary_request_stays_queued_then_recovers_when_provider_can_resolve(initialized_archive, tmp_path):

@@ -16,21 +16,6 @@ from abxbus import BaseEvent, EventBus
 from abx_dl.services.base import BaseService
 
 
-_LIB_DIR_MANAGED_PROVIDERS = {
-    "bash",
-    "cargo",
-    "deno",
-    "gem",
-    "goget",
-    "chromewebstore",
-    "nix",
-    "npm",
-    "pip",
-    "puppeteer",
-    "uv",
-}
-
-
 class ArchiveBoxDBBinaryCacheBackend:
     """ArchiveBox machine.Binary projection backend for abxpkg BinaryCacheService."""
 
@@ -43,11 +28,62 @@ class ArchiveBoxDBBinaryCacheBackend:
         if not binary_name:
             return None
 
-        existing = await Binary.objects.filter(machine=machine, name=binary_name).afirst()
         persisted_overrides = _persisted_overrides_for_request(request)
         native_overrides = request.overrides or {}
-        cache_invalidated = False
-        if existing and existing.status == Binary.StatusChoices.INSTALLED:
+        requested_provider_names = _provider_names(request.binproviders)
+        await sync_to_async(get_config, thread_sensitive=True)()
+
+        installed_qs = (
+            Binary.objects.filter(machine=machine, name=binary_name, status=Binary.StatusChoices.INSTALLED)
+            .exclude(abspath="")
+            .exclude(abspath__isnull=True)
+            .order_by("-modified_at")
+        )
+        async for installed in installed_qs:
+            installed_path = Path(installed.abspath).expanduser().resolve(strict=False)
+            if not await sync_to_async(installed_path.exists, thread_sensitive=True)():
+                await _mark_binary_queued(installed)
+                continue
+            if persisted_overrides and installed.overrides != persisted_overrides:
+                await _mark_binary_queued(installed)
+                continue
+
+            provider_name = (installed.binprovider or installed.binproviders.split(",", 1)[0]).strip()
+            if provider_name and provider_name not in requested_provider_names:
+                await _mark_binary_queued(installed)
+                continue
+
+            provider = _provider_for_name(provider_name, installed.name, native_overrides)
+            if await sync_to_async(_cached_provider_path_is_stale, thread_sensitive=True)(installed_path, provider, installed.name):
+                await _mark_binary_queued(installed)
+                continue
+
+            binary_env = BinProvider.build_exec_env(providers=[provider], base_env={}) if provider is not None else {}
+            provider_names = _provider_names(installed.binproviders or request.binproviders or "env")
+            return AbxBinary.model_validate(
+                {
+                    "name": request.name,
+                    "description": request.description,
+                    "binproviders": _providers_for_names(provider_names),
+                    "overrides": native_overrides,
+                    "loaded_binprovider": provider,
+                    "loaded_abspath": installed.abspath,
+                    "loaded_version": installed.version or None,
+                    "loaded_sha256": installed.sha256 or None,
+                    "env": binary_env,
+                },
+            )
+
+        existing = await Binary.objects.filter(machine=machine, name=binary_name).order_by("-modified_at").afirst()
+        if existing is None:
+            await Binary.objects.acreate(
+                machine=machine,
+                name=binary_name,
+                binproviders=_binproviders_to_str(request.binproviders),
+                overrides=persisted_overrides,
+                status=Binary.StatusChoices.QUEUED,
+            )
+        else:
             changed = False
             requested_binproviders = _binproviders_to_str(request.binproviders)
             if requested_binproviders and existing.binproviders != requested_binproviders:
@@ -56,72 +92,13 @@ class ArchiveBoxDBBinaryCacheBackend:
             if persisted_overrides and existing.overrides != persisted_overrides:
                 existing.overrides = persisted_overrides
                 changed = True
-            if changed:
+            if existing.status != Binary.StatusChoices.QUEUED:
                 existing.status = Binary.StatusChoices.QUEUED
                 existing.retry_at = None
-                cache_invalidated = True
+                changed = True
+            if changed:
                 await existing.asave(update_fields=["binproviders", "overrides", "status", "retry_at", "modified_at"])
-        elif existing is None:
-            await Binary.objects.acreate(
-                machine=machine,
-                name=binary_name,
-                binproviders=_binproviders_to_str(request.binproviders),
-                overrides=persisted_overrides,
-                status=Binary.StatusChoices.QUEUED,
-            )
-
-        installed = None
-        if not cache_invalidated:
-            installed = (
-                await Binary.objects.filter(machine=machine, name=binary_name, status=Binary.StatusChoices.INSTALLED)
-                .exclude(abspath="")
-                .exclude(abspath__isnull=True)
-                .order_by("-modified_at")
-                .afirst()
-            )
-            if installed is not None and not await sync_to_async(Path(installed.abspath).expanduser().exists, thread_sensitive=True)():
-                installed.status = Binary.StatusChoices.QUEUED
-                installed.retry_at = None
-                await installed.asave(update_fields=["status", "retry_at", "modified_at"])
-                installed = None
-            if installed is not None and persisted_overrides and installed.overrides != persisted_overrides:
-                installed.status = Binary.StatusChoices.QUEUED
-                installed.retry_at = None
-                await installed.asave(update_fields=["status", "retry_at", "modified_at"])
-                installed = None
-        if installed is None:
-            return None
-
-        installed_path = Path(installed.abspath).expanduser().resolve(strict=False)
-        active_lib_dir = (
-            Path(str((await sync_to_async(get_config, thread_sensitive=True)()).get("LIB_DIR", ""))).expanduser().resolve(strict=False)
-        )
-        provider_name = (installed.binprovider or installed.binproviders.split(",", 1)[0]).strip()
-        if active_lib_dir and provider_name in _LIB_DIR_MANAGED_PROVIDERS:
-            try:
-                installed_path.relative_to(active_lib_dir)
-            except ValueError:
-                installed.status = Binary.StatusChoices.QUEUED
-                installed.retry_at = None
-                await installed.asave(update_fields=["status", "retry_at", "modified_at"])
-                return None
-
-        provider = _provider_for_name(provider_name, installed.name, native_overrides)
-        binary_env = BinProvider.build_exec_env(providers=[provider], base_env={}) if provider is not None else {}
-        provider_names = _provider_names(installed.binproviders or request.binproviders or "env")
-        return AbxBinary.model_validate(
-            {
-                "name": request.name,
-                "description": request.description,
-                "binproviders": _providers_for_names(provider_names),
-                "overrides": native_overrides,
-                "loaded_binprovider": provider,
-                "loaded_abspath": installed.abspath,
-                "loaded_version": installed.version or None,
-                "loaded_sha256": installed.sha256 or None,
-                "env": binary_env,
-            },
-        )
+        return None
 
     async def set(self, request: BinaryRequestEvent | None, binary: AbxBinary) -> None:
         from archivebox.machine.models import Binary, Machine, _canonical_binary_name
@@ -416,6 +393,25 @@ def _provider_for_name(provider_name: str, binary_name: str, overrides: dict[str
             overrides={binary_name: provider_overrides},
         )
     return provider
+
+
+async def _mark_binary_queued(binary) -> None:
+    from archivebox.machine.models import Binary
+
+    if binary.status == Binary.StatusChoices.QUEUED:
+        return
+    binary.status = Binary.StatusChoices.QUEUED
+    binary.retry_at = None
+    await binary.asave(update_fields=["status", "retry_at", "modified_at"])
+
+
+def _cached_provider_path_is_stale(installed_path: Path, provider: BinProvider | None, binary_name: str) -> bool:
+    if provider is None:
+        return False
+    current_abspath = provider.get_abspath(binary_name, quiet=True, no_cache=True)
+    if not current_abspath:
+        return True
+    return Path(current_abspath).expanduser().resolve(strict=False) != installed_path
 
 
 def _persisted_overrides_for_request(request: BinaryRequestEvent | None) -> dict[str, Any]:
