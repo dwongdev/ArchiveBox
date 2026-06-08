@@ -726,14 +726,20 @@ class CrawlRunner:
                     },
                 )
         snapshot_output_dir = str(snapshot.output_dir)
+        tags = snapshot.tags_str()
         config = self.base_config.for_crawl_runtime(
             crawl=snapshot.crawl,
             snapshot=snapshot,
             persona=self.persona,
             runtime_overrides=runtime_chrome_overrides,
-            extra_context={"snapshot_id": str(snapshot.id), "snapshot_depth": snapshot.depth},
+            extra_context={
+                "snapshot_id": str(snapshot.id),
+                "snapshot_depth": snapshot.depth,
+                "snapshot_url": snapshot.url,
+                "snapshot_title": snapshot.title or "",
+                "snapshot_tags": tags,
+            },
         )
-        tags = snapshot.tags_str()
         normalized_config = normalize_runtime_config(config)
         return {
             "id": str(snapshot.id),

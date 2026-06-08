@@ -938,6 +938,21 @@ class TestSearchBackendsE2E:
                     backend_urls = [line.strip().strip('"') for line in backend_result.stdout.splitlines() if line.strip()]
                     assert set(backend_urls) == set(expected_urls), (backend_name, query, backend_result.stdout)
 
+            for query, expected_urls in (
+                (url_only_needle, [url_only_url]),
+                (title_only_needle, [title_only_url]),
+                (tag_only_needle, [tag_only_url]),
+            ):
+                sonic_metadata_result = run_archivebox_cmd(
+                    ["list", "--search=contents", "--csv=url", query],
+                    cwd=initialized_archive,
+                    env={**env, "SEARCH_BACKEND_ENGINE": "sonic"},
+                    timeout=60,
+                )
+                assert sonic_metadata_result.returncode == 0, sonic_metadata_result.stderr or sonic_metadata_result.stdout
+                sonic_metadata_urls = [line.strip().strip('"') for line in sonic_metadata_result.stdout.splitlines() if line.strip()]
+                assert set(sonic_metadata_urls) == set(expected_urls), (query, sonic_metadata_result.stdout)
+
             session = requests.Session()
             login_page = session.get(
                 f"http://127.0.0.1:{archivebox_port}/admin/login/",
@@ -1015,6 +1030,9 @@ class TestSearchBackendsE2E:
                     ("deep:sonic", second_batch_content_needle, second_mercury_urls),
                     ("deep:sonic", shared_content_needle, matrix_urls),
                     ("deep:sonic", overlapping_content_needle, [*first_mercury_urls[:3], *second_mercury_urls[:2]]),
+                    ("deep:sonic", url_only_needle, [url_only_url]),
+                    ("deep:sonic", title_only_needle, [title_only_url]),
+                    ("deep:sonic", tag_only_needle, [tag_only_url]),
                 ):
                     params = {"q": query, "search_mode": search_mode}
                     search_url = f"{list_path}?{urlencode(params)}"

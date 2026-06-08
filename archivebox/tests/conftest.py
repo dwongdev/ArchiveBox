@@ -23,15 +23,23 @@ from collections.abc import Callable
 import psutil
 import pytest
 import requests
-from django.utils import timezone
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
 PYTEST_BASETEMP_ROOT = (REPO_ROOT / "tests" / "out").resolve()
-SESSION_DATA_DIR = Path(tempfile.mkdtemp(prefix="archivebox-pytest-session-")).resolve()
+SESSION_DATA_DIR = Path(
+    os.environ.get("ARCHIVEBOX_PYTEST_SESSION_DATA_DIR") or tempfile.mkdtemp(prefix="archivebox-pytest-session-"),
+).resolve()
+
+os.environ["ARCHIVEBOX_PYTEST_SESSION_DATA_DIR"] = str(SESSION_DATA_DIR)
+os.environ["DATA_DIR"] = str(SESSION_DATA_DIR)
 (SESSION_DATA_DIR / "tests").mkdir(parents=True, exist_ok=True)
 os.chdir(SESSION_DATA_DIR)
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "archivebox.core.settings")
+os.environ.pop("ARCHIVE_DIR", None)
+os.environ.pop("USERS_DIR", None)
+os.environ.pop("CRAWL_DIR", None)
+os.environ.pop("SNAP_DIR", None)
 
 
 def _is_repo_path(path: Path) -> bool:
@@ -284,6 +292,14 @@ def find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
 # =============================================================================
 # Fixtures
 # =============================================================================
+
+
+def pytest_configure():
+    import django
+    from django.apps import apps
+
+    if not apps.ready:
+        django.setup()
 
 
 @pytest.fixture(autouse=True)
@@ -1145,6 +1161,7 @@ def wait_for_http(
 def make_latest_schedule_due(cwd: Path) -> None:
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.tests.test_orm_helpers import use_archivebox_db
+    from django.utils import timezone
 
     with use_archivebox_db(cwd):
         schedule = CrawlSchedule.objects.order_by("-created_at").select_related("template").first()
