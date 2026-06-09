@@ -208,6 +208,16 @@ def malicious_add_inputs(tmp_path: Path, *, safe_url: str) -> tuple[list[str], P
             f'" && touch {canary} && echo "',
             f"$(touch {canary})",
             f"`touch {canary}`",
+            """<?xml version="1.0"?>
+<!DOCTYPE rss [
+  <!ENTITY localfile SYSTEM "file:///etc/hosts">
+]>
+<rss version="2.0" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <channel>
+    <item><title>&localfile;</title><link>file:///etc/passwd</link></item>
+    <xi:include href="file:///etc/hosts" parse="text"/>
+  </channel>
+</rss>""",
         ],
         canary,
     )
