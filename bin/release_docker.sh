@@ -18,6 +18,7 @@ BRANCH_NAME="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
 SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64,linux/arm64}}"
+DOCKER_IMAGE_REPOS="${DOCKER_IMAGE_REPOS:-archivebox/archivebox ghcr.io/archivebox/archivebox}"
 
 # if not already in TAG_NAMES, add GIT_SHA and BRANCH_NAME  
 if ! echo "${TAG_NAMES[@]}" | grep -q "$GIT_SHA"; then
@@ -33,11 +34,11 @@ fi
 echo "[+] Building + releasing Docker image for $SELECTED_PLATFORMS: branch=$BRANCH_NAME version=$VERSION tags=${TAG_NAMES[*]}"
 
 declare -a FULL_TAG_NAMES
-# for each tag in TAG_NAMES, add archivebox/archivebox:tag and its mirrors to FULL_TAG_NAMES
 for TAG_NAME in "${TAG_NAMES[@]}"; do
     [[ "$TAG_NAME" == "" ]] && continue
-    FULL_TAG_NAMES+=("-t archivebox/archivebox:$TAG_NAME")              # ArchiveBox official Docker repo
-    FULL_TAG_NAMES+=("-t ghcr.io/archivebox/archivebox:$TAG_NAME")      # Github Container Repo mirror
+    for IMAGE_REPO in $DOCKER_IMAGE_REPOS; do
+        FULL_TAG_NAMES+=("-t $IMAGE_REPO:$TAG_NAME")
+    done
 done
 echo "${FULL_TAG_NAMES[@]}"
 
@@ -96,13 +97,15 @@ docker buildx build \
 echo "[^] Verifying pushed Docker manifests include: $SELECTED_PLATFORMS"
 for TAG_NAME in "${TAG_NAMES[@]}"; do
     [[ "$TAG_NAME" == "" ]] && continue
-    MANIFEST="$(docker buildx imagetools inspect "archivebox/archivebox:$TAG_NAME")"
-    for REQUIRED_PLATFORM in ${SELECTED_PLATFORMS//,/$IFS}; do
-        if ! echo "$MANIFEST" | grep -q "Platform:    $REQUIRED_PLATFORM"; then
-            echo "[X] archivebox/archivebox:$TAG_NAME is missing platform: $REQUIRED_PLATFORM" >&2
-            echo "$MANIFEST" >&2
-            exit 1
-        fi
+    for IMAGE_REPO in $DOCKER_IMAGE_REPOS; do
+        MANIFEST="$(docker buildx imagetools inspect "$IMAGE_REPO:$TAG_NAME")"
+        for REQUIRED_PLATFORM in ${SELECTED_PLATFORMS//,/$IFS}; do
+            if ! echo "$MANIFEST" | grep -q "Platform:    $REQUIRED_PLATFORM"; then
+                echo "[X] $IMAGE_REPO:$TAG_NAME is missing platform: $REQUIRED_PLATFORM" >&2
+                echo "$MANIFEST" >&2
+                exit 1
+            fi
+        done
     done
 done
 echo "[√] Docker manifests include all requested platforms."
