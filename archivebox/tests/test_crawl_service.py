@@ -80,7 +80,12 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     assert queued_state["retry_at"] is not None
     assert queued_state["config"]["PLUGINS"] == "wget,parse_html_urls"
     assert queued_state["config"]["URL_DENYLIST"] == "/contact$"
-    assert queued_state["snapshots"] == []
+    queued_snapshots = queued_state["snapshots"]
+    assert {row["url"] for row in queued_snapshots} == {root_url, about_url}
+    assert contact_url not in {row["url"] for row in queued_snapshots}
+    assert {row["depth"] for row in queued_snapshots} == {1}
+    assert all(row["status"] == Snapshot.StatusChoices.QUEUED for row in queued_snapshots)
+    assert all(row["parent_snapshot_id"] is None for row in queued_snapshots)
 
     _cmd_result = run_archivebox_cmd(
         ["run", "--crawl-id", crawl_id],
@@ -100,7 +105,7 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
     assert state["retry_at"] is None
     assert snapshotted_urls == {root_url, about_url}
     assert contact_url not in snapshotted_urls
-    assert {row["depth"] for row in snapshots} == {0}
+    assert {row["depth"] for row in snapshots} == {1}
     assert all(row["status"] == Snapshot.StatusChoices.SEALED for row in snapshots)
     assert all(row["downloaded_at"] is not None for row in snapshots)
     assert all("/contact" not in row["url"] for row in snapshots)

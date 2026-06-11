@@ -211,7 +211,14 @@ def version(
 
         db_binaries: dict[str, Binary] = {}
         for binary in Binary.objects.filter(machine=machine).order_by("name", "-modified_at"):
-            db_binaries.setdefault(binary.name, binary)
+            if _binary_record_matches_runtime(binary, config.LIB_DIR):
+                db_binaries.setdefault(binary.name, binary)
+                continue
+            if binary.status == Binary.StatusChoices.INSTALLED and binary.abspath:
+                binary.status = Binary.StatusChoices.QUEUED
+                binary.retry_at = None
+                binary.abspath = ""
+                binary.save(update_fields=["status", "retry_at", "abspath", "modified_at"])
 
         all_binary_names = sorted(requested_names or set(db_binaries.keys()))
 
