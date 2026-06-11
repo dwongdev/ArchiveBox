@@ -337,9 +337,9 @@ class TestBinaryModel:
         """Binary.is_valid should be True for installed binaries with a resolved path."""
         binary = Binary.objects.create(
             machine=self.machine,
-            name="wget",
-            abspath="/usr/bin/wget",
-            version="1.21",
+            name="python",
+            abspath=sys.executable,
+            version=f"{sys.version_info.major}.{sys.version_info.minor}",
             status=Binary.StatusChoices.INSTALLED,
         )
 
@@ -348,21 +348,21 @@ class TestBinaryModel:
     def test_binary_manager_get_valid_binary(self):
         """BinaryManager.get_valid_binary() should find valid binaries."""
         # Create invalid binary (no abspath)
-        Binary.objects.create(machine=self.machine, name="wget")
+        Binary.objects.create(machine=self.machine, name="python")
 
         # Create valid binary
         Binary.objects.create(
             machine=self.machine,
-            name="wget",
-            abspath="/usr/bin/wget",
-            version="1.21",
+            name="python",
+            abspath=sys.executable,
+            version=f"{sys.version_info.major}.{sys.version_info.minor}",
             status=Binary.StatusChoices.INSTALLED,
         )
 
-        result = cast(BinaryManager, Binary.objects).get_valid_binary("wget")
+        result = cast(BinaryManager, Binary.objects).get_valid_binary("python")
 
         assert result is not None
-        assert result.abspath == "/usr/bin/wget"
+        assert result.abspath == sys.executable
 
     def test_binary_update_and_requeue(self):
         """Binary.update_and_requeue() should update fields and save."""

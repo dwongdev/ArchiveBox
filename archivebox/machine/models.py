@@ -588,7 +588,19 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
     @property
     def is_valid(self) -> bool:
         """A binary is valid if it has a resolved path and is marked installed."""
-        return bool(self.abspath) and self.status == self.StatusChoices.INSTALLED
+        if not self.abspath or self.status != self.StatusChoices.INSTALLED:
+            return False
+        try:
+            abspath = Path(self.abspath).expanduser().resolve(strict=False)
+            if not abspath.exists():
+                return False
+            if self.binprovider not in {"", "env", "apt", "brew"}:
+                from archivebox.config.common import get_config
+
+                abspath.relative_to(get_config(include_machine=False).LIB_DIR)
+        except (OSError, ValueError):
+            return False
+        return True
 
     @cached_property
     def binary_info(self) -> dict:
