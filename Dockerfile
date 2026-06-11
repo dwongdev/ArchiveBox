@@ -117,6 +117,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && /usr/bin/uv pip install setuptools pip wheel \
     && /usr/bin/uv sync \
         --refresh \
+        --python-platform linux \
         --no-dev \
         --inexact \
         --no-install-project \
