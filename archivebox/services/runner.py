@@ -741,6 +741,7 @@ class CrawlRunner:
             },
         )
         normalized_config = normalize_runtime_config(config)
+        normalized_config.update(self.config_overrides)
         return {
             "id": str(snapshot.id),
             "url": snapshot.url,
@@ -1358,6 +1359,7 @@ def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
 
 def config_overrides_for_queued_plugins(selected_plugins: list[str], **overrides: Any) -> dict[str, Any]:
     config_overrides = dict(overrides)
+    config_overrides["PLUGINS"] = ",".join(selected_plugins)
     for plugin_name in selected_plugins:
         if plugin_name.startswith("search_backend_"):
             config_overrides[f"{plugin_name.upper()}_ENABLED"] = True
@@ -1373,11 +1375,14 @@ def fail_unavailable_queued_hooks(
 
     now = timezone.now()
     for plugin_name, selected_hook_names in selected_hooks_by_plugin.items():
-        if selected_hook_names is None or plugin_name not in plugins:
+        if selected_hook_names is None:
             continue
-        available_hook_names = {
-            name for hook in plugins[plugin_name].filter_hooks("Snapshot") for name in (hook.name, Path(hook.name).stem)
-        }
+        if plugin_name in plugins:
+            available_hook_names = {
+                name for hook in plugins[plugin_name].filter_hooks("Snapshot") for name in (hook.name, Path(hook.name).stem)
+            }
+        else:
+            available_hook_names = set()
         missing_hook_names = [hook_name for hook_name in selected_hook_names if hook_name not in available_hook_names]
         if not missing_hook_names:
             continue
@@ -1623,7 +1628,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
                 config_overrides=config_overrides_for_queued_plugins(selected_plugins),
-                selected_plugins_are_explicit=True,
+                selected_plugins_are_explicit=False,
             )
         finally:
             # Targeted plugin rows can complete while the Snapshot remains
@@ -1656,7 +1661,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
                 config_overrides=config_overrides_for_queued_plugins(selected_plugins),
-                selected_plugins_are_explicit=True,
+                selected_plugins_are_explicit=False,
             )
             if search_only_plugins:
                 from archivebox.core.models import ArchiveResult
@@ -2014,7 +2019,7 @@ def _run_due_queued_plugin_result(
         process_discovered_snapshots_inline=True,
         interactive_interrupts=interactive_interrupts,
         config_overrides=config_overrides_for_queued_plugins(selected_plugins, CRAWL_MAX_CONCURRENT_SNAPSHOTS=batch_size),
-        selected_plugins_are_explicit=True,
+        selected_plugins_are_explicit=False,
     )
     if all(plugin.startswith("search_backend_") for plugin in selected_plugins):
         queued_results = ArchiveResult.objects.filter(
