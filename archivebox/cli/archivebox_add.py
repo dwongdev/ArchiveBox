@@ -228,6 +228,9 @@ def add(
         print(
             "[yellow]\\[*] URLs queued. The background runner will process them (run `archivebox server` or `archivebox run --daemon` if not already running).[/yellow]",
         )
+        from archivebox.services.runner import ensure_background_runner
+
+        ensure_background_runner(allow_under_pytest=True)
     else:
         # Foreground mode: run full crawl runner until all work is done
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")

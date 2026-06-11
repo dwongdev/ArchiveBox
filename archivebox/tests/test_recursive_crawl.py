@@ -222,8 +222,8 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, initialized_archive, 
         env=env,
         timeout=120,
         condition=lambda: (
-            Snapshot.objects.filter(depth=0).count() >= 1
-            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
+            Snapshot.objects.filter(depth=1).count() >= 1
+            and Snapshot.objects.filter(depth=2).count() >= len(recursive_test_site["child_urls"])
         ),
     )
 
@@ -235,9 +235,9 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, initialized_archive, 
     with use_archivebox_db(tmp_path):
         all_snapshots = list(Snapshot.objects.values_list("url", "depth"))
         root_snapshot = (
-            Snapshot.objects.filter(depth=0).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
+            Snapshot.objects.filter(depth=1).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
         )
-        child_snapshots = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "depth", "parent_snapshot_id"))
+        child_snapshots = list(Snapshot.objects.filter(depth=2).values_list("id", "url", "depth", "parent_snapshot_id"))
         crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
         parser_status = list(
             ArchiveResult.objects.filter(
@@ -253,18 +253,18 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, initialized_archive, 
             ).values_list("plugin", "status"),
         )
 
-    assert root_snapshot is not None, f"Root snapshot should exist at depth=0. All snapshots: {all_snapshots}"
+    assert root_snapshot is not None, f"Root snapshot should exist at depth=1. All snapshots: {all_snapshots}"
     root_id = root_snapshot[0]
 
     assert crawl is not None, "Crawl should be created"
-    assert crawl[1] == 1, f"Crawl max_depth should be 1, got {crawl[1]}"
+    assert crawl[1] == 2, f"Crawl max_depth should be 2, got {crawl[1]}"
 
     assert len(child_snapshots) > 0, (
         f"Child snapshots should be created from monadical.com links. Parser status: {parser_status}. Started extractors blocking: {started_extractors}"
     )
 
     for child_id, child_url, child_depth, parent_id in child_snapshots:
-        assert child_depth == 1, f"Child snapshot should have depth=1, got {child_depth}"
+        assert child_depth == 2, f"Child snapshot should have depth=2, got {child_depth}"
         assert parent_id == root_id, f"Child snapshot {child_url} should have parent_snapshot_id={root_id}, got {parent_id}"
 
 
@@ -280,10 +280,10 @@ def test_recursive_crawl_respects_depth_limit(tmp_path, initialized_archive, rec
         env=env,
         timeout=120,
         condition=lambda: (
-            Snapshot.objects.filter(depth=0).count() >= 1
-            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
+            Snapshot.objects.filter(depth=1).count() >= 1
+            and Snapshot.objects.filter(depth=2).count() >= len(recursive_test_site["child_urls"])
             and ArchiveResult.objects.filter(
-                snapshot__depth=1,
+                snapshot__depth=2,
                 plugin__startswith="parse_",
                 plugin__endswith="_urls",
                 status__in=("started", "succeeded", "failed"),
@@ -301,7 +301,7 @@ def test_recursive_crawl_respects_depth_limit(tmp_path, initialized_archive, rec
         depth_counts = [(depth, Snapshot.objects.filter(depth=depth).count()) for depth in sorted(set(depths))]
 
     assert max_depth_found is not None, "Should have at least one snapshot"
-    assert max_depth_found <= 1, f"Max depth should not exceed 1, got {max_depth_found}. Depth distribution: {depth_counts}"
+    assert max_depth_found <= 2, f"Max depth should not exceed 2, got {max_depth_found}. Depth distribution: {depth_counts}"
 
 
 def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_path, initialized_archive, recursive_test_site):
@@ -348,10 +348,10 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
         depth_counts = {depth: Snapshot.objects.filter(depth=depth).count() for depth in sorted(set(depths))}
         crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
         root_snapshot = (
-            Snapshot.objects.filter(depth=0).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
+            Snapshot.objects.filter(depth=1).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
         )
-        child_rows = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "parent_snapshot_id"))
-        deep_rows = list(Snapshot.objects.filter(depth=2).values_list("id", "url", "parent_snapshot_id"))
+        child_rows = list(Snapshot.objects.filter(depth=2).values_list("id", "url", "parent_snapshot_id"))
+        deep_rows = list(Snapshot.objects.filter(depth=3).values_list("id", "url", "parent_snapshot_id"))
         parser_results = list(
             ArchiveResult.objects.filter(plugin__startswith="parse_", plugin__endswith="_urls")
             .order_by("snapshot__depth", "snapshot__url")
@@ -369,14 +369,14 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
         )
 
     assert crawl is not None
-    assert crawl[1] == 2
+    assert crawl[1] == 3
     assert root_snapshot is not None
-    assert root_snapshot[2] == 0
+    assert root_snapshot[2] == 1
     assert root_snapshot[3] is None
-    assert depth_counts.get(0, 0) >= 1
-    assert depth_counts.get(1, 0) >= len(recursive_test_site["child_urls"])
-    assert depth_counts.get(2, 0) >= len(recursive_test_site["deep_urls"])
-    assert max(depth_counts) <= 2
+    assert depth_counts.get(1, 0) >= 1
+    assert depth_counts.get(2, 0) >= len(recursive_test_site["child_urls"])
+    assert depth_counts.get(3, 0) >= len(recursive_test_site["deep_urls"])
+    assert max(depth_counts) <= 3
 
     child_urls = {row[1] for row in child_rows}
     deep_urls = {row[1] for row in deep_rows}

@@ -54,6 +54,7 @@ from archivebox.misc.util import (
     htmlencode,
     ts_to_date_str,
     urldecode,
+    validate_url,
     without_fragment,
 )
 from archivebox.misc.serve_static import serve_static_with_byterange_support
@@ -1407,8 +1408,20 @@ class AddView(UserPassesTestMixin, FormView):
     def _create_crawl_from_form(self, form, *, created_by_id=None) -> Crawl:
         from archivebox.cli.archivebox_add import add
 
-        urls = form.cleaned_data["url"]
-        print(f"[+] Adding URL: {urls}")
+        urls_input = form.cleaned_data["url"]
+        urls = urls_input
+        submitted_lines = [line.strip() for line in urls_input.splitlines() if line.strip()]
+        if len(submitted_lines) == 1:
+            try:
+                # A lone URL pasted into /add/ is the same user-facing input as
+                # `archivebox add https://...`: queue that URL directly so a
+                # narrow plugin selection like `wget` can archive it without
+                # also needing parser plugins. Multi-line or formatted text
+                # remains verbatim import content for the internal parser root.
+                urls = [validate_url(submitted_lines[0])]
+            except ValueError:
+                pass
+        print(f"[+] Adding URL: {urls_input}")
 
         # Extract all form fields
         tag = form.cleaned_data["tag"]
@@ -1453,6 +1466,8 @@ class AddView(UserPassesTestMixin, FormView):
             config["DELETE_AFTER"] = delete_after
         if timeout is not None and int(timeout) != int(effective_config.TIMEOUT):
             config["TIMEOUT"] = int(timeout)
+        if permissions:
+            config["PERMISSIONS"] = permissions
 
         config.update(plugin_config)
         config.update(custom_config)

@@ -420,8 +420,9 @@ def test_add_view_queues_crawl_for_background_runner(client, admin_user, monkeyp
     assert crawl.retry_at is not None
     assert crawl.urls == "https://example.com"
     root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == Snapshot.INTERNAL_INPUT_URL
-    assert (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8") == "https://example.com"
+    assert root_snapshot.url == "https://example.com"
+    assert root_snapshot.depth == 1
+    assert not (root_snapshot.output_dir / "staticfile" / "stdin.txt").exists()
 
 
 def test_add_view_start_paused_creates_paused_crawl_without_snapshots(client, admin_user, monkeypatch):
@@ -457,8 +458,9 @@ def test_add_view_start_paused_creates_paused_crawl_without_snapshots(client, ad
     assert crawl.retry_at == RETRY_AT_MAX
     assert crawl.urls == "https://example.com/paused"
     root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == Snapshot.INTERNAL_INPUT_URL
-    assert (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8") == "https://example.com/paused"
+    assert root_snapshot.url == "https://example.com/paused"
+    assert root_snapshot.depth == 1
+    assert not (root_snapshot.output_dir / "staticfile" / "stdin.txt").exists()
     assert crawl.config.get("INDEX_ONLY") is not True
 
 

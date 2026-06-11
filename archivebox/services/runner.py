@@ -181,6 +181,9 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     runner_worker = get_worker(supervisor, "worker_runner") if supervisor else None
     if runner_worker and runner_worker.get("statename") in ("STARTING", "RUNNING"):
         return False
+    if supervisor is not None:
+        start_worker(supervisor, RUNNER_WORKER)
+        return True
 
     machine = Machine.current()
     Process.cleanup_stale_running(machine=machine)
@@ -191,13 +194,6 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     )
     if any(proc.is_running for proc in running_orchestrators):
         return False
-
-    if supervisor is not None:
-        try:
-            start_worker(supervisor, RUNNER_WORKER)
-            return True
-        except Exception:
-            pass
 
     return False
 
