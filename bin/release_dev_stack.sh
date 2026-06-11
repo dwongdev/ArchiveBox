@@ -6,6 +6,7 @@ IFS=$'\n\t'
 ARCHIVEBOX_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_DIR="$(cd "${ARCHIVEBOX_REPO}/.." && pwd)"
 PYPI_USERNAME="${PYPI_USERNAME:-__token__}"
+PYPI_WAIT_ATTEMPTS="${PYPI_WAIT_ATTEMPTS:-90}"
 
 cd "${WORKSPACE_DIR}"
 
@@ -170,16 +171,19 @@ commit_push_publish() {
             git tag -a "${tag}" -m "release: ${package} ${version}"
         fi
         git push origin "refs/tags/${tag}"
-        uv --no-cache publish --username="${PYPI_USERNAME}" dist/*
+        if pypi_has_release "$package" "$version"; then
+            echo "[*] ${package}==${version} is already on PyPI; skipping upload."
+        else
+            uv --no-cache publish --username="${PYPI_USERNAME}" dist/*
+        fi
     )
 }
 
-wait_for_pypi() {
+pypi_has_release() {
     local package="$1"
     local version="$2"
-    local attempts=0
 
-    until uv run python - "$package" "$version" <<'PY'
+    uv run python - "$package" "$version" <<'PY'
 import json
 import sys
 import urllib.request
@@ -189,9 +193,17 @@ with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/json", timeout=10)
     data = json.load(response)
 raise SystemExit(0 if version in data.get("releases", {}) else 1)
 PY
+}
+
+wait_for_pypi() {
+    local package="$1"
+    local version="$2"
+    local attempts=0
+
+    until pypi_has_release "$package" "$version"
     do
         attempts=$((attempts + 1))
-        if [[ "$attempts" -ge 30 ]]; then
+        if [[ "$attempts" -ge "$PYPI_WAIT_ATTEMPTS" ]]; then
             echo "[X] Timed out waiting for ${package}==${version} on PyPI" >&2
             exit 1
         fi
@@ -236,8 +248,8 @@ release_python_repo() {
     wait_for_pypi "$package" "$version"
 }
 
-ABXPKG_VERSION="$(next_patch_version "$(current_version "$(repo_dir abxpkg)")")"
-ABX_SHARED_VERSION="$(next_patch_version "$(current_version "$(repo_dir abx-plugins)")" "$(current_version "$(repo_dir abx-dl)")")"
+ABXPKG_VERSION="${ABXPKG_VERSION:-$(next_patch_version "$(current_version "$(repo_dir abxpkg)")")}"
+ABX_SHARED_VERSION="${ABX_SHARED_VERSION:-$(next_patch_version "$(current_version "$(repo_dir abx-plugins)")" "$(current_version "$(repo_dir abx-dl)")")}"
 
 bump_patch_to "$(repo_dir abxpkg)" "$ABXPKG_VERSION"
 release_python_repo abxpkg main abxpkg "$ABXPKG_VERSION"
