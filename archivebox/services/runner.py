@@ -1197,9 +1197,11 @@ class CrawlRunner:
         snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_id).first()
         if snapshot is None or snapshot.status == Snapshot.StatusChoices.SEALED:
             return
-        if snapshot.status == Snapshot.StatusChoices.STARTED:
-            snapshot.sm.seal()
-            return
+        # Limit stops are runner-owned cancellation decisions, not normal
+        # "all ArchiveResults finished" lifecycle seals. Updating the row
+        # directly avoids racing the state machine's in-memory state while
+        # concurrent snapshot tasks are stopping because the crawl-wide limit
+        # has already been reached.
         snapshot.update_and_requeue(
             status=Snapshot.StatusChoices.SEALED,
             retry_at=None,

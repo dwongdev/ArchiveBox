@@ -287,9 +287,10 @@ def test_recursive_crawl_respects_max_urls(tmp_path, initialized_archive, recurs
             depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))
         }
 
-    assert crawl == (2, 4)
+    assert crawl == (3, 4)
     assert len(snapshot_rows) == 4
-    assert depth_counts.get(0, 0) == 1
-    assert depth_counts.get(1, 0) == 3
-    assert depth_counts.get(2, 0) == 0
-    assert set(recursive_test_site["child_urls"]).issubset({url for url, depth, _parent in snapshot_rows if depth == 1})
+    assert depth_counts.get(0, 0) == 0
+    assert depth_counts.get(1, 0) == 1
+    assert depth_counts.get(2, 0) == 3
+    assert depth_counts.get(3, 0) == 0
+    assert set(recursive_test_site["child_urls"]).issubset({url for url, depth, _parent in snapshot_rows if depth == 2})

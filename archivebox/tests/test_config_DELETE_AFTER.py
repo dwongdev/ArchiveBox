@@ -231,8 +231,9 @@ def test_delete_after_real_add_page_and_rest_create_paths(client):
     from archivebox.services.runner import run_due_crawl
 
     assert run_due_crawl(ui_crawl, lock_seconds=10)
-    ui_snapshot = ui_crawl.snapshot_set.get(url="https://example.com/delete-after-ui")
+    ui_snapshot = ui_crawl.snapshot_set.get(url="archivebox://internal")
     assert ui_snapshot.delete_at is not None
+    assert ui_snapshot.output_dir.joinpath("staticfile", "stdin.txt").read_text() == "https://example.com/delete-after-ui"
 
     from archivebox.api.auth import get_or_create_api_token
 
