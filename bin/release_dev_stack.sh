@@ -212,6 +212,16 @@ wait_for_pypi() {
         sleep 10
     done
 
+    attempts=0
+    until uv --no-cache pip install --dry-run --no-deps "${package}==${version}" >/dev/null
+    do
+        attempts=$((attempts + 1))
+        if [[ "$attempts" -ge "$PYPI_WAIT_ATTEMPTS" ]]; then
+            echo "[X] Timed out waiting for uv to resolve ${package}==${version} from PyPI" >&2
+            exit 1
+        fi
+        sleep 10
+    done
 }
 
 release_python_repo() {
