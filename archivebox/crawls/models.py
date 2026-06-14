@@ -2,7 +2,6 @@ __package__ = "archivebox.crawls"
 
 from typing import TYPE_CHECKING, Any
 from collections.abc import Iterable, Mapping
-from io import StringIO
 import uuid
 import json
 import re
@@ -503,12 +502,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         from archivebox.core.models import Snapshot
 
         date_str = self.created_at.strftime("%Y%m%d")
-        first_url = ""
-        for raw_line in StringIO(self.urls or ""):
-            candidate = raw_line.strip()
-            if candidate and not candidate.startswith("#"):
-                first_url = candidate
-                break
+        first_url = next((url for url in self.get_urls_list() if url), "")
         domain = Snapshot.extract_domain_from_url(first_url) if first_url else "unknown"
 
         output_dir = CONSTANTS.USERS_DIR / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
@@ -519,14 +513,14 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         """Get list of URLs from urls field, filtering out comments and empty lines."""
         if not self.urls:
             return []
-        return [url.strip() for url in self.urls.split("\n") if url.strip() and not url.strip().startswith("#")]
+        return [url for _raw_line, url in self._iter_url_lines() if url]
 
     def has_internal_input_root(self) -> bool:
         """Return True when Crawl.urls is preserved source text, not the work queue.
 
-        `archivebox add` creates a synthetic root snapshot to run parser hooks
-        through the same Snapshot lifecycle as every other extractor. In that
-        mode the raw submitted import text must remain in Crawl.urls forever;
+        The runner creates a synthetic root snapshot for raw import text so
+        parser hooks use the same Snapshot lifecycle as every other extractor.
+        In that mode the submitted text must remain in Crawl.urls forever;
         parsed URLs live as child Snapshot rows and should not be appended back.
         """
         from archivebox.core.models import Snapshot

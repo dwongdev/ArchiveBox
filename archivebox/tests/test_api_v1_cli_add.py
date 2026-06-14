@@ -1,5 +1,6 @@
 import pytest
 import json
+import time
 from pathlib import Path
 
 from .conftest import (
@@ -261,10 +262,8 @@ def test_basic_success_case_request(client, tmp_path, api_headers):
     assert response.status_code == 200, response.content
     assert response.json()["success"] is True
     crawl = Crawl.objects.get()
-    snapshot = Snapshot.objects.get()
-    assert crawl.urls == submitted_url
-    assert snapshot.url == submitted_url
-    assert snapshot.depth == 1
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": submitted_url, "depth": 1}
+    assert Snapshot.objects.count() == 0
 
 
 @pytest.mark.timeout(360)
@@ -299,13 +298,26 @@ def test_api_cli_add_import_text_formats_preserve_metadata_and_crawl_inner_urls(
             assert body["result"]["crawl_id"]
             with use_archivebox_db(tmp_path):
                 crawl = Crawl.objects.get(id=body["result"]["crawl_id"])
-                root_snapshot = crawl.snapshot_set.get(url=Snapshot.INTERNAL_INPUT_URL)
-                root_input = (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8")
             source_text = import_path.read_text(encoding="utf-8")
             assert crawl.urls == source_text
-            assert root_input == source_text
 
+        deadline = time.time() + 240
+        root_counts = {}
+        while time.time() < deadline:
+            with use_archivebox_db(tmp_path):
+                root_counts = {
+                    str(crawl.id): crawl.snapshot_set.filter(url=Snapshot.INTERNAL_INPUT_URL).count() for crawl in Crawl.objects.all()
+                }
+            if root_counts and all(count == 1 for count in root_counts.values()):
+                break
+            time.sleep(1)
+        assert root_counts and all(count == 1 for count in root_counts.values()), root_counts
         wait_for_import_processing(tmp_path, expected_urls)
+        with use_archivebox_db(tmp_path):
+            for crawl in Crawl.objects.all():
+                root_snapshot = crawl.snapshot_set.get(url=Snapshot.INTERNAL_INPUT_URL)
+                root_input = (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8")
+                assert root_input == crawl.urls
         stop_server(tmp_path)
         start_archivebox_server(tmp_path, env=env, port=port)
         wait_for_expected_import_snapshots(tmp_path, expected_urls)

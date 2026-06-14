@@ -36,7 +36,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
     # Basic fields
     url = forms.CharField(
         label="URLs",
-        strip=True,
+        strip=False,
         widget=forms.Textarea(
             attrs={
                 "data-url-regex": URL_REGEX.pattern,

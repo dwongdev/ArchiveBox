@@ -6,6 +6,7 @@ __command__ = "archivebox add"
 
 import sys
 import os
+import json
 from pathlib import Path
 
 from typing import Any, TYPE_CHECKING
@@ -114,7 +115,6 @@ def add(
 
     # import models once django is set up
     from archivebox.crawls.models import Crawl
-    from archivebox.core.models import Snapshot
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.personas.models import Persona
     from archivebox.misc.logging_util import printable_filesize
@@ -126,7 +126,11 @@ def add(
     started_at = timezone.now()
 
     use_internal_input_root = isinstance(urls, str)
-    source_text = urls if use_internal_input_root else "\n".join(str(url) for url in urls)
+    source_text = (
+        urls
+        if use_internal_input_root
+        else "\n".join(json.dumps({"type": "CrawlSeed", "url": str(url), "depth": 1}, separators=(",", ":")) for url in urls)
+    )
 
     # 2. Create a new Crawl with inline URLs
     cli_args = [*sys.argv]
@@ -186,23 +190,6 @@ def add(
         retry_at=None if index_only else timezone.now(),
         config=crawl_config,
     )
-
-    if use_internal_input_root:
-        # Parser plugins consume this root snapshot through the normal Snapshot
-        # hook lifecycle. ArchiveBox does not select parser plugins or call
-        # them directly; non-parser plugins cheaply no-result unsupported
-        # internal input.
-        root_snapshot = Snapshot.objects.create(
-            url=Snapshot.INTERNAL_INPUT_URL,
-            crawl=crawl,
-            depth=0,
-            title="stdin.txt",
-        )
-        staticfile_dir = root_snapshot.output_dir / "staticfile"
-        staticfile_dir.mkdir(parents=True, exist_ok=True)
-        (staticfile_dir / "stdin.txt").write_text(source_text, encoding="utf-8")
-    else:
-        crawl.create_discovered_snapshots(None, ({"url": url} for url in urls), depth=1)
 
     print(f"[green]\\[+] Created Crawl {crawl.id} with max_depth={depth}[/green]")
     first_url = crawl.get_urls_list()[0] if crawl.get_urls_list() else ""

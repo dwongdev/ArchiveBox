@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 import signal
 import shutil
@@ -602,9 +603,64 @@ class CrawlRunner:
             return [str(snapshot.id) for snapshot in pending_snapshots]
         if self.crawl.snapshot_set.exclude(status__in=[Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED]).exists():
             return []
-        created = self.crawl.create_snapshots_from_urls()
-        snapshots = created or list(self.crawl.snapshot_set.filter(depth=0).order_by("created_at"))
+        created = self.create_initial_snapshots()
+        snapshots = created or list(self.crawl.snapshot_set.filter(depth__in=[0, 1]).order_by("depth", "created_at"))
         return [str(snapshot.id) for snapshot in snapshots]
+
+    def create_initial_snapshots(self) -> list:
+        from archivebox.core.models import Snapshot
+
+        if self.crawl.snapshot_set.exists():
+            return []
+
+        records = []
+        for line in (self.crawl.urls or "").splitlines():
+            raw_line = line.strip()
+            if not raw_line or raw_line.startswith("#"):
+                continue
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError:
+                records = []
+                break
+            if not isinstance(record, dict) or record.get("type") != "CrawlSeed" or not record.get("url"):
+                records = []
+                break
+            records.append(record)
+
+        if records:
+            created = []
+            for record in records:
+                try:
+                    record["depth"] = int(record.get("depth") or 0)
+                except (TypeError, ValueError):
+                    record["depth"] = 0
+            for depth in sorted({record["depth"] for record in records}):
+                depth_records = [record for record in records if record["depth"] == depth]
+                created.extend(self.crawl.create_discovered_snapshots(None, depth_records, depth=depth))
+            return created
+
+        # Raw stdin/API/UI import text must remain verbatim in Crawl.urls so a
+        # resumed crawl sees the exact same source bytes and cannot reparse an
+        # overwritten temp file. Parser hooks still need the normal Snapshot
+        # lifecycle and SNAP_DIR/staticfile convention, so the runner creates a
+        # single synthetic root only after it has claimed the crawl. This keeps
+        # DB/FS side effects out of request/CLI add paths and lets child URLs be
+        # discovered by the usual parser -> CrawlService -> Snapshot flow.
+        root_snapshot = Snapshot(
+            url=Snapshot.INTERNAL_INPUT_URL,
+            crawl=self.crawl,
+            depth=0,
+            title="stdin.txt",
+            status=Snapshot.StatusChoices.QUEUED,
+            retry_at=timezone.now(),
+        )
+        root_snapshot.set_delete_at_from_config(self.base_config.get("DELETE_AFTER", "0"))
+        root_snapshot.save()
+        staticfile_dir = root_snapshot.output_dir / "staticfile"
+        staticfile_dir.mkdir(parents=True, exist_ok=True)
+        (staticfile_dir / "stdin.txt").write_text(self.crawl.urls, encoding="utf-8")
+        return [root_snapshot]
 
     def finalize_run_state(self) -> None:
         from archivebox.crawls.models import Crawl

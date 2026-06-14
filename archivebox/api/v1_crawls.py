@@ -1,5 +1,6 @@
 __package__ = "archivebox.api"
 
+import json
 from pathlib import Path
 from uuid import UUID
 from datetime import datetime
@@ -124,7 +125,7 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
     config = dict(data.config or {})
     config.setdefault("PERMISSIONS", str(get_config().PERMISSIONS))
     crawl = Crawl.objects.create(
-        urls="\n".join(urls),
+        urls="\n".join(json.dumps({"type": "CrawlSeed", "url": url, "depth": 0}, separators=(",", ":")) for url in urls),
         max_depth=data.max_depth,
         tags_str=",".join(tags),
         label=data.label,

@@ -283,9 +283,9 @@ def test_add_view_selected_persona_wins_over_stale_config_override(client, admin
     assert crawl.persona_id == private_persona.id
     assert "ACTIVE_PERSONA" not in crawl.config
     assert crawl.resolve_persona() == private_persona
-    snapshot = Snapshot.objects.create(url="https://example.com/private", crawl=crawl)
     runner = CrawlRunner(crawl, selected_plugins=["title"], show_progress=False)
-    runner.load_run_state()
+    snapshot_ids = runner.load_run_state()
+    snapshot = crawl.snapshot_set.get(id=snapshot_ids[0], url="https://example.com/private")
     runtime_config = runner.load_snapshot_payload(str(snapshot.id))["config"]
     assert runtime_config["ACTIVE_PERSONA"] == "Private"
     assert runtime_config["COOKIES_FILE"] == str(private_cookies_file)
@@ -418,11 +418,8 @@ def test_add_view_queues_crawl_for_background_runner(client, admin_user, monkeyp
     assert crawl is not None
     assert crawl.status == Crawl.StatusChoices.QUEUED
     assert crawl.retry_at is not None
-    assert crawl.urls == "https://example.com"
-    root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == "https://example.com"
-    assert root_snapshot.depth == 1
-    assert not (root_snapshot.output_dir / "staticfile" / "stdin.txt").exists()
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com", "depth": 1}
+    assert crawl.snapshot_set.count() == 0
 
 
 def test_add_view_start_paused_creates_paused_crawl_without_snapshots(client, admin_user, monkeypatch):
@@ -456,11 +453,8 @@ def test_add_view_start_paused_creates_paused_crawl_without_snapshots(client, ad
     assert crawl is not None
     assert crawl.status == Crawl.StatusChoices.PAUSED
     assert crawl.retry_at == RETRY_AT_MAX
-    assert crawl.urls == "https://example.com/paused"
-    root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == "https://example.com/paused"
-    assert root_snapshot.depth == 1
-    assert not (root_snapshot.output_dir / "staticfile" / "stdin.txt").exists()
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com/paused", "depth": 1}
+    assert crawl.snapshot_set.count() == 0
     assert crawl.config.get("INDEX_ONLY") is not True
 
 
@@ -512,9 +506,7 @@ def test_add_view_extracts_urls_from_mixed_text_input(client, admin_user, monkey
         ],
     )
     assert crawl.urls == expected_input
-    root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == Snapshot.INTERNAL_INPUT_URL
-    assert (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8") == expected_input
+    assert crawl.snapshot_set.count() == 0
 
 
 def test_add_view_trims_trailing_punctuation_from_markdown_urls(client, admin_user, monkeypatch):
@@ -559,9 +551,7 @@ def test_add_view_trims_trailing_punctuation_from_markdown_urls(client, admin_us
         ],
     )
     assert crawl.urls == expected_input
-    root_snapshot = crawl.snapshot_set.get()
-    assert root_snapshot.url == Snapshot.INTERNAL_INPUT_URL
-    assert (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8") == expected_input
+    assert crawl.snapshot_set.count() == 0
 
 
 def test_add_view_exposes_api_token_for_tag_widget_autocomplete(client, admin_user, monkeypatch):

@@ -391,12 +391,18 @@ def test_public_add_view_import_text_formats_preserve_metadata_and_resume_withou
                 allow_redirects=False,
             )
             assert response.status_code in (302, 303), response.text
-            with use_archivebox_db(tmp_path):
-                crawl = Crawl.objects.order_by("-created_at").first()
-                assert crawl is not None
-                root_snapshot = crawl.snapshot_set.get(url=Snapshot.INTERNAL_INPUT_URL)
-                root_input = (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8")
-            assert crawl.urls == source_text
+            deadline = time.time() + 60
+            root_input = None
+            while time.time() < deadline:
+                with use_archivebox_db(tmp_path):
+                    crawl = Crawl.objects.order_by("-created_at").first()
+                    assert crawl is not None
+                    assert crawl.urls == source_text
+                    root_snapshot = crawl.snapshot_set.filter(url=Snapshot.INTERNAL_INPUT_URL).first()
+                    if root_snapshot:
+                        root_input = (root_snapshot.output_dir / "staticfile" / "stdin.txt").read_text(encoding="utf-8")
+                        break
+                time.sleep(1)
             assert root_input == source_text
 
         wait_for_import_processing(tmp_path, expected_urls)
