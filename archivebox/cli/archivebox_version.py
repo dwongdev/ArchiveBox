@@ -79,7 +79,7 @@ def _render_binary_abspath(abspath: str):
 
 
 def _binary_record_matches_runtime(installed, lib_dir: Path) -> bool:
-    if not installed or not installed.is_valid:
+    if not installed or not installed.is_valid or not installed.version:
         return False
     try:
         abspath = Path(installed.abspath).expanduser().resolve(strict=False)
@@ -114,7 +114,7 @@ def version(
     from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, RUNNING_AS_UID, RUNNING_AS_GID, IN_DOCKER
     from archivebox.config.paths import get_data_locations, get_code_locations
     from archivebox.misc.logging_util import printable_folder_status
-    from archivebox.config.common import get_config
+    from archivebox.config.common import get_config, normalize_runtime_config
 
     console = Console()
     prnt = console.print
@@ -201,6 +201,9 @@ def version(
         setup_django()
 
         from archivebox.machine.models import Machine, Binary
+        from archivebox.plugins.discovery import get_enabled_plugins
+        from abx_dl.config import get_required_binary_requests
+        from abx_dl.models import discover_plugins, filter_plugins
 
         machine = Machine.current()
 
@@ -208,6 +211,22 @@ def version(
             requested_names = {name.strip() for name in binaries.split(",") if name.strip()}
         else:
             requested_names = {name for name in (binaries or ()) if name}
+
+        required_names: set[str] = set()
+        if not requested_names:
+            plugins = discover_plugins(runtime="archivebox")
+            selected_plugins = filter_plugins(plugins, get_enabled_plugins(config=config), include_providers=True)
+            runtime_config = normalize_runtime_config(config.for_crawl(), json_safe=False)
+            derived_config = normalize_runtime_config(machine.config, json_safe=False)
+            for plugin in selected_plugins.values():
+                for record in get_required_binary_requests(
+                    plugin,
+                    plugin.config.required_binaries,
+                    overrides=runtime_config,
+                    derived_overrides=derived_config,
+                    run_output_dir=CONSTANTS.DATA_DIR,
+                ):
+                    required_names.add(str(record["name"]))
 
         db_binaries: dict[str, Binary] = {}
         for binary in Binary.objects.filter(machine=machine).order_by("name", "-modified_at"):
@@ -220,7 +239,7 @@ def version(
                 binary.abspath = ""
                 binary.save(update_fields=["status", "retry_at", "abspath", "modified_at"])
 
-        all_binary_names = sorted(requested_names or set(db_binaries.keys()))
+        all_binary_names = sorted(requested_names or (required_names | set(db_binaries.keys())))
 
         if not all_binary_names:
             prnt("", "[grey53]No binaries detected. Run [green]archivebox install[/green] to detect dependencies.[/grey53]")
@@ -282,6 +301,7 @@ def version(
         prnt()
         prnt("", f"[yellow]Warning: Could not query binaries from database: {e}[/yellow]")
         prnt("", "[grey53]Run [green]archivebox init[/green] and [green]archivebox install[/green] to set up dependencies.[/grey53]")
+        failures.append("database")
 
     if not binaries:
         # Show code and data locations
