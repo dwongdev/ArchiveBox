@@ -510,16 +510,58 @@ def snapshot_url(context, snapshot, path: str = "") -> str:
 
 
 @register.simple_tag(takes_context=True)
+def snapshot_archiveresult_url(context, snapshot, plugin: str, filename: str) -> str:
+    snapshot_id = str(_snapshot_id(snapshot))
+    url_cache = snapshot.__dict__.setdefault("_snapshot_archiveresult_url_cache", {})
+    cache_key = (plugin, filename)
+    if cache_key in url_cache:
+        return url_cache[cache_key]
+
+    results = None
+    if "_admin_archiveresults" in snapshot.__dict__:
+        results = snapshot.__dict__["_admin_archiveresults"]
+    elif "archiveresult_set" in snapshot.__dict__.get("_prefetched_objects_cache", {}):
+        results = snapshot.archiveresult_set.all()
+    elif "_snapshot_archiveresult_url_results" in snapshot.__dict__:
+        results = snapshot.__dict__["_snapshot_archiveresult_url_results"]
+
+    if results is None:
+        from archivebox.core.models import ArchiveResult
+
+        results = list(
+            ArchiveResult.objects.filter(
+                snapshot_id=snapshot_id,
+                plugin__in=("screenshot", "chrome_extension_screenshot", "favicon"),
+                status=ArchiveResult.StatusChoices.SUCCEEDED,
+            ).only(
+                "plugin",
+                "status",
+                "output_files",
+            ),
+        )
+        snapshot.__dict__["_snapshot_archiveresult_url_results"] = results
+
+    for result in results:
+        if result.plugin != plugin or result.status != "succeeded":
+            continue
+        output_files = result.output_files or {}
+        file_info = output_files.get(filename)
+        if not isinstance(file_info, dict) or int(file_info.get("size") or 0) <= 0:
+            continue
+        output_path = filename if file_info.get("root_relative") else f"{plugin}/{filename}"
+        url_cache[cache_key] = build_snapshot_url(snapshot_id, output_path, request=context.get("request"), config=context.get("CONFIG"))
+        return url_cache[cache_key]
+
+    url_cache[cache_key] = ""
+    return ""
+
+
+@register.simple_tag(takes_context=True)
 def snapshot_index_row(context, link) -> str:
     snapshot_id = str(_snapshot_id(link))
     request = context.get("request")
     config = context.get("CONFIG")
     snapshot_base = get_snapshot_base_url(snapshot_id, request=request, config=config)
-    screenshot_plugin_url = f"{snapshot_base}/screenshot/screenshot.png"
-    extension_screenshot_1_url = f"{snapshot_base}/chrome_extension_screenshot/screenshot-1.png"
-    extension_screenshot_url = f"{snapshot_base}/chrome_extension_screenshot/screenshot.png"
-    favicon_plugin_url = f"{snapshot_base}/favicon/favicon.ico"
-    favicon_root_url = f"{snapshot_base}/favicon.ico"
 
     status = getattr(link, "status", None) or "unknown"
     bookmarked_at = getattr(link, "bookmarked_at", None)
@@ -572,10 +614,47 @@ def snapshot_index_row(context, link) -> str:
         else:
             preview_html = '<span class="snapshot-preview snapshot-preview-empty" aria-label="No preview available"></span>'
     else:
-        preview_html = (
-            f'<img src="{escape(screenshot_plugin_url)}" '
-            f'data-fallbacks="{escape(extension_screenshot_1_url)},{escape(extension_screenshot_url)}" '
-            'onerror="nextPublicSnapshotPreview(this)" class="snapshot-preview screenshot" alt="" decoding="async" loading="lazy">'
+        preview_urls = [
+            url
+            for url in (
+                snapshot_archiveresult_url(context, link, "screenshot", "screenshot.png"),
+                snapshot_archiveresult_url(context, link, "chrome_extension_screenshot", "screenshot-1.png"),
+                snapshot_archiveresult_url(context, link, "chrome_extension_screenshot", "screenshot.png"),
+            )
+            if url
+        ]
+        if preview_urls:
+            preview_html = (
+                f'<img src="{escape(preview_urls[0])}" '
+                f'data-fallbacks="{escape(",".join(preview_urls[1:]))}" '
+                'onerror="nextPublicSnapshotPreview(this)" class="snapshot-preview screenshot" alt="" decoding="async" loading="lazy">'
+            )
+        else:
+            preview_html = '<span class="snapshot-preview snapshot-preview-empty" aria-label="No preview available"></span>'
+
+    if "_public_favicon_paths" in link.__dict__:
+        favicon_paths = list(getattr(link, "_public_favicon_paths", []) or [])
+        if favicon_paths:
+            favicon_urls = [build_snapshot_url(snapshot_id, path, request=request, config=config) for path in favicon_paths]
+            favicon_html = (
+                f'<img src="{escape(favicon_urls[0])}" '
+                f'data-fallbacks="{escape(",".join(favicon_urls[1:]))}" '
+                'onerror="nextPublicSnapshotPreview(this)" '
+                'class="link-favicon" alt="" decoding="async" loading="lazy">'
+            )
+        else:
+            favicon_html = '<span class="link-favicon link-favicon-empty" aria-hidden="true"></span>'
+    else:
+        favicon_url = snapshot_archiveresult_url(context, link, "favicon", "favicon.ico")
+        favicon_html = (
+            (
+                f'<img src="{escape(favicon_url)}" '
+                'data-fallbacks="" '
+                'onerror="nextPublicSnapshotPreview(this)" '
+                'class="link-favicon" alt="" decoding="async" loading="lazy">'
+            )
+            if favicon_url
+            else '<span class="link-favicon link-favicon-empty" aria-hidden="true"></span>'
         )
 
     html = f"""
@@ -594,13 +673,7 @@ def snapshot_index_row(context, link) -> str:
     <td class="snapshot-title-cell" title="{escape(title or url)}">
         <div class="snapshot-title-line">
             <a href="{escape(snapshot_base)}/index.html" class="snapshot-favicon-link" title="Open archived snapshot">
-                <img src="{escape(favicon_plugin_url)}"
-                     data-fallbacks="{escape(favicon_root_url)}"
-                     onerror="nextPublicSnapshotPreview(this)"
-                     class="link-favicon"
-                     alt=""
-                     decoding="async"
-                     loading="lazy">
+                {favicon_html}
             </a>
             <a href="{escape(snapshot_base)}/index.html" class="snapshot-title">
                 {escape(Truncator(title_text).chars(110))}

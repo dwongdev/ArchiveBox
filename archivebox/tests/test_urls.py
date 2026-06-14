@@ -998,6 +998,27 @@ class TestUrlRouting:
             assert resp.status_code == 200
             assert resp["Content-Type"].startswith("text/html")
 
+            root_screenshot = bytes.fromhex(
+                "89504e470d0a1a0a"
+                "0000000d49484452000000010000000108060000001f15c489"
+                "0000000d49444154789c63606060600000050001a5f64540"
+                "0000000049454e44ae426082"
+            )
+            (Path(snapshot.output_dir) / "screenshot.png").write_bytes(root_screenshot)
+            ArchiveResult.objects.update_or_create(
+                snapshot=snapshot,
+                plugin="screenshot",
+                defaults={
+                    "status": ArchiveResult.StatusChoices.SUCCEEDED,
+                    "output_files": {"screenshot.png": {"size": len(root_screenshot), "root_relative": True}},
+                    "output_str": "screenshot.png",
+                },
+            )
+            resp = client.get("/screenshot/screenshot.png", HTTP_HOST=snapshot_host)
+            assert resp.status_code == 200
+            assert resp["Content-Type"].startswith("image/png")
+            assert response_body(resp) == root_screenshot
+
             mhtml_dir = Path(snapshot.output_dir) / "chrome_mhtml"
             mhtml_dir.mkdir(parents=True, exist_ok=True)
             (mhtml_dir / "snapshot.mhtml").write_text(

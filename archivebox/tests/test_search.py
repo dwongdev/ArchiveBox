@@ -572,6 +572,47 @@ class TestPublicIndexSearch:
         assert "private-page-test" not in last_content
 
     @override_settings(PUBLIC_INDEX=True)
+    def test_public_index_preview_respects_root_relative_screenshot_output(self, client, public_snapshot):
+        from archivebox.core.models import ArchiveResult
+
+        ArchiveResult.objects.create(
+            snapshot=public_snapshot,
+            plugin="screenshot",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_files={
+                "screenshot.png": {"size": 3, "root_relative": True},
+            },
+            output_str="screenshot.png",
+        )
+
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "/screenshot.png" in content
+        assert "screenshot/screenshot.png" not in content
+
+    @override_settings(PUBLIC_INDEX=True)
+    def test_public_index_preview_respects_plugin_relative_screenshot_output(self, client, public_snapshot):
+        from archivebox.core.models import ArchiveResult
+
+        ArchiveResult.objects.create(
+            snapshot=public_snapshot,
+            plugin="screenshot",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_files={
+                "screenshot.png": {"size": 3},
+            },
+            output_str="screenshot.png",
+        )
+
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "screenshot/screenshot.png" in content
+
+    @override_settings(PUBLIC_INDEX=True)
     def test_public_index_preview_falls_back_to_extension_screenshots(self, client, public_snapshot):
         from archivebox.core.models import ArchiveResult
 

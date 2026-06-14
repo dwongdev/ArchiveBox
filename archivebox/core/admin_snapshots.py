@@ -940,38 +940,54 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         config = request.archivebox_config
         results = self._get_prefetched_results(obj)
         if results is not None:
-            has_screenshot = any(r.plugin == "screenshot" for r in results)
-            has_favicon = any(r.plugin == "favicon" for r in results)
-            has_extension_screenshot = any(r.plugin == EXTENSION_SCREENSHOT_PLUGIN for r in results)
+            results = [r for r in results if r.plugin in ("screenshot", EXTENSION_SCREENSHOT_PLUGIN, "favicon")]
         else:
-            available_plugins = set(
-                obj.archiveresult_set.filter(plugin__in=("screenshot", EXTENSION_SCREENSHOT_PLUGIN, "favicon")).values_list(
+            results = list(
+                obj.archiveresult_set.filter(plugin__in=("screenshot", EXTENSION_SCREENSHOT_PLUGIN, "favicon")).only(
+                    "snapshot_id",
                     "plugin",
-                    flat=True,
+                    "status",
+                    "output_files",
+                    "output_str",
                 ),
             )
-            has_screenshot = "screenshot" in available_plugins
-            has_favicon = "favicon" in available_plugins
-            has_extension_screenshot = EXTENSION_SCREENSHOT_PLUGIN in available_plugins
 
-        extension_screenshot_urls = [
-            build_snapshot_url(str(obj.id), f"{EXTENSION_SCREENSHOT_PLUGIN}/screenshot-1.png", request=request, config=config),
-            build_snapshot_url(str(obj.id), f"{EXTENSION_SCREENSHOT_PLUGIN}/screenshot.png", request=request, config=config),
-        ]
+        def result_output_path(result, filename: str) -> str | None:
+            output_files = result.output_files or {}
+            file_info = output_files.get(filename)
+            if not isinstance(file_info, dict) or int(file_info.get("size") or 0) <= 0:
+                return None
+            if file_info.get("root_relative"):
+                return filename
+            return f"{result.plugin}/{filename}"
 
-        if not has_screenshot and not has_extension_screenshot and not has_favicon:
+        def result_urls(plugin: str, filenames: tuple[str, ...]) -> list[str]:
+            urls: list[str] = []
+            for result in results:
+                if result.plugin != plugin or result.status != ArchiveResult.StatusChoices.SUCCEEDED:
+                    continue
+                for filename in filenames:
+                    output_path = result_output_path(result, filename)
+                    if output_path:
+                        urls.append(build_snapshot_url(str(obj.id), output_path, request=request, config=config))
+            return urls
+
+        screenshot_urls = result_urls("screenshot", ("screenshot.png",))
+        extension_screenshot_urls = result_urls(EXTENSION_SCREENSHOT_PLUGIN, ("screenshot-1.png", "screenshot.png"))
+        favicon_urls = result_urls("favicon", ("favicon.ico",))
+
+        if not screenshot_urls and not extension_screenshot_urls and not favicon_urls:
             return None
 
-        if has_screenshot or has_extension_screenshot:
-            img_url = build_snapshot_url(str(obj.id), "screenshot/screenshot.png", request=request, config=config)
-            fallbacks = extension_screenshot_urls
+        all_screenshot_urls = [*screenshot_urls, *extension_screenshot_urls]
+        if all_screenshot_urls:
+            img_url = all_screenshot_urls[0]
+            fallbacks = [*all_screenshot_urls[1:], *favicon_urls]
             img_alt = "Screenshot"
             preview_class = "screenshot"
         else:
-            img_url = build_snapshot_url(str(obj.id), "favicon/favicon.ico", request=request, config=config)
-            fallbacks = [
-                build_snapshot_url(str(obj.id), "favicon.ico", request=request, config=config),
-            ]
+            img_url = favicon_urls[0]
+            fallbacks = favicon_urls[1:]
             img_alt = "Favicon"
             preview_class = "favicon"
 
@@ -989,6 +1005,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             "preview_class": preview_class,
             "onerror_js": onerror_js,
             "fallback_list": fallback_list,
+            "favicon_url": favicon_urls[0] if favicon_urls else "",
+            "favicon_fallback_list": ",".join(favicon_urls[1:]),
         }
 
     @admin.display(description="", empty_value="")
@@ -997,10 +1015,10 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if not preview:
             return ""
 
-        request = self.request
-        config = request.archivebox_config
-        favicon_url = build_snapshot_url(str(obj.id), "favicon/favicon.ico", request=request, config=config)
-        fallback_list = ",".join([build_snapshot_url(str(obj.id), "favicon.ico", request=request, config=config)])
+        favicon_url = preview.get("favicon_url") or ""
+        if not favicon_url:
+            return ""
+        fallback_list = preview.get("favicon_fallback_list") or ""
         onerror_js = (
             "this.dataset.fallbacks && this.dataset.fallbacks.length ? "
             "(this.src=this.dataset.fallbacks.split(',').shift(), "

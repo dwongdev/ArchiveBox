@@ -229,13 +229,14 @@
           <code class="card-url" title="{{obj.url}}">{{obj.url}}</code>
           <div class="card-media">
             <a href="{% snapshot_base_url obj %}/index.html" class="card-thumbnail">
-              {% snapshot_url obj 'screenshot/screenshot.png' as screenshot_plugin_url %}
-              {% snapshot_url obj 'screenshot.png' as screenshot_root_url %}
-              {% snapshot_url obj 'favicon.ico' as favicon_root_url %}
+              {% snapshot_archiveresult_url obj 'screenshot' 'screenshot.png' as screenshot_url %}
+              {% snapshot_archiveresult_url obj 'chrome_extension_screenshot' 'screenshot-1.png' as extension_screenshot_1_url %}
+              {% snapshot_archiveresult_url obj 'chrome_extension_screenshot' 'screenshot.png' as extension_screenshot_url %}
+              {% snapshot_archiveresult_url obj 'favicon' 'favicon.ico' as favicon_url %}
               <img
-                src="{{ screenshot_plugin_url }}"
+                src="{% firstof screenshot_url extension_screenshot_1_url extension_screenshot_url favicon_url '/static/spinner.gif' %}"
                 alt="{{obj.title|default:'Not yet archived...'}}"
-                data-fallbacks="{{ screenshot_root_url }},{{ favicon_root_url }}"
+                data-fallbacks="{{ extension_screenshot_1_url }},{{ extension_screenshot_url }},{{ favicon_url }}"
                 onerror="const fallbacks=(this.dataset.fallbacks || '').split(',').filter(Boolean); if (fallbacks.length) { this.dataset.fallbacks=fallbacks.slice(1).join(','); this.src=fallbacks[0]; } else { this.onerror=null; this.closest('.card-thumbnail').classList.add('missing'); this.src='/static/spinner.gif'; }"
               />
             </a>
