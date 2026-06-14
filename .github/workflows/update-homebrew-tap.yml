@@ -1,4 +1,4 @@
-name: Update Homebrew tap
+name: Update downstream packages
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: update-homebrew-tap-${{ github.ref }}
+  group: update-downstream-packages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -17,19 +17,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Dispatch tap update
+      - name: Dispatch downstream package updates
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          DOWNSTREAM_TOKEN: ${{ secrets.RELEASE_GH_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "HOMEBREW_TAP_TOKEN is not configured; tap hourly fallback will update the formula."
+          if [ -z "$DOWNSTREAM_TOKEN" ]; then
+            echo "RELEASE_GH_TOKEN/HOMEBREW_TAP_TOKEN is not configured; downstream schedules will update packages."
             exit 0
           fi
 
-          curl --fail-with-body \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${HOMEBREW_TAP_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/ArchiveBox/homebrew-archivebox/dispatches \
-            -d '{"event_type":"archivebox-dev-updated"}'
+          for repo in homebrew-archivebox debian-archivebox; do
+            curl --fail-with-body \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${DOWNSTREAM_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/ArchiveBox/${repo}/dispatches" \
+              -d '{"event_type":"archivebox-dev-updated","client_payload":{"ref":"dev"}}'
+          done

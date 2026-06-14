@@ -168,7 +168,8 @@ def version(
     )
     prnt()
 
-    if not (os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) and os.access(CONSTANTS.CONFIG_FILE, os.R_OK)):
+    in_data_dir = os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) and os.access(CONSTANTS.CONFIG_FILE, os.R_OK)
+    if not in_data_dir:
         PANEL_TEXT = "\n".join(
             (
                 "",
@@ -189,119 +190,162 @@ def version(
             ),
         )
         prnt()
-        return []
 
     prnt("[pale_green1][i] Binary Dependencies:[/pale_green1]")
     failures = []
 
-    # Setup Django before importing models
-    try:
-        from archivebox.config.django import setup_django
+    from archivebox.plugins.discovery import get_enabled_plugins
+    from abx_dl.config import get_required_binary_requests
+    from abx_dl.dependencies import load_binary
+    from abx_dl.models import discover_plugins, filter_plugins
 
-        setup_django()
+    if isinstance(binaries, str):
+        requested_names = {name.strip() for name in binaries.split(",") if name.strip()}
+    else:
+        requested_names = {name for name in (binaries or ()) if name}
 
-        from archivebox.machine.models import Machine, Binary
-        from archivebox.plugins.discovery import get_enabled_plugins
-        from abx_dl.config import get_required_binary_requests
-        from abx_dl.models import discover_plugins, filter_plugins
+    plugins = discover_plugins(runtime="archivebox")
+    enabled_plugins = filter_plugins(plugins, get_enabled_plugins(config=config), include_providers=True)
+    enabled_plugin_names = set(enabled_plugins)
+    runtime_config = normalize_runtime_config(config.for_crawl(), json_safe=False)
+    derived_config: dict[str, object] = {}
+    db_binaries = {}
+    db_available = False
+    if in_data_dir:
+        try:
+            from archivebox.config.django import setup_django
 
-        machine = Machine.current()
+            setup_django()
 
-        if isinstance(binaries, str):
-            requested_names = {name.strip() for name in binaries.split(",") if name.strip()}
-        else:
-            requested_names = {name for name in (binaries or ()) if name}
+            from archivebox.machine.models import Machine, Binary
 
-        required_names: set[str] = set()
-        if not requested_names:
-            plugins = discover_plugins(runtime="archivebox")
-            selected_plugins = filter_plugins(plugins, get_enabled_plugins(config=config), include_providers=True)
-            runtime_config = normalize_runtime_config(config.for_crawl(), json_safe=False)
+            machine = Machine.current()
             derived_config = normalize_runtime_config(machine.config, json_safe=False)
-            for plugin in selected_plugins.values():
-                for record in get_required_binary_requests(
-                    plugin,
-                    plugin.config.required_binaries,
-                    overrides=runtime_config,
-                    derived_overrides=derived_config,
-                    run_output_dir=CONSTANTS.DATA_DIR,
-                ):
-                    required_names.add(str(record["name"]))
-
-        db_binaries: dict[str, Binary] = {}
-        for binary in Binary.objects.filter(machine=machine).order_by("name", "-modified_at"):
-            if _binary_record_matches_runtime(binary, config.LIB_DIR):
-                db_binaries.setdefault(binary.name, binary)
-                continue
-            if binary.status == Binary.StatusChoices.INSTALLED and binary.abspath:
-                binary.status = Binary.StatusChoices.QUEUED
-                binary.retry_at = None
-                binary.abspath = ""
-                binary.save(update_fields=["status", "retry_at", "abspath", "modified_at"])
-
-        all_binary_names = sorted(requested_names or (required_names | set(db_binaries.keys())))
-
-        if not all_binary_names:
-            prnt("", "[grey53]No binaries detected. Run [green]archivebox install[/green] to detect dependencies.[/grey53]")
-        else:
-            any_available = False
-            compact_paths = console.is_terminal
-            for name in all_binary_names:
-                if requested_names and name not in requested_names:
+            for binary in Binary.objects.filter(machine=machine).order_by("name", "-modified_at"):
+                if _binary_record_matches_runtime(binary, config.LIB_DIR):
+                    db_binaries.setdefault(binary.name, binary)
                     continue
+                if binary.status == Binary.StatusChoices.INSTALLED and binary.abspath:
+                    binary.status = Binary.StatusChoices.QUEUED
+                    binary.retry_at = None
+                    binary.abspath = ""
+                    binary.save(update_fields=["status", "retry_at", "abspath", "modified_at"])
+            db_available = True
 
-                installed = db_binaries.get(name)
-                if _binary_record_matches_runtime(installed, config.LIB_DIR):
-                    display_name = Path(name).expanduser().name if ("/" in name or name.startswith("~")) else name
-                    display_path = (
-                        _format_binary_abspath(
-                            installed.abspath,
-                            pwd=Path.cwd(),
-                            lib_dir=config.LIB_DIR,
-                            personas_dir=CONSTANTS.PERSONAS_DIR,
-                            home=Path.home(),
-                        )
-                        if compact_paths
-                        else installed.abspath
-                    )
-                    rendered_path = _render_binary_abspath(display_path) if compact_paths else display_path
-                    version_str = (installed.version or "unknown")[:15]
-                    provider = (installed.binprovider or "env")[:8]
-                    prnt(
-                        "",
-                        "[green]√[/green]",
-                        "",
-                        display_name.ljust(18),
-                        version_str.ljust(16),
-                        provider.ljust(8),
-                        rendered_path,
-                        overflow="ignore",
-                        crop=False,
-                    )
-                    any_available = True
-                    continue
-
-                status = (
-                    "[grey53]not recorded[/grey53]" if name in requested_names and installed is None else "[grey53]not installed[/grey53]"
-                )
-                prnt("", "[red]X[/red]", "", name.ljust(18), status, overflow="ignore", crop=False)
-                failures.append(name)
-
-            if not any_available:
-                prnt("", "[grey53]No binaries detected. Run [green]archivebox install[/green] to detect dependencies.[/grey53]")
-
-        # Show hint if no binaries are installed yet
-        has_any_installed = Binary.objects.filter(machine=machine).exclude(abspath="").exists()
-        if not has_any_installed:
+        except Exception as e:
             prnt()
-            prnt("", "[grey53]Run [green]archivebox install[/green] to detect and install dependencies.[/grey53]")
+            prnt("", f"[yellow]Warning: Could not query collection binary records, falling back to abxpkg state: {e}[/yellow]")
 
-    except Exception as e:
-        # Handle database errors gracefully (locked, missing, etc.)
-        prnt()
-        prnt("", f"[yellow]Warning: Could not query binaries from database: {e}[/yellow]")
-        prnt("", "[grey53]Run [green]archivebox init[/green] and [green]archivebox install[/green] to set up dependencies.[/grey53]")
-        failures.append("database")
+    binary_rows = {}
+    for plugin_name, plugin in plugins.items():
+        plugin_enabled = plugin_name in enabled_plugin_names
+        logical_records = get_required_binary_requests(
+            plugin,
+            plugin.config.required_binaries,
+            overrides=runtime_config,
+            derived_overrides=derived_config,
+            run_output_dir=CONSTANTS.DATA_DIR,
+        )
+        actual_records = get_required_binary_requests(
+            plugin,
+            plugin.config.required_binaries,
+            overrides=runtime_config,
+            derived_overrides=derived_config,
+            run_output_dir=CONSTANTS.DATA_DIR,
+            logical_names=False,
+        )
+        for logical_record, actual_record in zip(logical_records, actual_records, strict=False):
+            logical_name = str(logical_record["name"])
+            actual_name = str(actual_record["name"])
+            display_name = Path(actual_name).expanduser().name if ("/" in actual_name or actual_name.startswith("~")) else logical_name
+            if (
+                requested_names
+                and logical_name not in requested_names
+                and actual_name not in requested_names
+                and display_name not in requested_names
+            ):
+                continue
+            row = binary_rows.setdefault(
+                logical_name,
+                {
+                    "actual_record": actual_record,
+                    "display_name": display_name,
+                    "enabled": False,
+                },
+            )
+            if plugin_enabled:
+                row["actual_record"] = actual_record
+                row["display_name"] = display_name
+                row["enabled"] = True
+
+    if not binary_rows:
+        prnt("", "[grey53]No required binaries declared for discovered plugins.[/grey53]")
+    else:
+        any_available = False
+        compact_paths = console.is_terminal
+        for logical_name, row in sorted(binary_rows.items()):
+            binary_enabled = bool(row["enabled"])
+            installed = db_binaries.get(logical_name) if db_available else None
+            loaded = None
+
+            if _binary_record_matches_runtime(installed, config.LIB_DIR):
+                abspath = installed.abspath
+                version_str = (installed.version or "unknown")[:15]
+                provider = (installed.binprovider or "env")[:8]
+                valid = True
+            else:
+                loaded = load_binary(row["actual_record"])
+                abspath = str(loaded.loaded_abspath or "")
+                version_str = str(loaded.loaded_version or "unknown")[:15]
+                provider = (loaded.loaded_binprovider.name if loaded.loaded_binprovider else "env")[:8]
+                valid = loaded.is_valid
+
+            display_name = str(row["display_name"])
+            if valid:
+                display_path = (
+                    _format_binary_abspath(
+                        abspath,
+                        pwd=Path.cwd(),
+                        lib_dir=config.LIB_DIR,
+                        personas_dir=CONSTANTS.PERSONAS_DIR,
+                        home=Path.home(),
+                    )
+                    if compact_paths
+                    else abspath
+                )
+                rendered_path = _render_binary_abspath(display_path) if compact_paths else display_path
+                status = "[green]√[/green]" if binary_enabled else "[grey53]-[/grey53]"
+                prnt(
+                    "",
+                    status,
+                    "",
+                    display_name.ljust(18),
+                    version_str.ljust(16),
+                    provider.ljust(8),
+                    rendered_path,
+                    overflow="ignore",
+                    crop=False,
+                    style=None if binary_enabled else "dim",
+                )
+                any_available = True
+                continue
+
+            status = "[red]X[/red]" if binary_enabled else "[grey53]-[/grey53]"
+            prnt(
+                "",
+                status,
+                "",
+                display_name.ljust(18),
+                "[grey53]not installed[/grey53]",
+                overflow="ignore",
+                crop=False,
+                style=None if binary_enabled else "dim",
+            )
+            if binary_enabled:
+                failures.append(display_name)
+
+        if not any_available:
+            prnt("", "[grey53]No binaries detected. Run [green]archivebox install[/green] to detect dependencies.[/grey53]")
 
     if not binaries:
         # Show code and data locations
