@@ -88,8 +88,8 @@ RUN cp /VERSION.txt /ABX-DL-VERSION.txt \
     && echo "BUILD_START_TIME=$(date +"%Y-%m-%d %H:%M:%S %s") TZ=${TZ} LANG=${LANG}" \
     && uname -a \
     && sed -n '1,7p' /etc/os-release \
-    && which node \
-    && which uv \
+    && abxpkg load node \
+    && abxpkg load uv \
     ) | tee -a /VERSION.txt
 
 FROM archivebox-runtime-base AS archivebox-builder
@@ -178,7 +178,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
     && if [[ "$COMMIT_HASH" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "COMMIT_HASH=$COMMIT_HASH" | tee -a /VERSION.txt; fi \
     && /usr/bin/uv pip install --no-deps "$CODE_DIR" \
     && rm -f /venv/bin/uv /venv/bin/uvx \
-    && (/usr/bin/uv pip show archivebox && which archivebox) | tee -a /VERSION.txt
+    && /usr/bin/uv pip show archivebox | tee -a /VERSION.txt
 
 FROM archivebox-runtime-base
 
@@ -212,7 +212,7 @@ RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_ARCHIVEBOX_UID}..."
     && usermod --append --groups audio,video "$ARCHIVEBOX_USER" \
     && [[ "$(id -u "$ARCHIVEBOX_USER")" == "$DEFAULT_ARCHIVEBOX_UID" ]] || usermod -u "$DEFAULT_ARCHIVEBOX_UID" "$ARCHIVEBOX_USER" \
     && [[ "$(id -g "$ARCHIVEBOX_USER")" == "$DEFAULT_ARCHIVEBOX_GID" ]] || groupmod -g "$DEFAULT_ARCHIVEBOX_GID" "$ARCHIVEBOX_USER" \
-    && (which sonic && abxpkg load --binproviders=env sonic) | tee -a /VERSION.txt \
+    && abxpkg load sonic | tee -a /VERSION.txt \
     && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$CONFIG_DIR" "$ABXPKG_LIB_DIR" "$XDG_CACHE_HOME" "$PLAYWRIGHT_BROWSERS_PATH" \
     && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER" \
     && chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" \
@@ -239,12 +239,7 @@ RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chmod g+w "$TMP_DIR" "$ABXPKG_LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH"
 
 RUN --mount=type=cache,target=/tmp/abxpkg-cache,sharing=locked,mode=1777 \
-    abxpkg load --binproviders=env --min-version=149.0.0 "$ABXPKG_LIB_DIR/playwright/bin/chromium" | tee -a /VERSION.txt \
-    && abxpkg load --binproviders=env "$ABXPKG_LIB_DIR/uv/packages/papers-dl/venv/bin/papers-dl" | tee -a /VERSION.txt \
-    && abxpkg load --binproviders=env /usr/bin/rg | tee -a /VERSION.txt \
-    && abxpkg load --binproviders=env /usr/local/bin/sonic | tee -a /VERSION.txt \
-    && abxpkg load --binproviders=env /venv/bin/supervisord | tee -a /VERSION.txt \
-    && for forbidden_bin in gcc g++ make; do ! command -v "$forbidden_bin" || (echo "Unexpected build tool in runtime: $forbidden_bin=$(command -v "$forbidden_bin")" >&2 && exit 1); done \
+    for forbidden_bin in gcc g++ make; do ! abxpkg load --binproviders=env "$forbidden_bin" >/dev/null 2>&1 || (echo "Unexpected build tool in runtime: $forbidden_bin" >&2 && exit 1); done \
     && stat -c "%U:%G %a %n" "$CONFIG_DIR" "$ABXPKG_LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$CONFIG_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$ABXPKG_LIB_DIR" \
