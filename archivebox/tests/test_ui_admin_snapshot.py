@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core.paginator import UnorderedObjectListWarning
-from django.db import connection
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -39,11 +38,7 @@ def test_snapshot_admin_tag_editor_escapes_tag_json_script_breakout(admin_client
     tag = Tag.objects.create(name="legacy-safe-tag")
     snapshot.tags.add(tag)
     malicious_name = '</script><script id="archivebox-tag-xss">window.__archivebox_tag_xss__=1</script>'
-    with connection.cursor() as cursor:
-        cursor.execute(
-            f"UPDATE {Tag._meta.db_table} SET name = %s WHERE id = %s",
-            [malicious_name, str(tag.pk)],
-        )
+    Tag.objects.filter(pk=tag.pk).update(name=malicious_name)
 
     response = admin_client.get(reverse("admin:core_snapshot_change", args=[snapshot.pk]), HTTP_HOST=ADMIN_TEST_HOST)
     body = response.content

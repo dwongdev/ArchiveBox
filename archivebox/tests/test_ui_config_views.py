@@ -243,6 +243,37 @@ def test_live_config_value_view_renames_source_field_and_uses_plugin_definition_
     assert "abx_plugins/plugins/parse_dom_outlinks/config.json" in section["help_texts"]["Type"]
 
 
+def test_live_config_list_view_escapes_machine_config_values(admin_request, machine):
+    payload = '</code><script id="config-list-xss">window.__archivebox_config_list_xss__=1</script>'
+    machine.config = {"USER_AGENT": payload}
+    machine.save(update_fields=["config"])
+
+    context = core_views.live_config_list_view.__wrapped__(admin_request("/admin/environment/config/"))
+
+    keys = [str(item.link_item) for item in context["table"]["Key"]]
+    value_cell = str(context["table"]["Value"][keys.index("USER_AGENT")])
+    assert '<script id="config-list-xss">' not in value_cell
+    assert "&lt;/code&gt;&lt;script id=&quot;config-list-xss&quot;&gt;" in value_cell
+
+
+def test_live_config_value_view_escapes_machine_config_source_values(admin_request, machine):
+    payload = '</code><script id="config-value-xss">window.__archivebox_config_value_xss__=1</script>'
+    machine.config = {"USER_AGENT": payload}
+    machine.save(update_fields=["config"])
+
+    context = core_views.live_config_value_view.__wrapped__(
+        admin_request("/admin/environment/config/USER_AGENT/"),
+        key="USER_AGENT",
+    )
+    section = context["data"][0]
+
+    assert section["fields"]["Currently read from"] == "Machine"
+    assert section["fields"]["Value"] == payload
+    help_text = str(section["help_texts"]["Value"])
+    assert '<script id="config-value-xss">' not in help_text
+    assert "&lt;/code&gt;&lt;script id=&quot;config-value-xss&quot;&gt;" in help_text
+
+
 def test_find_config_source_prefers_machine_over_environment_and_file(monkeypatch, machine):
     monkeypatch.setenv("CHECK_SSL_VALIDITY", "false")
     machine.config = {"CHECK_SSL_VALIDITY": "true"}

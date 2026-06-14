@@ -6,7 +6,6 @@ from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 
 import pytest
-from django.db import connection
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -40,14 +39,10 @@ class TestLiveProgressView:
 
         Crawl.objects.filter(pk=crawl.pk).update(
             status=Crawl.StatusChoices.STARTED,
+            config={"CRAWL_MAX_URLS": "not-an-integer"},
             retry_at=timezone.now(),
             modified_at=timezone.now(),
         )
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"UPDATE {Crawl._meta.db_table} SET created_at = %s WHERE id = %s",
-                ["not-a-date", str(crawl.pk)],
-            )
 
         client.force_login(admin_user)
         response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_TEST_HOST)

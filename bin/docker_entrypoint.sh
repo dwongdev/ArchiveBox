@@ -38,7 +38,6 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$LIB_DIR/playwright
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$LIB_DIR/cache}"
 export ABXBUS_CACHE_DIR="${ABXBUS_CACHE_DIR:-$XDG_CACHE_HOME/abxbus}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
-export PNPM_HOME="${PNPM_HOME:-$XDG_CACHE_HOME/pnpm}"
 
 # Global default uid/gid used when /data is empty or root-owned.
 export DEFAULT_ARCHIVEBOX_UID="${DEFAULT_ARCHIVEBOX_UID:-911}"
@@ -212,7 +211,6 @@ ensure_dir "/home/$ARCHIVEBOX_USER"
 ensure_small_runtime_tree "$ABXBUS_CACHE_DIR"
 ensure_small_runtime_tree "$ABXBUS_CACHE_DIR/semaphores"
 ensure_small_runtime_tree "$UV_CACHE_DIR"
-ensure_small_runtime_tree "$PNPM_HOME"
 ensure_runtime_tree "$PLAYWRIGHT_BROWSERS_PATH"
 ensure_runtime_tmp_tree
 ensure_runtime_tree "$LIB_DIR"

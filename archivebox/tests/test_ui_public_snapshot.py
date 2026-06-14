@@ -6,7 +6,6 @@ import time
 
 import pytest
 import requests
-from django.db import connection
 from django.test import override_settings
 
 from archivebox.core.middleware import ADMIN_LOGIN_HINT_COOKIE
@@ -295,21 +294,23 @@ class TestPublicIndex:
         )
         tag = Tag.objects.create(name="safe-tag-before-raw-sql")
         snapshot.tags.add(tag)
+        snapshot_archive_path = snapshot.archive_path
 
         title_payload = "</script><script id=public-title-xss>window.__archivebox_public_title_xss__=1</script>"
         tag_payload = "</script><script id=public-tag-xss>window.__archivebox_public_tag_xss__=1</script>"
-        with connection.cursor() as cursor:
-            cursor.execute(f"UPDATE {Snapshot._meta.db_table} SET title = %s WHERE id = %s", [title_payload, str(snapshot.pk)])
-            cursor.execute(f"UPDATE {Tag._meta.db_table} SET name = %s WHERE id = %s", [tag_payload, str(tag.pk)])
+        url_payload = "https://public-xss.example/</script><script id=public-url-xss>window.__archivebox_public_url_xss__=1</script>"
+        Snapshot.objects.filter(pk=snapshot.pk).update(title=title_payload, url=url_payload)
+        Tag.objects.filter(pk=tag.pk).update(name=tag_payload)
 
         public_index = client.get("/public/", HTTP_HOST=WEB_TEST_HOST)
-        snapshot_detail = client.get(f"/{snapshot.archive_path}/index.html", HTTP_HOST=WEB_TEST_HOST)
+        snapshot_detail = client.get(f"/{snapshot_archive_path}/index.html", HTTP_HOST=WEB_TEST_HOST)
 
         assert public_index.status_code == 200
         assert snapshot_detail.status_code == 200
         for response in (public_index, snapshot_detail):
             assert b"<script id=public-title-xss>" not in response.content
             assert b"<script id=public-tag-xss>" not in response.content
+            assert b"<script id=public-url-xss>" not in response.content
             assert b"&lt;/script&gt;&lt;script id=public-tag-xss&gt;" in response.content
         assert b"&lt;/script&gt;&lt;script id=public-title-xss&gt;" in public_index.content
         assert b"window.__archivebox_public_title_xss__=1" in snapshot_detail.content

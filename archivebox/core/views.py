@@ -11,7 +11,7 @@ from urllib.parse import quote, urlparse
 
 from django.shortcuts import render, redirect
 from django.http import HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
@@ -571,37 +571,43 @@ class SnapshotView(View):
                 # Snapshot dir exists but file within does not e.g. 124235.324234/screenshot.png
                 return HttpResponse(
                     format_html(
-                        (
-                            "<html><head>"
-                            "<title>Snapshot Not Found</title>"
-                            #'<script>'
-                            #'setTimeout(() => { window.location.reload(); }, 5000);'
-                            #'</script>'
-                            "</head><body>"
-                            "<center><br/><br/><br/>"
-                            f'Snapshot <a href="/{snapshot.archive_path}/index.html" target="_top"><b><code>[{snapshot.timestamp}]</code></b></a>: <a href="{snapshot.url}" target="_blank" rel="noreferrer">{snapshot.url}</a><br/>'
-                            f"was queued on {str(snapshot.bookmarked_at).split('.')[0]}, "
-                            f'but no files have been saved yet in:<br/><b><a href="/{snapshot.archive_path}/" target="_top"><code>{snapshot.timestamp}</code></a><code>/'
-                            "{}"
-                            f"</code></b><br/><br/>"
-                            "It's possible {} "
-                            f"during the last capture on {str(snapshot.bookmarked_at).split('.')[0]},<br/>or that the archiving process has not completed yet.<br/>"
-                            f"<pre><code># run this cmd to finish/retry archiving this Snapshot</code><br/>"
-                            f'<code style="user-select: all; color: #333">archivebox update -t timestamp {snapshot.timestamp}</code></pre><br/><br/>'
-                            '<div class="text-align: left; width: 100%; max-width: 400px">'
-                            "<i><b>Next steps:</i></b><br/>"
-                            f'- list all the <a href="/{snapshot.archive_path}/" target="_top">Snapshot files <code>.*</code></a><br/>'
-                            f'- view the <a href="/{snapshot.archive_path}/index.html" target="_top">Snapshot <code>./index.html</code></a><br/>'
-                            f'- go to the <a href="/admin/core/snapshot/{snapshot.pk}/change/" target="_top">Snapshot admin</a> to edit<br/>'
-                            f'- go to the <a href="/admin/core/snapshot/?id__exact={snapshot.id}" target="_top">Snapshot actions</a> to re-archive<br/>'
-                            '- or return to <a href="/" target="_top">the main index...</a></div>'
-                            "</center>"
-                            "</body></html>"
-                        ),
+                        """
+                        <html><head>
+                        <title>Snapshot Not Found</title>
+                        </head><body>
+                        <center><br/><br/><br/>
+                        Snapshot <a href="/{}/index.html" target="_top"><b><code>[{}]</code></b></a>: <a href="{}" target="_blank" rel="noreferrer">{}</a><br/>
+                        was queued on {}, but no files have been saved yet in:<br/><b><a href="/{}/" target="_top"><code>{}</code></a><code>/{}</code></b><br/><br/>
+                        It's possible {} during the last capture on {},<br/>or that the archiving process has not completed yet.<br/>
+                        <pre><code># run this cmd to finish/retry archiving this Snapshot</code><br/>
+                        <code style="user-select: all; color: #333">archivebox update -t timestamp {}</code></pre><br/><br/>
+                        <div class="text-align: left; width: 100%; max-width: 400px">
+                        <i><b>Next steps:</i></b><br/>
+                        - list all the <a href="/{}/" target="_top">Snapshot files <code>.*</code></a><br/>
+                        - view the <a href="/{}/index.html" target="_top">Snapshot <code>./index.html</code></a><br/>
+                        - go to the <a href="/admin/core/snapshot/{}/change/" target="_top">Snapshot admin</a> to edit<br/>
+                        - go to the <a href="/admin/core/snapshot/?id__exact={}" target="_top">Snapshot actions</a> to re-archive<br/>
+                        - or return to <a href="/" target="_top">the main index...</a></div>
+                        </center>
+                        </body></html>
+                        """,
+                        snapshot.archive_path,
+                        snapshot.timestamp,
+                        snapshot.url,
+                        snapshot.url,
+                        str(snapshot.bookmarked_at).split(".")[0],
+                        snapshot.archive_path,
+                        snapshot.timestamp,
                         archivefile if str(archivefile) != "None" else "",
                         f"the {archivefile} resource could not be fetched"
                         if str(archivefile) != "None"
                         else "the original site was not available",
+                        str(snapshot.bookmarked_at).split(".")[0],
+                        snapshot.timestamp,
+                        snapshot.archive_path,
+                        snapshot.archive_path,
+                        snapshot.pk,
+                        snapshot.id,
                     ),
                     content_type="text/html",
                     status=404,
@@ -1524,15 +1530,17 @@ class AddView(UserPassesTestMixin, FormView):
         schedule = form.cleaned_data.get("schedule", "").strip()
         rough_url_count = len([url for url in urls.splitlines() if url.strip()])
 
-        # Build success message with schedule link if created
         schedule_msg = ""
         if schedule and crawl.schedule_id:
-            schedule_msg = f" and <a href='{crawl.schedule.admin_change_url}'>scheduled to repeat {schedule}</a>"
+            schedule_msg = format_html(" and <a href='{}'>scheduled to repeat {}</a>", crawl.schedule.admin_change_url, schedule)
 
         messages.success(
             self.request,
-            mark_safe(
-                f"Created crawl with {rough_url_count} starting URL(s){schedule_msg}. Snapshots will be created and archived in the background. <a href='{crawl.admin_change_url}'>View Crawl →</a>",
+            format_html(
+                "Created crawl with {} starting URL(s){}. Snapshots will be created and archived in the background. <a href='{}'>View Crawl →</a>",
+                rough_url_count,
+                schedule_msg,
+                crawl.admin_change_url,
             ),
         )
 
@@ -1670,7 +1678,7 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
 
             # Use merged config value (includes machine overrides)
             actual_value = merged_config.get(key, dict(section)[key])
-            rows["Value"].append(mark_safe(f"<code>{actual_value}</code>"))
+            rows["Value"].append(format_html("<code>{}</code>", actual_value))
 
             # Show where the value comes from
             source = find_config_source(key, merged_config)
@@ -1678,8 +1686,10 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
             rows["Source"].append(format_html('<code style="color: {}">{}</code>', source_colors.get(source, "gray"), source))
 
             rows["Default"].append(
-                mark_safe(
-                    f'<a href="https://github.com/search?q=repo%3AArchiveBox%2FArchiveBox+path%3Aconfig+{key}&type=code"><code style="text-decoration: underline">{find_config_default(key) or "See here..."}</code></a>',
+                format_html(
+                    '<a href="https://github.com/search?q=repo%3AArchiveBox%2FArchiveBox+path%3Aconfig+{}&type=code"><code style="text-decoration: underline">{}</code></a>',
+                    key,
+                    find_config_default(key) or "See here...",
                 ),
             )
             # rows['Documentation'].append(mark_safe(f'Wiki: <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#{key.lower()}">{key}</a>'))
@@ -1693,8 +1703,10 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
         rows["Value"].append(format_html("<code>{}</code>", redact_sensitive_config(CONSTANTS_CONFIG).get(key)))
         rows["Source"].append(mark_safe('<code style="color: gray">Constant</code>'))
         rows["Default"].append(
-            mark_safe(
-                f'<a href="https://github.com/search?q=repo%3AArchiveBox%2FArchiveBox+path%3Aconfig+{key}&type=code"><code style="text-decoration: underline">{find_config_default(key) or "See here..."}</code></a>',
+            format_html(
+                '<a href="https://github.com/search?q=repo%3AArchiveBox%2FArchiveBox+path%3Aconfig+{}&type=code"><code style="text-decoration: underline">{}</code></a>',
+                key,
+                find_config_default(key) or "See here...",
             ),
         )
         # rows['Documentation'].append(mark_safe(f'Wiki: <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#{key.lower()}">{key}</a>'))
@@ -1748,25 +1760,56 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
     is_redacted = final_value == SENSITIVE_CONFIG_VALUE_REDACTED
 
     # Build sources display
-    sources_html = "<br/>".join([f'<b style="color: {color}">{source}:</b> <code>{value}</code>' for source, value, color in sources_info])
+    sources_html = format_html_join(
+        mark_safe("<br/>"),
+        '<b style="color: {}">{}:</b> <code>{}</code>',
+        ((color, source, value) for source, value, color in sources_info),
+    )
 
     # aliases = USER_CONFIG.get(key, {}).get("aliases", [])
     aliases = []
 
     if key in CONSTANTS_CONFIG:
-        section_header = mark_safe(
-            f'[CONSTANTS]   &nbsp; <b><code style="color: lightgray">{key}</code></b> &nbsp; <small>(read-only, hardcoded by ArchiveBox)</small>',
+        section_header = format_html(
+            '[CONSTANTS]   &nbsp; <b><code style="color: lightgray">{}</code></b> &nbsp; <small>(read-only, hardcoded by ArchiveBox)</small>',
+            key,
         )
     elif key in merged_config:
-        section_header = mark_safe(
-            f'data / ArchiveBox.conf &nbsp; [{find_config_section(key)}]  &nbsp; <b><code style="color: lightgray">{key}</code></b>',
+        section_header = format_html(
+            'data / ArchiveBox.conf &nbsp; [{}]  &nbsp; <b><code style="color: lightgray">{}</code></b>',
+            find_config_section(key),
+            key,
         )
     else:
-        section_header = mark_safe(
-            f'[DYNAMIC CONFIG]   &nbsp; <b><code style="color: lightgray">{key}</code></b> &nbsp; <small>(read-only, calculated at runtime)</small>',
+        section_header = format_html(
+            '[DYNAMIC CONFIG]   &nbsp; <b><code style="color: lightgray">{}</code></b> &nbsp; <small>(read-only, calculated at runtime)</small>',
+            key,
         )
 
     definition_url, definition_label = get_config_definition_link(key)
+    redacted_message = (
+        mark_safe(
+            '<b style="color: red">Value is redacted for your security. (Passwords, secrets, API tokens, etc. cannot be viewed in the Web UI)</b><br/><br/>',
+        )
+        if is_redacted
+        else ""
+    )
+    default_command_value = val.strip("'") if (val := find_config_default(key)) else str(final_value).strip("'")
+    machine_config_link = (
+        format_html('<br/><a href="{}">→ Edit <code>{}</code> in Machine.config for this server</a>', machine_admin_url, key)
+        if machine_admin_url
+        else ""
+    )
+    machine_config_tip = (
+        format_html(
+            '<br/><b>Tip:</b> To override <code>{}</code> on this machine, <a href="{}">edit the Machine.config field</a> and add:<br/><code>{}</code>',
+            key,
+            machine_admin_url,
+            f'{{"{key}": "your_value_here"}}',
+        )
+        if machine_admin_url and key not in CONSTANTS_CONFIG
+        else ""
+    )
 
     section_data = cast(
         SectionData,
@@ -1780,50 +1823,65 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
                 "Currently read from": config_source,
             },
             "help_texts": {
-                "Key": mark_safe(f"""
-                <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#{key.lower()}">Documentation</a>  &nbsp;
-                <span style="display: {"inline" if aliases else "none"}">
-                    Aliases: {", ".join(aliases)}
+                "Key": format_html(
+                    """
+                <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#{}">Documentation</a>  &nbsp;
+                <span style="display: {}">
+                    Aliases: {}
                 </span>
-            """),
-                "Type": mark_safe(f'''
-                <a href="{definition_url}" target="_blank" rel="noopener noreferrer">
-                    See full definition in <code>{definition_label}</code>...
+            """,
+                    key.lower(),
+                    "inline" if aliases else "none",
+                    ", ".join(aliases),
+                ),
+                "Type": format_html(
+                    """
+                <a href="{}" target="_blank" rel="noopener noreferrer">
+                    See full definition in <code>{}</code>...
                 </a>
-            '''),
-                "Value": mark_safe(f'''
-                {
-                    '<b style="color: red">Value is redacted for your security. (Passwords, secrets, API tokens, etc. cannot be viewed in the Web UI)</b><br/><br/>'
-                    if is_redacted
-                    else ""
-                }
+            """,
+                    definition_url,
+                    definition_label,
+                ),
+                "Value": format_html(
+                    """
+                {}
                 <br/><hr/><br/>
                 <b>Configuration Sources (highest priority first):</b><br/><br/>
-                {sources_html}
+                {}
                 <br/><br/>
-                <p style="display: {"block" if key in merged_config and key not in CONSTANTS_CONFIG else "none"}">
+                <p style="display: {}">
                     <i>To change this value, edit <code>data/ArchiveBox.conf</code> or run:</i>
                     <br/><br/>
-                    <code>archivebox config --set {key}="{
-                    val.strip("'") if (val := find_config_default(key)) else str(final_value).strip("'")
-                }"</code>
+                    <code>archivebox config --set {}="{}"</code>
                 </p>
-            '''),
-                "Currently read from": mark_safe(f"""
-                The value shown in the "Value" field comes from the <b>{config_source}</b> source.
+            """,
+                    redacted_message,
+                    sources_html,
+                    "block" if key in merged_config and key not in CONSTANTS_CONFIG else "none",
+                    key,
+                    default_command_value,
+                ),
+                "Currently read from": format_html(
+                    """
+                The value shown in the "Value" field comes from the <b>{}</b> source.
                 <br/><br/>
                 Priority order (highest to lowest):
                 <ol>
                     <li><b style="color: purple">Machine</b> - Machine-specific overrides
-                        {f'<br/><a href="{machine_admin_url}">→ Edit <code>{key}</code> in Machine.config for this server</a>' if machine_admin_url else ""}
+                        {}
                     </li>
                     <li><b style="color: blue">Environment</b> - process defaults from environment variables</li>
                     <li><b style="color: green">File</b> - data/ArchiveBox.conf</li>
                     <li><b style="color: gray">Plugin Default</b> - Default value from plugin config.json</li>
                     <li><b style="color: gray">Default</b> - Default value from code</li>
                 </ol>
-                {f'<br/><b>Tip:</b> To override <code>{key}</code> on this machine, <a href="{machine_admin_url}">edit the Machine.config field</a> and add:<br/><code>{{"\\"{key}\\": "your_value_here"}}</code>' if machine_admin_url and key not in CONSTANTS_CONFIG else ""}
-            """),
+                {}
+            """,
+                    config_source,
+                    machine_config_link,
+                    machine_config_tip,
+                ),
             },
         },
     )

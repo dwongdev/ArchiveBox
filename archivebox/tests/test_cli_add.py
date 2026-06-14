@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 import pytest
-from django.db import connection
 from django.utils import timezone
 
 from archivebox.core.models import ArchiveResult, Snapshot, SnapshotTag
@@ -374,8 +373,8 @@ def test_add_rejects_file_path_and_shell_injection_payloads(initialized_archive)
 
 
 @pytest.mark.timeout(180)
-def test_run_rejects_file_url_injected_directly_into_crawl_urls_with_sql(initialized_archive):
-    """Runner must validate Crawl.urls again when SQL bypasses normal add/create paths."""
+def test_run_rejects_file_url_injected_directly_into_crawl_urls_with_db_update(initialized_archive):
+    """Runner must validate Crawl.urls again when DB writes bypass normal add/create paths."""
     secret_url = "https://example.com/?archivebox-sql-crawl-file-secret=1"
     local_source = initialized_archive / "not_owned_by_crawl_urls.txt"
     local_source.write_text(f"{secret_url}\n", encoding="utf-8")
@@ -391,11 +390,7 @@ def test_run_rejects_file_url_injected_directly_into_crawl_urls_with_sql(initial
             retry_at=timezone.now(),
         )
         bad_jsonl = json.dumps({"type": "CrawlSeed", "url": file_url, "depth": 0, "tags": "sql-file-url"})
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"UPDATE {Crawl._meta.db_table} SET urls = %s WHERE id = %s",
-                [bad_jsonl, crawl.id.hex],
-            )
+        Crawl.objects.filter(pk=crawl.pk).update(urls=bad_jsonl)
 
     result = run_archivebox_cmd(
         ["run", f"--crawl-id={crawl.id}"],
@@ -415,7 +410,7 @@ def test_run_rejects_file_url_injected_directly_into_crawl_urls_with_sql(initial
 
 
 @pytest.mark.timeout(180)
-def test_run_rejects_depth_two_file_url_snapshot_injected_directly_with_sql(initialized_archive):
+def test_run_rejects_depth_two_file_url_snapshot_injected_directly_with_db_update(initialized_archive):
     """A queued Snapshot row with a file:// URL must not be allowed to run hooks or recurse."""
     secret_url = "https://example.com/?archivebox-sql-depth2-file-secret=1"
     local_source = initialized_archive / "not_owned_by_depth_two_snapshot.txt"
@@ -446,11 +441,7 @@ def test_run_rejects_depth_two_file_url_snapshot_injected_directly_with_sql(init
             status=Snapshot.StatusChoices.QUEUED,
             retry_at=timezone.now(),
         )
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"UPDATE {Snapshot._meta.db_table} SET url = %s WHERE id = %s",
-                [file_url, injected_snapshot.id.hex],
-            )
+        Snapshot.objects.filter(pk=injected_snapshot.pk).update(url=file_url)
 
     result = run_archivebox_cmd(
         ["run", f"--snapshot-id={injected_snapshot.id}"],
