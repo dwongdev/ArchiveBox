@@ -5,7 +5,6 @@ IFS=$'\n\t'
 
 ARCHIVEBOX_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_DIR="$(cd "${ARCHIVEBOX_REPO}/.." && pwd)"
-PYPI_USERNAME="${PYPI_USERNAME:-__token__}"
 PYPI_WAIT_ATTEMPTS="${PYPI_WAIT_ATTEMPTS:-90}"
 DOCKER_IMAGE_REPOS="${DOCKER_IMAGE_REPOS:-archivebox/archivebox ghcr.io/archivebox/archivebox}"
 
@@ -175,7 +174,7 @@ commit_push_publish() {
         if pypi_has_release "$package" "$version"; then
             echo "[*] ${package}==${version} is already on PyPI; skipping upload."
         else
-            uv --no-cache publish --username="${PYPI_USERNAME}" dist/*
+            uv --no-cache publish --trusted-publishing always dist/*
         fi
     )
 }

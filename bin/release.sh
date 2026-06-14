@@ -384,7 +384,6 @@ create_release() {
 
 publish_artifacts() {
     local version="$1"
-    local pypi_token="${UV_PUBLISH_TOKEN:-${PYPI_TOKEN:-${PYPI_PAT_SECRET:-}}}"
     local artifact_prefix="${PYPI_PACKAGE//-/_}"
     local artifacts=()
     local dist_dir
@@ -406,11 +405,7 @@ publish_artifacts() {
             return 1
         fi
 
-        if [[ -n "${pypi_token}" ]]; then
-            UV_PUBLISH_TOKEN="${pypi_token}" uv publish --username=__token__ "${artifacts[@]}"
-        else
-            uv publish --trusted-publishing always "${artifacts[@]}"
-        fi
+        uv publish --trusted-publishing always "${artifacts[@]}"
     fi
 
     wait_for_pypi "${PYPI_PACKAGE}" "${version}"

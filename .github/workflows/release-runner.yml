@@ -50,7 +50,6 @@ jobs:
         env:
           DEFAULT_BRANCH: dev
           GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN || github.token }}
-          PYPI_PAT_SECRET: ${{ secrets.PYPI_PAT_SECRET }}
         run: ./bin/release.sh
 
       - name: Dispatch image and tap updates
