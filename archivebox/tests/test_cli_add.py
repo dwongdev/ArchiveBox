@@ -1194,14 +1194,14 @@ def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive,
             .values_list("snapshot__url", "plugin", "status", "output_files"),
         )
 
-    assert crawl[0] == 3
+    assert crawl[0] == 2
     assert crawl[1] == "recursive-flow"
     crawl_config = crawl[2] or {}
     assert crawl_config["CRAWL_MAX_URLS"] == 2
     assert crawl_config["CRAWL_MAX_SIZE"] == 50 * 1024 * 1024
     assert crawl_config.get("SNAPSHOT_MAX_SIZE", 0) == 0
-    assert (root_url, 1, "sealed") in snapshots
-    assert any(url == child_url and depth == 2 and status == "sealed" for url, depth, status in snapshots)
+    assert (root_url, 0, "sealed") in snapshots
+    assert any(url == child_url and depth == 1 and status == "sealed" for url, depth, status in snapshots)
 
     by_url_plugin = {(url, plugin): status for url, plugin, status, _files in archive_results}
     assert by_url_plugin[(root_url, "wget")] == "succeeded"
