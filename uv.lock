@@ -13,11 +13,11 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-09T16:29:09.116191967Z"
+exclude-newer = "2026-06-09T16:35:04.712508398Z"
 exclude-newer-span = "P5D"
 
 [options.exclude-newer-package]
-abxbus = { timestamp = "2026-06-14T16:29:08.116205753Z", span = "PT1S" }
+abxbus = { timestamp = "2026-06-14T16:35:03.712521428Z", span = "PT1S" }
 abx-plugins = "2100-01-01T00:00:00Z"
 abx-dl = "2100-01-01T00:00:00Z"
 abxpkg = "2100-01-01T00:00:00Z"
@@ -40,6 +40,9 @@ dependencies = [
     { name = "rich-click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0b/fe/b5f4af5032762d529d8ed12ac8ba52673704c77c12a6654143cda9c5c8b3/abx_dl-1.11.223.tar.gz", hash = "sha256:e9c1230342995f141125a27dfdac6359423e39bb5498fbebfae0d2117b60935c", size = 83012, upload-time = "2026-06-14T16:29:07.945Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f9/78/03348f6eb46d6988727f7800f3dd5d21495d0f1b326ecbab6e70b2867b58/abx_dl-1.11.223-py3-none-any.whl", hash = "sha256:115e04d7ef9fd7fd4d28c5bc752f0047222213cc829ffed2d90bcb23cbb4cc40", size = 87187, upload-time = "2026-06-14T16:29:08.918Z" },
+]
 
 [[package]]
 name = "abx-plugins"
@@ -121,7 +124,7 @@ wheels = [
 
 [[package]]
 name = "archivebox"
-version = "0.9.35rc36"
+version = "0.9.35rc37"
 source = { editable = "." }
 dependencies = [
     { name = "abx-dl", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -219,10 +222,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "abx-dl", specifier = ">=1.11.222" },
-    { name = "abx-plugins", specifier = ">=1.11.222" },
+    { name = "abx-dl", specifier = ">=1.11.223" },
+    { name = "abx-plugins", specifier = ">=1.11.223" },
     { name = "abxbus", specifier = "==2.5.10" },
-    { name = "abxpkg", specifier = ">=1.11.218" },
+    { name = "abxpkg", specifier = ">=1.11.219" },
     { name = "archivebox", extras = ["sonic", "ldap", "debug"], marker = "extra == 'all'" },
     { name = "atomicwrites", specifier = "==1.4.1" },
     { name = "base32-crockford", specifier = ">=0.3.0" },
