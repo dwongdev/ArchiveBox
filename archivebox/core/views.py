@@ -52,6 +52,7 @@ from archivebox.misc.util import (
     base_url,
     filter_queryset_by_uuid_substring,
     htmlencode,
+    sanitize_html_text,
     ts_to_date_str,
     urldecode,
     validate_url,
@@ -1491,7 +1492,7 @@ class AddView(UserPassesTestMixin, FormView):
             config=config,
         )
         if notes:
-            crawl.safe_update({"notes": notes}, refresh=False)
+            crawl.safe_update({"notes": sanitize_html_text(notes)}, refresh=False)
         if permissions and crawl.config.get("PERMISSIONS") != permissions:
             next_config = {**crawl.config, "PERMISSIONS": permissions}
             crawl.safe_update({"config": next_config}, refresh=True)

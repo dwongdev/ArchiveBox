@@ -40,6 +40,16 @@ class TagEditorWidget(forms.Widget):
             normalized = f"t_{normalized}"
         return normalized
 
+    def _json_for_inline_script(self, value):
+        """Serialize JSON so it cannot close the surrounding inline <script> tag."""
+        return json.dumps(value).translate(
+            {
+                ord(">"): "\\u003E",
+                ord("<"): "\\u003C",
+                ord("&"): "\\u0026",
+            },
+        )
+
     def _tag_style(self, value):
         """Compute a stable pastel color style for a tag value."""
         tag = (value or "").strip().lower()
@@ -106,6 +116,8 @@ class TagEditorWidget(forms.Widget):
                 </span>
             '''
 
+        tags_json = self._json_for_inline_script(tags)
+
         # Build the widget HTML
         html = f'''
         <div id="{widget_id}_container" class="tag-editor-container" onclick="focusTagInput_{widget_id}(event)">
@@ -128,7 +140,7 @@ class TagEditorWidget(forms.Widget):
 
         <script>
         (function() {{
-            var currentTags_{widget_id} = {json.dumps(tags)};
+            var currentTags_{widget_id} = {tags_json};
             var autocompleteTimeout_{widget_id} = null;
 
             window.focusTagInput_{widget_id} = function(event) {{

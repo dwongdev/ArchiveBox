@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from django.conf import settings
 from django.db.models import CharField, Count, Q, Sum
 from django.db.models.functions import Cast
 from django.http import HttpResponse, JsonResponse
@@ -935,27 +936,26 @@ def live_progress_view(request):
         except ImportError:
             return JsonResponse(payload)
     except Exception as e:
-        import traceback
+        error_payload = {
+            "error": str(e),
+            "orchestrator_running": False,
+            "total_workers": 0,
+            "crawls_active": 0,
+            "crawls_queued": 0,
+            "crawls_recent": 0,
+            "snapshots_active": 0,
+            "snapshots_queued": 0,
+            "archiveresults_active": 0,
+            "archiveresults_queued": 0,
+            "downloads_active": 0,
+            "downloads_queued": 0,
+            "indexing_active": 0,
+            "indexing_queued": 0,
+            "active_crawls": [],
+            "server_time": timezone.now().isoformat(),
+        }
+        if settings.DEBUG:
+            import traceback
 
-        return JsonResponse(
-            {
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "orchestrator_running": False,
-                "total_workers": 0,
-                "crawls_active": 0,
-                "crawls_queued": 0,
-                "crawls_recent": 0,
-                "snapshots_active": 0,
-                "snapshots_queued": 0,
-                "archiveresults_active": 0,
-                "archiveresults_queued": 0,
-                "downloads_active": 0,
-                "downloads_queued": 0,
-                "indexing_active": 0,
-                "indexing_queued": 0,
-                "active_crawls": [],
-                "server_time": timezone.now().isoformat(),
-            },
-            status=500,
-        )
+            error_payload["traceback"] = traceback.format_exc()
+        return JsonResponse(error_payload, status=500)

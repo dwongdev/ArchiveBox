@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core.paginator import UnorderedObjectListWarning
+from django.db import connection
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -30,6 +31,49 @@ def test_snapshot_changelist_uses_stable_ordering_without_unordered_paginator_wa
     assert response.context["cl"].queryset.query.order_by[0] == "-created_at"
     assert b"archivebox-search-stream-status" in response.content
     assert b"Searching matching snapshots..." in response.content
+
+
+def test_snapshot_admin_tag_editor_escapes_tag_json_script_breakout(admin_client, snapshot):
+    from archivebox.core.models import Tag
+
+    tag = Tag.objects.create(name="legacy-safe-tag")
+    snapshot.tags.add(tag)
+    malicious_name = '</script><script id="archivebox-tag-xss">window.__archivebox_tag_xss__=1</script>'
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"UPDATE {Tag._meta.db_table} SET name = %s WHERE id = %s",
+            [malicious_name, str(tag.pk)],
+        )
+
+    response = admin_client.get(reverse("admin:core_snapshot_change", args=[snapshot.pk]), HTTP_HOST=ADMIN_TEST_HOST)
+    body = response.content
+
+    assert response.status_code == 200
+    assert malicious_name.encode() not in body
+    assert b'<script id="archivebox-tag-xss">' not in body
+    assert b'\\u003C/script\\u003E\\u003Cscript id=\\"archivebox-tag-xss\\"\\u003E' in body
+    assert b"&lt;/script&gt;&lt;script id=&quot;archivebox-tag-xss&quot;&gt;" in body
+
+
+def test_snapshot_admin_archive_results_escape_extractor_output(admin_client, snapshot):
+    from archivebox.core.models import ArchiveResult
+
+    payload = '<img src=x onerror="window.__archivebox_archiveresult_xss__=1">'
+    ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="title",
+        hook_name="on_Snapshot__54_title.js",
+        status=ArchiveResult.StatusChoices.SUCCEEDED,
+        output_str=payload,
+    )
+
+    response = admin_client.get(reverse("admin:core_snapshot_change", args=[snapshot.pk]), HTTP_HOST=ADMIN_TEST_HOST)
+    body = response.content
+
+    assert response.status_code == 200
+    assert payload.encode() not in body
+    assert b'<img src=x onerror="window.__archivebox_archiveresult_xss__=1">' not in body
+    assert b"&lt;img src=x onerror=&quot;window.__archivebox_archiveresult_xss__=1&quot;&gt;" in body
 
 
 def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):

@@ -5,6 +5,7 @@ Verify init creates correct database schema, filesystem structure, and config.
 """
 
 import pytest
+import subprocess
 from django.utils import timezone
 from django.db import connections
 from django.db.migrations.recorder import MigrationRecorder
@@ -14,6 +15,7 @@ from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Machine
 from archivebox.tests.conftest import run_queued_crawls, run_archivebox_cmd, cli_env
+from archivebox.tests.conftest import _set_test_source_pythonpath
 
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
@@ -127,6 +129,23 @@ def test_init_sets_correct_file_permissions(tmp_path):
     # Check directory permissions
     archive_dir = tmp_path / "archive"
     assert oct(archive_dir.stat().st_mode)[-3:] in (get_config().OUTPUT_PERMISSIONS, DIR_PERMISSIONS)
+
+
+def test_init_creates_database_with_archivebox_permissions_despite_permissive_umask(tmp_path):
+    """SQLite must create index.sqlite3 with ArchiveBox's restrictive mode from first open."""
+    env = cli_env(disable_extractors=True)
+    _set_test_source_pythonpath(env)
+    result = subprocess.run(
+        ["bash", "-lc", "umask 000; archivebox init"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert oct((tmp_path / "index.sqlite3").stat().st_mode)[-3:] == get_config().OUTPUT_PERMISSIONS
 
 
 def test_init_is_idempotent(tmp_path):

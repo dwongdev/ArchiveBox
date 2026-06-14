@@ -41,6 +41,12 @@ def setup_django(check_db=False, in_memory_db=False) -> None:
         # TODO: figure out why CLI entrypoints with init_pending are running this twice sometimes
         return
 
+    # SQLite creates index.sqlite3 during django.setup()/migrate. Apply the
+    # ArchiveBox file-mode policy before any DB connection can create the file,
+    # otherwise a permissive parent umask can expose a just-created DB until a
+    # later chmod runs.
+    os.umask(0o777 - (int(CONFIG.OUTPUT_PERMISSIONS, base=8) | 0o111))
+
     # Third-party patches are only needed once Django/apps are about to load.
     # Keeping them out of archivebox.__init__ avoids paying Django/Daphne setup
     # cost for cheap CLI startup paths like `archivebox <cmd> --help`.

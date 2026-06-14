@@ -6,6 +6,7 @@ import time
 
 import pytest
 import requests
+from django.db import connection
 from django.test import override_settings
 
 from archivebox.core.middleware import ADMIN_LOGIN_HINT_COOKIE
@@ -279,6 +280,39 @@ class TestPublicIndex:
         assert b"Public Snapshot" in response.content
         assert b"Unlisted Snapshot" not in response.content
         assert b"Private Snapshot" not in response.content
+
+    @override_settings(PUBLIC_INDEX=True)
+    def test_public_snapshot_surfaces_escape_legacy_raw_title_and_tag_values(self, client, admin_user):
+        from archivebox.core.models import Snapshot, Tag
+        from archivebox.crawls.models import Crawl
+
+        crawl = Crawl.objects.create(urls="https://public-xss.example", created_by=admin_user, config={"PERMISSIONS": "public"})
+        snapshot = Snapshot.objects.create(
+            url="https://public-xss.example",
+            title="Safe title before raw SQL",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.SEALED,
+        )
+        tag = Tag.objects.create(name="safe-tag-before-raw-sql")
+        snapshot.tags.add(tag)
+
+        title_payload = "</script><script id=public-title-xss>window.__archivebox_public_title_xss__=1</script>"
+        tag_payload = "</script><script id=public-tag-xss>window.__archivebox_public_tag_xss__=1</script>"
+        with connection.cursor() as cursor:
+            cursor.execute(f"UPDATE {Snapshot._meta.db_table} SET title = %s WHERE id = %s", [title_payload, str(snapshot.pk)])
+            cursor.execute(f"UPDATE {Tag._meta.db_table} SET name = %s WHERE id = %s", [tag_payload, str(tag.pk)])
+
+        public_index = client.get("/public/", HTTP_HOST=WEB_TEST_HOST)
+        snapshot_detail = client.get(f"/{snapshot.archive_path}/index.html", HTTP_HOST=WEB_TEST_HOST)
+
+        assert public_index.status_code == 200
+        assert snapshot_detail.status_code == 200
+        for response in (public_index, snapshot_detail):
+            assert b"<script id=public-title-xss>" not in response.content
+            assert b"<script id=public-tag-xss>" not in response.content
+            assert b"&lt;/script&gt;&lt;script id=public-tag-xss&gt;" in response.content
+        assert b"&lt;/script&gt;&lt;script id=public-title-xss&gt;" in public_index.content
+        assert b"window.__archivebox_public_title_xss__=1" in snapshot_detail.content
 
     def test_direct_snapshot_urls_allow_unlisted_but_not_private_for_guests(self, client, admin_user):
         from archivebox.core.models import Snapshot

@@ -215,6 +215,43 @@ def test_add_view_creates_crawl_with_tag_and_url_filter_overrides(client, admin_
     assert crawl.config["ONLY_NEW"] is True
 
 
+def test_add_view_sanitizes_crawl_notes_before_safe_update(client, admin_user):
+    client.force_login(admin_user)
+    malicious_notes = "</script><script id=add-notes-xss>window.__archivebox_add_notes_xss__=1</script>"
+
+    response = client.post(
+        reverse("add"),
+        data={
+            "url": "https://example.com/notes-xss",
+            "tag": "",
+            "depth": "0",
+            "max_urls": "1",
+            "crawl_max_size": "0",
+            "crawl_timeout": "0",
+            "timeout": "",
+            "snapshot_max_size": "0",
+            "delete_after": "0",
+            "crawl_max_concurrent_snapshots": "1",
+            "url_filters_allowlist": "",
+            "url_filters_denylist": "",
+            "notes": malicious_notes,
+            "schedule": "",
+            "persona": "Default",
+            "permissions": "public",
+            "start_paused": "",
+            "config": "{}",
+        },
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 302, response.context["form"].errors if response.context else response.content.decode()
+    crawl = Crawl.objects.order_by("-created_at").first()
+    assert crawl is not None
+    assert crawl.notes == "window.__archivebox_add_notes_xss__=1"
+    assert "<script" not in crawl.notes
+    assert "</script>" not in crawl.notes
+
+
 def test_add_view_unchecked_only_new_sets_crawl_override(client, admin_user, monkeypatch):
     monkeypatch.setenv("PUBLIC_ADD_VIEW", "true")
     client.force_login(admin_user)

@@ -66,7 +66,7 @@ ENV TMP_DIR=/tmp/archivebox \
 
 ENV HOME=/home/archivebox \
     XDG_CONFIG_HOME=/home/archivebox/.config \
-    XDG_CACHE_HOME=/home/archivebox/.cache \
+    XDG_CACHE_HOME=/opt/archivebox/lib/cache \
     ABXPKG_INSTALL_TIMEOUT=600 \
     ABXPKG_POSTINSTALL_SCRIPTS=True \
     ABXPKG_MIN_RELEASE_AGE=0 \
@@ -222,9 +222,8 @@ RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_ARCHIVEBOX_UID}..."
     && [[ "$(id -g "$ARCHIVEBOX_USER")" == "$DEFAULT_ARCHIVEBOX_GID" ]] || groupmod -g "$DEFAULT_ARCHIVEBOX_GID" "$ARCHIVEBOX_USER" \
     && (which sonic && sonic --version) | tee -a /VERSION.txt \
     && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$CONFIG_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER" "/home/$ARCHIVEBOX_USER/.cache" \
-    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" "/home/$ARCHIVEBOX_USER/.cache/pnpm" "/home/$ARCHIVEBOX_USER/.cache/uv" \
-    && chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache/abxbus" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
+    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER" \
+    && chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
     && openssl rand -hex 16 > /etc/machine-id \
     && echo -e "\nARCHIVEBOX_USER=$ARCHIVEBOX_USER ARCHIVEBOX_UID=$(id -u "$ARCHIVEBOX_USER") ARCHIVEBOX_GID=$(id -g "$ARCHIVEBOX_USER")" | tee -a /VERSION.txt \
     && echo -e "TMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nPLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
@@ -239,7 +238,7 @@ RUN echo "[+] Initializing image collection..." \
         "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
         "$DATA_DIR"/tmp "$DATA_DIR"/tmp/* \
         "$CONFIG_DIR" "$CONFIG_DIR"/config.env "$CONFIG_DIR"/derived.env \
-        "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache" \
+        "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
         2>/dev/null || true) \
     && find "$TMP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
@@ -256,9 +255,6 @@ RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$CONFIG_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$LIB_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox version 2>&1 | tee -a /VERSION.txt \
-    && chown -R "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER/.cache" \
-    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
-    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/uv" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox install \
     && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/*
 

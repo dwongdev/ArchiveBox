@@ -6,6 +6,8 @@ from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 
 import pytest
+from django.db import connection
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -15,6 +17,47 @@ pytestmark = pytest.mark.django_db
 
 
 class TestLiveProgressView:
+    def test_live_progress_rejects_unauthenticated_unscoped_request(self, client):
+        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_TEST_HOST)
+
+        assert response.status_code == 403
+        assert response.json() == {"error": "Permission denied"}
+        assert b"orchestrator_running" not in response.content
+        assert b"active_crawls" not in response.content
+        assert b"traceback" not in response.content
+
+    def test_admin_live_progress_path_does_not_bypass_admin_auth(self, client):
+        response = client.get("/admin/live-progress/", HTTP_HOST=ADMIN_TEST_HOST)
+
+        assert response.status_code in (302, 403, 404)
+        assert b"orchestrator_running" not in response.content
+        assert b"active_crawls" not in response.content
+        assert b"traceback" not in response.content
+
+    @override_settings(DEBUG=False)
+    def test_live_progress_error_response_hides_traceback_without_debug(self, client, admin_user, crawl):
+        from archivebox.crawls.models import Crawl
+
+        Crawl.objects.filter(pk=crawl.pk).update(
+            status=Crawl.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+            modified_at=timezone.now(),
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {Crawl._meta.db_table} SET created_at = %s WHERE id = %s",
+                ["not-a-date", str(crawl.pk)],
+            )
+
+        client.force_login(admin_user)
+        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_TEST_HOST)
+
+        assert response.status_code == 500
+        payload = response.json()
+        assert "error" in payload
+        assert "traceback" not in payload
+        assert payload["active_crawls"] == []
+
     def test_live_progress_excludes_old_archiveresults_from_previous_snapshot_run(self, client, admin_user, crawl, snapshot):
         from datetime import timedelta
         from archivebox.core.models import ArchiveResult

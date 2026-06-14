@@ -35,9 +35,10 @@ export ABXPKG_LIB_DIR="${ABXPKG_LIB_DIR:-$LIB_DIR}"
 export ARCHIVEBOX_USER="${ARCHIVEBOX_USER:-archivebox}"
 export PERSONAS_DIR="${PERSONAS_DIR:-$DATA_DIR/personas}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$LIB_DIR/playwright/cache}"
-export ABXBUS_CACHE_DIR="${ABXBUS_CACHE_DIR:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/abxbus}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/uv}"
-export PNPM_HOME="${PNPM_HOME:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/pnpm}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$LIB_DIR/cache}"
+export ABXBUS_CACHE_DIR="${ABXBUS_CACHE_DIR:-$XDG_CACHE_HOME/abxbus}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
+export PNPM_HOME="${PNPM_HOME:-$XDG_CACHE_HOME/pnpm}"
 
 # Global default uid/gid used when /data is empty or root-owned.
 export DEFAULT_ARCHIVEBOX_UID="${DEFAULT_ARCHIVEBOX_UID:-911}"

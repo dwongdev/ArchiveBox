@@ -157,10 +157,12 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
             '''
 
         # Truncate output for display
-        full_output = result.output_str_for_display() or "-"
-        output_display = full_output[:60]
-        if len(full_output) > 60:
-            output_display += "..."
+        full_output_raw = result.output_str_for_display() or "-"
+        output_display_raw = full_output_raw[:60]
+        if len(full_output_raw) > 60:
+            output_display_raw += "..."
+        full_output = html.escape(full_output_raw)
+        output_display = html.escape(output_display_raw)
 
         display_cmd = build_abx_dl_display_command(result)
         replay_cmd = build_abx_dl_replay_command(result, config=config)
