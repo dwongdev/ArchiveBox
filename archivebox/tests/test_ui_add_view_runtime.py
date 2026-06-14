@@ -263,7 +263,11 @@ def test_add_view_restarts_stopped_supervisord_runner(tmp_path, recursive_test_s
             crawl = Crawl.objects.order_by("-created_at").first()
             assert crawl is not None
             assert crawl.tags_str == "restart-supervised-runner"
-            assert crawl.urls == recursive_test_site["root_url"]
+            assert json.loads(crawl.urls) == {
+                "type": "CrawlSeed",
+                "url": recursive_test_site["root_url"],
+                "depth": 0,
+            }
     finally:
         stop_server(tmp_path)
 

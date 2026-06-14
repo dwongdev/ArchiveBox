@@ -262,7 +262,7 @@ def test_basic_success_case_request(client, tmp_path, api_headers):
     assert response.status_code == 200, response.content
     assert response.json()["success"] is True
     crawl = Crawl.objects.get()
-    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": submitted_url, "depth": 1}
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": submitted_url, "depth": 0}
     assert Snapshot.objects.count() == 0
 
 

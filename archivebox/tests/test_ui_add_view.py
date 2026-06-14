@@ -418,7 +418,7 @@ def test_add_view_queues_crawl_for_background_runner(client, admin_user, monkeyp
     assert crawl is not None
     assert crawl.status == Crawl.StatusChoices.QUEUED
     assert crawl.retry_at is not None
-    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com", "depth": 1}
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com", "depth": 0}
     assert crawl.snapshot_set.count() == 0
 
 
@@ -453,7 +453,7 @@ def test_add_view_start_paused_creates_paused_crawl_without_snapshots(client, ad
     assert crawl is not None
     assert crawl.status == Crawl.StatusChoices.PAUSED
     assert crawl.retry_at == RETRY_AT_MAX
-    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com/paused", "depth": 1}
+    assert json.loads(crawl.urls) == {"type": "CrawlSeed", "url": "https://example.com/paused", "depth": 0}
     assert crawl.snapshot_set.count() == 0
     assert crawl.config.get("INDEX_ONLY") is not True
 

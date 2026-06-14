@@ -613,6 +613,12 @@ class CrawlRunner:
         if self.crawl.snapshot_set.exists():
             return []
 
+        # Direct URL crawls (CLI add, REST, crawl create, schedule, ORM) seed
+        # Crawl.urls with either explicit CrawlSeed JSONL or one plain URL per
+        # line. Either shape becomes the input-layer (depth=0) snapshots so the
+        # rest of the system has one parsing convention. Anything else (RSS,
+        # Netscape HTML, JSONL imports, free-form text) falls through to the
+        # synthetic root path below for parser hooks to process.
         records = []
         for line in (self.crawl.urls or "").splitlines():
             raw_line = line.strip()
@@ -621,6 +627,9 @@ class CrawlRunner:
             try:
                 record = json.loads(raw_line)
             except json.JSONDecodeError:
+                if raw_line.startswith(("http://", "https://")):
+                    records.append({"type": "CrawlSeed", "url": raw_line, "depth": 0})
+                    continue
                 records = []
                 break
             if not isinstance(record, dict) or record.get("type") != "CrawlSeed" or not record.get("url"):

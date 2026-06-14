@@ -129,7 +129,7 @@ def add(
     source_text = (
         urls
         if use_internal_input_root
-        else "\n".join(json.dumps({"type": "CrawlSeed", "url": str(url), "depth": 1}, separators=(",", ":")) for url in urls)
+        else "\n".join(json.dumps({"type": "CrawlSeed", "url": str(url), "depth": 0}, separators=(",", ":")) for url in urls)
     )
 
     # 2. Create a new Crawl with inline URLs
@@ -175,13 +175,12 @@ def add(
     # that is not representable as one plain URL per line.
     crawl = Crawl.objects.create(
         urls=source_text,
-        # `archivebox add` stores one extra internal processing hop so parser
-        # output can be represented as child snapshots without shrinking the
-        # user-facing recursion depth. Stdin/import text gets an explicit
-        # archivebox://internal root at depth 0; direct URL args use the same
-        # depth convention but skip that root because the URLs are already
-        # normalized user-facing snapshot inputs.
-        max_depth=depth + 1,
+        # Stdin/import text gets an extra hop because the synthetic
+        # archivebox://internal root lives at depth 0 and parser-discovered
+        # URLs land at depth 1; direct URL args become the depth=0 input
+        # snapshots themselves so --depth=N matches the deepest hop the user
+        # asked for.
+        max_depth=depth + 1 if use_internal_input_root else depth,
         tags_str=tag,
         persona_id=persona_obj.id,
         label=f"{USER}@{HOSTNAME} $ {cmd_str} [{timestamp}]",
