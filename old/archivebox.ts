@@ -179,8 +179,8 @@ if (!fs.existsSync(ARCHIVE_DIR))
 const PERSONA_DIR = path.join(DATA_DIR, 'personas', ACTIVE_PERSONA)
 const CHROME_PROFILE_PATH = path.join(PERSONA_DIR, 'chrome_profile')
 const CHROME_DOWNLOADS_DIR = path.join(PERSONA_DIR, 'chrome_downloads')
-const CHROME_EXTENSIONS_DIR =  path.join(PERSONA_DIR, 'chrome_extensions')
-const CHROME_EXTENSIONS_JSON_PATH = path.join(CHROME_EXTENSIONS_DIR, 'extensions.json')
+const CHROMEWEBSTORE_EXTENSIONS_DIR =  path.join(DATA_DIR, 'lib', 'chromewebstore', 'extensions')
+const CHROMEWEBSTORE_EXTENSIONS_JSON_PATH = path.join(CHROMEWEBSTORE_EXTENSIONS_DIR, 'extensions.json')
 const AUTH_JSON_PATH = path.join(PERSONA_DIR, 'auth.json')
 const COOKIES_TXT_PATH = path.join(PERSONA_DIR, 'cookies.txt')
 const SPEEDTESTS_DIR = path.join(PERSONA_DIR, 'speedtests')
@@ -191,7 +191,7 @@ const SPEEDTESTS_DIR = path.join(PERSONA_DIR, 'speedtests')
 fs.mkdirSync(PERSONA_DIR, {recursive: true})
 fs.mkdirSync(SPEEDTESTS_DIR, {recursive: true})
 fs.mkdirSync(CHROME_PROFILE_PATH, {recursive: true})
-fs.mkdirSync(CHROME_EXTENSIONS_DIR, {recursive: true})
+fs.mkdirSync(CHROMEWEBSTORE_EXTENSIONS_DIR, {recursive: true})
 fs.mkdirSync(CHROME_DOWNLOADS_DIR, {recursive: true})
 
 // cruft directories
@@ -870,8 +870,8 @@ async function loadOrInstallExtension(ext) {
     ext.name =              ext.name            || ext.webstore_id
     ext.webstore_url =      ext.webstore_url    || `https://chromewebstore.google.com/detail/${ext.webstore_id}`
     ext.crx_url =           ext.crx_url         || `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=1230&acceptformat=crx3&x=id%3D${ext.webstore_id}%26uc`
-    ext.crx_path =          ext.crx_path        || path.join(CHROME_EXTENSIONS_DIR, `${ext.webstore_id}__${ext.name}.crx`)
-    ext.unpacked_path =     ext.unpacked_path   || path.join(CHROME_EXTENSIONS_DIR, `${ext.webstore_id}__${ext.name}`)
+    ext.crx_path =          ext.crx_path        || path.join(CHROMEWEBSTORE_EXTENSIONS_DIR, `${ext.webstore_id}__${ext.name}.crx`)
+    ext.unpacked_path =     ext.unpacked_path   || path.join(CHROMEWEBSTORE_EXTENSIONS_DIR, `${ext.webstore_id}__${ext.name}`)
     
     const manifest_path =   path.join(ext.unpacked_path, 'manifest.json')
     ext.read_manifest =     () => JSON.parse(fs.readFileSync(manifest_path, 'utf-8'))
@@ -1036,7 +1036,7 @@ async function loadExtensionFromTarget(extensions, target) {
 
 
 
-async function getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROME_EXTENSIONS_DIR}) {
+async function getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROMEWEBSTORE_EXTENSIONS_DIR}) {
     console.log('*************************************************************************')
     console.log(`[⚙️] Installing ${CHROME_EXTENSIONS.length} chrome extensions from CHROME_EXTENSIONS...`)
     try {
@@ -1047,7 +1047,7 @@ async function getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROME_EXTENSI
 
         // for easier debugging, write parsed extension info to filesystem
         await overwriteFile(
-            CHROME_EXTENSIONS_JSON_PATH.replace('.json', '.present.json'),
+            CHROMEWEBSTORE_EXTENSIONS_JSON_PATH.replace('.json', '.present.json'),
             CHROME_EXTENSIONS,
         )
     } catch(err) {
@@ -1058,7 +1058,7 @@ async function getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROME_EXTENSI
 }
 
 let _EXTENSIONS_CACHE = null
-async function getChromeExtensionsFromCache({browser, extensions=CHROME_EXTENSIONS, extensions_dir=CHROME_EXTENSIONS_DIR}) {
+async function getChromeExtensionsFromCache({browser, extensions=CHROME_EXTENSIONS, extensions_dir=CHROMEWEBSTORE_EXTENSIONS_DIR}) {
     if (_EXTENSIONS_CACHE === null) {
         console.log(`[⚙️] Loading ${CHROME_EXTENSIONS.length} chrome extensions from CHROME_EXTENSIONS...`)
 
@@ -1072,12 +1072,12 @@ async function getChromeExtensionsFromCache({browser, extensions=CHROME_EXTENSIO
 
         // write installed extension metadata to filesystem extensions.json for easier debugging
         await overwriteFile(
-            CHROME_EXTENSIONS_JSON_PATH.replace('.json', '.loaded.json'),
+            CHROMEWEBSTORE_EXTENSIONS_JSON_PATH.replace('.json', '.loaded.json'),
             extensions,
         )
         await overwriteSymlink(
-            CHROME_EXTENSIONS_JSON_PATH.replace('.json', '.loaded.json'),
-            CHROME_EXTENSIONS_JSON_PATH,
+            CHROMEWEBSTORE_EXTENSIONS_JSON_PATH.replace('.json', '.loaded.json'),
+            CHROMEWEBSTORE_EXTENSIONS_JSON_PATH,
         )
     }
     
@@ -5851,7 +5851,7 @@ async function startAPIServer(port=API_SERVER_PORT, host=API_SERVER_HOST, taskCa
 async function main(urls, cluster=CHROME_CLUSTER) {
     process.chdir(DATA_DIR)
 
-    const extensions =      await getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROME_EXTENSIONS_DIR})
+    const extensions =      await getChromeExtensionsFromPersona({CHROME_EXTENSIONS, CHROMEWEBSTORE_EXTENSIONS_DIR})
     const args =            getChromeArgs({...CHROME_LAUNCH_OPTIONS, CHROME_EXTENSIONS: extensions})
     const preferences =     getChromePreferences({CHROME_PREFERENCES_DEFAULT, CHROME_PREFERENCES_EXTRA, CHROME_DOWNLOADS_DIR, CHROME_EXTENSIONS: extensions})
     const Puppeteer =       applyChromePreferences(PupeteerExtra, CHROME_PREFERENCES_PATH, preferences)

@@ -183,15 +183,6 @@ Bases: {py:obj}`archivebox.base_models.models.ModelWithConfig.Meta`
 
 ````
 
-````{py:property} CHROME_EXTENSIONS_DIR
-:canonical: archivebox.personas.models.Persona.CHROME_EXTENSIONS_DIR
-:type: str
-
-```{autodoc2-docstring} archivebox.personas.models.Persona.CHROME_EXTENSIONS_DIR
-```
-
-````
-
 ````{py:property} CHROME_DOWNLOADS_DIR
 :canonical: archivebox.personas.models.Persona.CHROME_DOWNLOADS_DIR
 :type: str

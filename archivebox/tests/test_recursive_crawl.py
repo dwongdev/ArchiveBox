@@ -431,7 +431,7 @@ def test_add_archivewebpage_installs_required_chrome_dependency(initialized_arch
             "CHROME_HEADLESS": "true",
             "CHROME_SANDBOX": "false",
             "CHROME_ISOLATION": "snapshot",
-            "CHROME_EXTENSIONS_DIR": str(initialized_archive / "lib/chromewebstore/extensions"),
+            "CHROMEWEBSTORE_EXTENSIONS_DIR": str(initialized_archive / "lib/chromewebstore/extensions"),
         },
     )
 

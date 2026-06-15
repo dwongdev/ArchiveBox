@@ -778,7 +778,7 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
     env["ABXPKG_LIB_DIR"] = str(browser_runtime["lib_dir"])
     env["NODE_PATH"] = str(browser_runtime["node_modules_dir"])
     env["NODE_MODULES_DIR"] = str(browser_runtime["node_modules_dir"])
-    env["CHROME_EXTENSIONS_DIR"] = str(
+    env["CHROMEWEBSTORE_EXTENSIONS_DIR"] = str(
         browser_runtime["lib_dir"] / "chromewebstore" / "extensions",
     )
 
