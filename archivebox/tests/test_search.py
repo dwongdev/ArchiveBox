@@ -590,7 +590,7 @@ class TestPublicIndexSearch:
         assert response.status_code == 200
         content = response.content.decode()
         assert "/screenshot.png" in content
-        assert "screenshot/screenshot.png" not in content
+        assert "/screenshot/screenshot.png" not in content
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_index_preview_respects_plugin_relative_screenshot_output(self, client, public_snapshot):
@@ -634,7 +634,7 @@ class TestPublicIndexSearch:
         first = content.index("chrome_extension_screenshot/screenshot-1.png")
         second = content.index("chrome_extension_screenshot/screenshot.png")
         assert first < second
-        assert "screenshot/screenshot.png" not in content
+        assert "/screenshot/screenshot.png" not in content
         assert "chrome_extension_screenshot/screenshot-2.png" not in content
 
     @override_settings(PUBLIC_INDEX=True)
