@@ -162,13 +162,17 @@ def wait_for_import_processing(cwd: Path, expected_urls: set[str], *, timeout: f
     import time
 
     deadline = time.time() + timeout
+    counts = {url: 0 for url in expected_urls}
     while time.time() < deadline:
         with use_archivebox_db(cwd):
-            snapshot_started = Snapshot.objects.filter(url__in=expected_urls).exists()
-        if snapshot_started:
+            rows = list(Snapshot.objects.filter(url__in=expected_urls).values_list("url", flat=True))
+        counts = {url: 0 for url in expected_urls}
+        for url in rows:
+            counts[url] += 1
+        if all(count >= 1 for count in counts.values()):
             return
         time.sleep(1)
-    raise AssertionError("timed out waiting for import crawl processing to start")
+    raise AssertionError(f"timed out waiting for import crawl processing to start, got counts={counts}")
 
 
 def wait_for_expected_import_snapshots(cwd: Path, expected_urls: set[str], *, timeout: float = 180.0) -> None:
