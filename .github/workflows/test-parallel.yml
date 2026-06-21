@@ -16,6 +16,7 @@ env:
   PYTHONLEGACYWINDOWSSTDIO: utf-8
   USE_COLOR: False
   UV_NO_SOURCES: "1"
+  ABXPKG_MIN_RELEASE_AGE: "0"
 
 jobs:
   discover-tests:
