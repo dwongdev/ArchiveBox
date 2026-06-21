@@ -289,11 +289,13 @@ def run_hook(
 
     config_scope = {key.removeprefix("config_"): kwargs.pop(key) for key in list(kwargs) if key.startswith("config_")}
     config_overrides = _config_to_overrides(config)
+    explicit_override_keys = set(config_overrides)
     resolved_config = get_config(overrides=config_overrides, **config_scope)
     hook_config = normalize_runtime_config(
         resolved_config.for_crawl_runtime(runtime_overrides=config_overrides),
         json_safe=False,
     )
+    hook_config.update(normalize_runtime_config(config_overrides, json_safe=False))
     plugin_enabled_keys = set(_plugin_enabled_config_keys().values())
     if plugin_enabled_keys.intersection(hook_config):
         for enabled_key in plugin_enabled_keys:
@@ -397,7 +399,9 @@ def run_hook(
     # Set Node.js module resolution paths.
     # NODE_PATH may be a path list, but NODE_MODULES_DIR is a single canonical directory.
     node_modules_dir = hook_config.get("NODE_MODULES_DIR")
-    if not node_modules_dir and lib_dir:
+    if lib_dir and "ABXPKG_LIB_DIR" in explicit_override_keys and "NODE_MODULES_DIR" not in explicit_override_keys:
+        node_modules_dir = Path(lib_dir) / "pnpm" / "packages" / "chrome" / "node_modules"
+    elif not node_modules_dir and lib_dir:
         node_modules_dir = Path(lib_dir) / "pnpm" / "packages" / "chrome" / "node_modules"
 
     node_path_parts = [part for part in str(hook_config.get("NODE_PATH") or "").split(os.pathsep) if part]
