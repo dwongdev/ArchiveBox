@@ -34,6 +34,25 @@ def test_get_commit_hash_from_docker_version_file_ignores_short_hash(monkeypatch
     assert version.get_COMMIT_HASH() == commit_hash
 
 
+def test_get_commit_hash_from_docker_version_file_prefers_last_full_hash(monkeypatch) -> None:
+    base_hash = "a" * 40
+    archivebox_hash = "b" * 40
+
+    class VersionPath:
+        def __init__(self, path: str):
+            self.path = path
+
+        def read_text(self) -> str:
+            assert self.path == "/VERSION.txt"
+            return f"COMMIT_HASH={base_hash}\nCOMMIT_HASH={archivebox_hash}\n"
+
+    monkeypatch.setattr(version, "IN_DOCKER", True)
+    monkeypatch.setattr(version, "Path", VersionPath)
+    version.get_COMMIT_HASH.cache_clear()
+
+    assert version.get_COMMIT_HASH() == archivebox_hash
+
+
 def test_get_commit_hash_from_detached_head(monkeypatch, tmp_path) -> None:
     commit_hash = "a" * 40
     package_dir = tmp_path / "archivebox"

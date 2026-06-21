@@ -187,6 +187,7 @@ jobs:
           labels: ${{ steps.docker_meta.outputs.labels }}
           build-args: |
             ABX_DL_IMAGE=${{ steps.abx_dl_image.outputs.image }}
+            ARCHIVEBOX_COMMIT_HASH=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
           pull: true

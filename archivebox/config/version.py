@@ -50,9 +50,9 @@ def get_COMMIT_HASH() -> str | None:
     if IN_DOCKER:
         try:
             version_text = Path("/VERSION.txt").read_text()
-            match = re.search(r"^COMMIT_HASH=([0-9a-fA-F]{40})$", version_text, re.MULTILINE)
-            if match:
-                return match.group(1)
+            matches = re.findall(r"^COMMIT_HASH=([0-9a-fA-F]{40})$", version_text, re.MULTILINE)
+            if matches:
+                return matches[-1]
         except Exception:
             pass
 

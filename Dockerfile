@@ -22,6 +22,7 @@ ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
+ARG ARCHIVEBOX_COMMIT_HASH=""
 
 ENV TZ=UTC \
     LANGUAGE=en_US:en \
@@ -165,7 +166,9 @@ COPY --chown=root:root --chmod=755 "." "$CODE_DIR/"
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$TARGETVARIANT \
     echo "[*] Installing ArchiveBox Python source code from $CODE_DIR..." \
     && COMMIT_HASH="$( \
-        if [[ -f "$CODE_DIR/.git/HEAD" ]]; then \
+        if [[ "$ARCHIVEBOX_COMMIT_HASH" =~ ^[0-9a-fA-F]{40}$ ]]; then \
+            echo "$ARCHIVEBOX_COMMIT_HASH"; \
+        elif [[ -f "$CODE_DIR/.git/HEAD" ]]; then \
             HEAD_REF="$(cat "$CODE_DIR/.git/HEAD")"; \
             if [[ "$HEAD_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then \
                 echo "$HEAD_REF"; \
