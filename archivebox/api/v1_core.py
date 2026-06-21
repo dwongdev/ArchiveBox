@@ -4,6 +4,7 @@ import math
 import json
 import mimetypes
 import re
+from html import unescape
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -832,7 +833,7 @@ def _snapshots_rss_response(
         crawl_user = snapshot.crawl.created_by if snapshot.crawl_id else None
         description = f"Original URL: {snapshot.url}\nArchived snapshot: {archived_url}"
         feed.add_item(
-            title=snapshot.title or snapshot.url,
+            title=unescape(snapshot.title or snapshot.url),
             link=archived_url or web_base_url,
             description=description,
             unique_id=str(snapshot.id),

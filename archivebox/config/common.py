@@ -664,7 +664,7 @@ class ArchiveBoxBaseConfig(
     def _scoped_config(self, *, include_execution: bool) -> dict[str, Any]:
         keys = type(self)._crawl_runtime_keys() if include_execution else type(self)._crawl_frozen_keys()
         payload = self.model_dump(mode="json")
-        return {key: payload[key] for key in keys if payload.get(key) is not None}
+        return {key: payload[key] for key in keys if payload.get(key, None) is not None}
 
     def for_crawl(self) -> dict[str, Any]:
         """Config scoped to crawl execution, without runtime object overlays."""

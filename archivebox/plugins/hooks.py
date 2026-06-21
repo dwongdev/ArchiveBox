@@ -279,15 +279,25 @@ def run_hook(
             records = process.get_records()  # Get parsed JSONL output
     """
     from archivebox.machine.models import Process, Machine, NetworkInterface
-    from archivebox.config.common import ArchiveBoxConfig, _archivebox_config_input_names, get_config, normalize_runtime_config
+    from archivebox.config.common import (
+        ArchiveBoxConfig,
+        _archivebox_config_input_names,
+        get_config,
+        normalize_runtime_config,
+        _plugin_enabled_config_keys,
+    )
 
     config_scope = {key.removeprefix("config_"): kwargs.pop(key) for key in list(kwargs) if key.startswith("config_")}
     config_overrides = _config_to_overrides(config)
     resolved_config = get_config(overrides=config_overrides, **config_scope)
     hook_config = normalize_runtime_config(
-        resolved_config.for_crawl_runtime(),
+        resolved_config.for_crawl_runtime(runtime_overrides=config_overrides),
         json_safe=False,
     )
+    plugin_enabled_keys = set(_plugin_enabled_config_keys().values())
+    if plugin_enabled_keys.intersection(hook_config):
+        for enabled_key in plugin_enabled_keys:
+            hook_config.setdefault(enabled_key, False)
 
     # Auto-detect timeout from plugin config if not explicitly provided
     if timeout is None:
@@ -368,6 +378,7 @@ def run_hook(
     archivebox_config_input_names = _archivebox_config_input_names()
     for key in archivebox_config_input_names:
         env.pop(key, None)
+    env.pop("PLUGINS", None)
     env["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
     env["LIBRARY_VERSION"] = VERSION
     env.setdefault("MACHINE_ID", os.environ.get("MACHINE_ID", CONSTANTS.MACHINE_ID))

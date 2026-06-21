@@ -31,6 +31,26 @@ def current_network_interface_with_machine():
     return NetworkInterface.objects.select_related("machine").get(id=current_iface.id)
 
 
+def normalize_process_env(env: dict) -> dict:
+    normalized = dict(env or {})
+    raw_plugins = normalized.pop("PLUGINS", "")
+    selected_plugins = {name.strip().lower() for name in str(raw_plugins).split(",") if name.strip()}
+    from archivebox.config.common import ArchiveBoxConfig, _archivebox_config_input_names, is_sensitive_config_key
+
+    allowed_config_keys = ArchiveBoxConfig._crawl_runtime_keys()
+    config_input_names = _archivebox_config_input_names()
+    for key in list(normalized):
+        if is_sensitive_config_key(key) or (key in config_input_names and key not in allowed_config_keys):
+            normalized.pop(key, None)
+    if selected_plugins:
+        from archivebox.config.common import _plugin_enabled_config_keys, _plugins_with_required_plugins
+
+        selected_plugins = _plugins_with_required_plugins(selected_plugins)
+        for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
+            normalized.setdefault(enabled_key, "True" if plugin_name in selected_plugins else "False")
+    return normalized
+
+
 class ProcessService(BaseService):
     LISTENS_TO: ClassVar[list[type[BaseEvent]]] = [
         ProcessStartedEvent,
@@ -74,6 +94,7 @@ class ProcessService(BaseService):
                 started_at=started_at,
             )
         process = await process_query.order_by("-modified_at").afirst()
+        process_env = normalize_process_env(event.env)
         if process is None:
             process = await Process.objects.acreate(
                 machine=iface.machine,
@@ -82,7 +103,7 @@ class ProcessService(BaseService):
                 worker_type=worker_type,
                 pwd=event.output_dir,
                 cmd=[event.hook_path, *event.hook_args],
-                env=event.env,
+                env=process_env,
                 timeout=event.timeout,
                 pid=event.pid or None,
                 url=event.url or None,
@@ -97,7 +118,7 @@ class ProcessService(BaseService):
 
         process.pwd = event.output_dir
         process.cmd = [event.hook_path, *event.hook_args]
-        process.env = event.env
+        process.env = process_env
         process.timeout = event.timeout
         process.pid = event.pid or None
         process.url = event.url or process.url
@@ -172,6 +193,7 @@ class ProcessService(BaseService):
                 started_at=started_at,
             )
         process = await process_query.order_by("-modified_at").afirst()
+        process_env = normalize_process_env(event.env)
         if process is None:
             await Process.objects.acreate(
                 machine=iface.machine,
@@ -180,7 +202,7 @@ class ProcessService(BaseService):
                 worker_type=worker_type,
                 pwd=event.output_dir,
                 cmd=[event.hook_path, *event.hook_args],
-                env=event.env,
+                env=process_env,
                 timeout=event.timeout,
                 pid=event.pid or None,
                 url=event.url or None,
@@ -197,6 +219,7 @@ class ProcessService(BaseService):
             "machine_id": iface.machine_id,
             "iface_id": iface.id,
             "pwd": event.output_dir,
+            "env": process_env,
             "pid": event.pid or process.pid,
             "url": event.url or process.url,
             "process_type": process_type or process.process_type,
