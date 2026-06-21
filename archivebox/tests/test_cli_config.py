@@ -228,7 +228,7 @@ SEARCH_BACKEND_PASSWORD = "SecretPassword"
     )
 
     result = run_archivebox_cmd(
-        ["version"],
+        ["version", "--binaries=curl"],
     )
 
     assert result.returncode == 0, result.stderr
