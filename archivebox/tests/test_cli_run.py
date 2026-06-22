@@ -991,6 +991,42 @@ class TestRecoverOrchestratorState:
         assert hook_names
         assert all(not hook_name.endswith((".py", ".js", ".sh")) for hook_name in hook_names)
 
+    def test_snapshot_hooks_for_pending_archiveresults_respects_disabled_plugins_when_plugins_empty(self):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import Snapshot
+        from archivebox.services.runner import snapshot_hooks_for_pending_archiveresults
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            config={
+                "CLAUDECHROME_ENABLED": False,
+                "CLAUDECODEEXTRACT_ENABLED": False,
+                "CLAUDECODECLEANUP_ENABLED": False,
+                "SEARCH_BACKEND_SQLITE_ENABLED": False,
+            },
+            status=Crawl.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.QUEUED,
+            retry_at=timezone.now(),
+        )
+
+        hooks = snapshot_hooks_for_pending_archiveresults(snapshot)
+        queued_plugins = {plugin for plugin, _hook_name in hooks}
+
+        assert "title" in queued_plugins
+        assert "claudechrome" not in queued_plugins
+        assert "claudecodeextract" not in queued_plugins
+        assert "claudecodecleanup" not in queued_plugins
+        assert "search_backend_sqlite" not in queued_plugins
+
     def test_run_due_snapshot_pauses_child_when_parent_is_paused(self):
         from django.utils import timezone
 
@@ -1466,6 +1502,73 @@ class TestRecoverOrchestratorState:
         snapshot.refresh_from_db()
         assert result.status == ArchiveResult.StatusChoices.FAILED
         assert snapshot.retry_at is None
+
+    @pytest.mark.django_db(transaction=True)
+    def test_run_due_snapshot_skips_disabled_queued_plugins_and_seals_started_snapshot(self):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import ArchiveResult, Snapshot
+        from archivebox.services.runner import run_due_snapshot
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            config={
+                "CLAUDECHROME_ENABLED": False,
+                "CLAUDECODEEXTRACT_ENABLED": False,
+                "CLAUDECODECLEANUP_ENABLED": False,
+                "SEARCH_BACKEND_SQLITE_ENABLED": False,
+            },
+            status=Crawl.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+            downloaded_at=timezone.now(),
+        )
+        ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="title",
+            hook_name="on_Snapshot__01_title",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_str="Example Domain",
+        )
+        stale_results = [
+            ArchiveResult.objects.create(
+                snapshot=snapshot,
+                plugin=plugin,
+                hook_name=hook_name,
+                status=ArchiveResult.StatusChoices.QUEUED,
+            )
+            for plugin, hook_name in (
+                ("claudechrome", "on_Snapshot__47_claudechrome"),
+                ("claudecodeextract", "on_Snapshot__58_claudecodeextract"),
+                ("claudecodecleanup", "on_Snapshot__92_claudecodecleanup"),
+                ("search_backend_sqlite", "on_Snapshot__90_index_sqlite"),
+            )
+        ]
+        stale_result_ids = [result.id for result in stale_results]
+        stale_plugins = [result.plugin for result in stale_results]
+
+        assert run_due_snapshot(snapshot, lock_seconds=60) is True
+
+        snapshot.refresh_from_db()
+        assert snapshot.status == Snapshot.StatusChoices.SEALED
+        assert snapshot.retry_at is None
+        assert not snapshot.archiveresult_set.filter(
+            plugin__in=stale_plugins,
+            status=ArchiveResult.StatusChoices.QUEUED,
+        ).exists()
+        for result in ArchiveResult.objects.filter(id__in=stale_result_ids):
+            assert result.status == ArchiveResult.StatusChoices.SKIPPED
+            assert result.start_ts is not None
+            assert result.end_ts is not None
+            assert "disabled by this Snapshot/Crawl config" in result.output_str
 
     @pytest.mark.django_db(transaction=True)
     @pytest.mark.timeout(300)

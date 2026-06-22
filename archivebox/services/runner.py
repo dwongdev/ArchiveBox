@@ -1146,7 +1146,14 @@ class CrawlRunner:
                     )(snapshot["id"])
                     if queued_plugins:
                         if snapshot_selected_plugins:
+                            original_queued_plugins = queued_plugins
                             queued_plugins = queued_plugins_selected_by_config(queued_plugins)
+                            disabled_queued_plugins = sorted(set(original_queued_plugins) - set(queued_plugins))
+                            if disabled_queued_plugins:
+                                await sync_to_async(skip_disabled_queued_plugins, thread_sensitive=True)(
+                                    snapshot["id"],
+                                    disabled_queued_plugins,
+                                )
                             selected_hooks_by_plugin = {
                                 plugin: hooks for plugin, hooks in (selected_hooks_by_plugin or {}).items() if plugin in queued_plugins
                             }
@@ -1158,7 +1165,14 @@ class CrawlRunner:
                 )(snapshot["id"])
                 if queued_plugins:
                     if snapshot_selected_plugins:
+                        original_queued_plugins = queued_plugins
                         queued_plugins = queued_plugins_selected_by_config(queued_plugins)
+                        disabled_queued_plugins = sorted(set(original_queued_plugins) - set(queued_plugins))
+                        if disabled_queued_plugins:
+                            await sync_to_async(skip_disabled_queued_plugins, thread_sensitive=True)(
+                                snapshot["id"],
+                                disabled_queued_plugins,
+                            )
                         selected_hooks_by_plugin = {
                             plugin: hooks for plugin, hooks in (selected_hooks_by_plugin or {}).items() if plugin in queued_plugins
                         }
@@ -1189,7 +1203,13 @@ class CrawlRunner:
                 if snapshot_selected_plugins and remaining_queued_plugins:
                     remaining_queued_plugins = queued_plugins_selected_by_config(remaining_queued_plugins)
                 if not remaining_queued_plugins:
-                    await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id, output_dir=output_dir)
+                    if snapshot["status"] in ("queued", "started"):
+                        await sync_to_async(finalize_completed_snapshot, thread_sensitive=True)(
+                            snapshot_id,
+                            output_dir=output_dir,
+                        )
+                    else:
+                        await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id, output_dir=output_dir)
                     return
                 snapshot_selected_plugins = remaining_queued_plugins
                 plugins = filter_plugins(self.plugins, snapshot_selected_plugins, include_providers=True)
@@ -1498,6 +1518,28 @@ def fail_unavailable_queued_hooks(
         )
 
 
+def skip_disabled_queued_plugins(snapshot_id: str, plugin_names: list[str]) -> None:
+    from archivebox.core.models import ArchiveResult
+
+    if not plugin_names:
+        return
+    now = timezone.now()
+    # Queued ArchiveResult rows are durable scheduler state and can outlive a
+    # config change or deploy. If a plugin is no longer selected for this
+    # Snapshot/Crawl, leaving its old row queued keeps the Snapshot STARTED
+    # forever even though there is no runnable work left.
+    ArchiveResult.objects.filter(
+        snapshot_id=snapshot_id,
+        plugin__in=plugin_names,
+        status=ArchiveResult.StatusChoices.QUEUED,
+    ).update(
+        status=ArchiveResult.StatusChoices.SKIPPED,
+        start_ts=now,
+        end_ts=now,
+        output_str="Queued plugin is disabled by this Snapshot/Crawl config",
+    )
+
+
 def include_background_prerequisite_hooks(
     selected_hooks_by_plugin: dict[str, set[str] | None],
     plugins: dict[str, Plugin],
@@ -1530,12 +1572,13 @@ def include_background_prerequisite_hooks(
 def snapshot_hooks_for_pending_archiveresults(snapshot) -> list[tuple[str, str]]:
     from archivebox.config.common import get_config
     from archivebox.core.models import Snapshot
+    from archivebox.plugins.discovery import get_enabled_plugins
 
     config = get_config(crawl=snapshot.crawl, snapshot=snapshot)
     snapshot_plugin_names = [name.strip() for name in str((snapshot.config or {}).get("PLUGINS") or "").split(",") if name.strip()]
     crawl_plugin_names = [name.strip() for name in str((snapshot.crawl.config or {}).get("PLUGINS") or "").split(",") if name.strip()]
     config_plugin_names = [name.strip() for name in str(config.PLUGINS or "").split(",") if name.strip()]
-    plugin_names = snapshot_plugin_names or crawl_plugin_names or config_plugin_names
+    plugin_names = snapshot_plugin_names or crawl_plugin_names or config_plugin_names or get_enabled_plugins(config=config)
     plugins = (
         filter_plugins(_discover_archivebox_plugins(), plugin_names, include_providers=True)
         if plugin_names
