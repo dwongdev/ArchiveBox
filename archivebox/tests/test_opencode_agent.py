@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
-import psutil
 import pytest
+import requests
 
 from archivebox.tests.conftest import ADMIN_TEST_HOST, run_archivebox_cmd
 
@@ -54,7 +54,6 @@ def opencode_archive_config(initialized_archive):
         {
             "ABXPKG_INSTALL_TIMEOUT": "900",
             "ABXPKG_MIN_RELEASE_AGE": "0",
-            "ABX_RUNTIME": "archivebox",
             "ARCHIVEBOX_ALLOW_NO_UNIX_SOCKETS": "true",
             "OPENCODE_ENABLED": "True",
             "OPENCODE_HOST": "127.0.0.1",
@@ -225,20 +224,24 @@ def test_opencode_proxy_sse_response_is_unbuffered(admin_client, live_opencode):
     assert response.headers["Cache-Control"] == "no-store"
 
 
-def test_opencode_starts_with_data_dir_cwd_and_isolated_state(live_opencode):
-    process = psutil.Process(live_opencode.process.pid)
-    env = process.environ()
+def test_opencode_starts_with_isolated_state(live_opencode):
     workdir = str(live_opencode.config.data_dir.resolve())
+    state_dir = live_opencode.config.state_dir
 
-    assert Path(process.cwd()).resolve() == live_opencode.config.data_dir.resolve()
-    assert env["BROWSER"] == "false"
-    assert env["HOME"] == str(live_opencode.config.state_dir / "home")
-    assert env["XDG_CONFIG_HOME"] == str(live_opencode.config.state_dir / "config")
-    assert env["XDG_DATA_HOME"] == str(live_opencode.config.state_dir / "data")
-    assert env["XDG_STATE_HOME"] == str(live_opencode.config.state_dir / "state")
-    assert env["XDG_CACHE_HOME"] == str(live_opencode.config.state_dir / "cache")
-    assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "true"
-    assert env["GIT_CEILING_DIRECTORIES"] == workdir
+    project = requests.get(
+        f"{live_opencode.settings['origin']}/project/current",
+        params={"directory": workdir},
+        timeout=live_opencode.settings["timeout"],
+    )
+    project.raise_for_status()
+
+    assert Path(live_opencode.settings["workdir"]).resolve() == Path(workdir)
+    assert Path(str(project.json()["worktree"])).resolve() == Path(workdir)
+    assert live_opencode.process.poll() is None
+    assert (state_dir / "data" / "opencode" / "opencode.db").is_file()
+    assert (state_dir / "SKILL.md").is_file()
+    assert (state_dir / "config" / "opencode" / "skills" / "archivebox" / "SKILL.md").resolve() == state_dir / "SKILL.md"
+    assert not (live_opencode.config.data_dir / ".git" / "not-a-git").exists()
 
 
 def test_opencode_state_dir_is_separate_from_workdir(tmp_path):
