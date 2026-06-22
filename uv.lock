@@ -13,11 +13,11 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-17T10:14:32.291754525Z"
+exclude-newer = "2026-06-17T10:32:20.286363Z"
 exclude-newer-span = "P5D"
 
 [options.exclude-newer-package]
-abxbus = { timestamp = "2026-06-22T10:14:31.291766083Z", span = "PT1S" }
+abxbus = { timestamp = "2026-06-22T10:32:19.286378Z", span = "PT1S" }
 abx-plugins = "2100-01-01T00:00:00Z"
 abx-dl = "2100-01-01T00:00:00Z"
 abxpkg = "2100-01-01T00:00:00Z"
@@ -78,7 +78,7 @@ wheels = [
 
 [[package]]
 name = "abxpkg"
-version = "1.11.235"
+version = "1.11.236"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pip", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -87,9 +87,9 @@ dependencies = [
     { name = "rich-click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/46/3b/6bac61b5cc6f27ff05322da5078f732eec856f68aaac7e8a0f00e223a317/abxpkg-1.11.235.tar.gz", hash = "sha256:e2bb2d638a8ee9a16e8f855f6142dfb2a00f539e5aeb7c01e881aae430b72815", size = 202940, upload-time = "2026-06-22T09:40:04.754Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/5e/40e6918c8cf038a7b8c66031c13ae71a2833ae1e8397af39195f623501b7/abxpkg-1.11.236.tar.gz", hash = "sha256:2decdc1a2dbe3b0a5c16f8c6d5aab271f3bc3a551218024e2743069bb7f5a420", size = 203400, upload-time = "2026-06-22T10:28:52.452Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/57/1c6e64a026f00d65533d455f53d0a17e569dfd1457bf0a9b3ff79bf12d68/abxpkg-1.11.235-py3-none-any.whl", hash = "sha256:5f3b2b6a71519a4993d016c3dd2f6b15b0e0460322ee88901242a082bb73beae", size = 219013, upload-time = "2026-06-22T09:40:03.299Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/26/ca546bd6b88fbfec1d7ab5219ea8b8ace376fdd7d88f5be9b1424ebf804f/abxpkg-1.11.236-py3-none-any.whl", hash = "sha256:18920063221f368301fb68c6762c30e665bf4ef7d21871a88af01fc545e530be", size = 219500, upload-time = "2026-06-22T10:28:51.225Z" },
 ]
 
 [[package]]
@@ -225,7 +225,7 @@ requires-dist = [
     { name = "abx-dl", specifier = ">=1.11.230" },
     { name = "abx-plugins", specifier = ">=1.11.245" },
     { name = "abxbus", specifier = "==2.5.10" },
-    { name = "abxpkg", specifier = ">=1.11.235" },
+    { name = "abxpkg", specifier = ">=1.11.236" },
     { name = "archivebox", extras = ["sonic", "ldap", "debug"], marker = "extra == 'all'" },
     { name = "atomicwrites", specifier = "==1.4.1" },
     { name = "base32-crockford", specifier = ">=0.3.0" },
