@@ -60,6 +60,9 @@ cat > .archivebox-deploy.override.yml <<EOF
 services:
   $DEPLOY_SERVICE:
     image: $DEPLOY_IMAGE
+    user: ""
+    entrypoint: null
+    command: null
 EOF
 
 COMPOSE=(docker compose -f "$COMPOSE_FILE" -f .archivebox-deploy.override.yml)

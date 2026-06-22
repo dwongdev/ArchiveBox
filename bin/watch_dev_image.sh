@@ -27,6 +27,9 @@ cat > "$OVERRIDE_FILE" <<EOF
 services:
   $DEPLOY_SERVICE:
     image: $DEPLOY_IMAGE
+    user: ""
+    entrypoint: null
+    command: null
 EOF
 
 COMPOSE=(docker compose -f "$COMPOSE_FILE" -f "$OVERRIDE_FILE")

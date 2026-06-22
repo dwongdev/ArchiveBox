@@ -32,6 +32,25 @@ def test_snapshot_changelist_uses_stable_ordering_without_unordered_paginator_wa
     assert b"Searching matching snapshots..." in response.content
 
 
+def test_snapshot_changelist_preview_uses_prefetched_output_files(admin_client, snapshot):
+    from archivebox.core.models import ArchiveResult
+
+    ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="screenshot",
+        hook_name="on_Snapshot__40_screenshot.js",
+        status=ArchiveResult.StatusChoices.SUCCEEDED,
+        output_size=128,
+        output_files={"screenshot.png": {"size": 128, "root_relative": True}},
+    )
+
+    response = admin_client.get(reverse("admin:core_snapshot_changelist"), HTTP_HOST=ADMIN_TEST_HOST)
+
+    assert response.status_code == 200
+    assert b'class="snapshot-preview' in response.content
+    assert b"screenshot.png" in response.content
+
+
 def test_snapshot_admin_tag_editor_escapes_tag_json_script_breakout(admin_client, snapshot):
     from archivebox.core.models import Tag
 

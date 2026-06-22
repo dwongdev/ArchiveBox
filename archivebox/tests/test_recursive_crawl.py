@@ -516,28 +516,12 @@ def test_add_archivewebpage_installs_required_chrome_dependency(initialized_arch
 
 @pytest.mark.timeout(1200)
 def test_recursive_crawl_depth_two_all_plugins_runs_snapshots_in_parallel(initialized_archive, free_tcp_port_factory):
-    """Run a bounded real depth=2 crawl with representative plugins and verify parallel snapshot execution."""
+    """Run a bounded real depth=2 crawl with all plugins enabled and verify parallel snapshot execution."""
 
     from abx_dl.models import discover_plugins
 
     root_url = "https://example.com/"
-    crawl_plugins = {
-        "archivedotorg",
-        "dom",
-        "favicon",
-        "headers",
-        "htmltotext",
-        "mercury",
-        "parse_html_urls",
-        "pdf",
-        "readability",
-        "screenshot",
-        "title",
-        "wget",
-    }
-    plugin_selection = ",".join(
-        sorted(plugin for plugin in discover_plugins().keys() if plugin in crawl_plugins),
-    )
+    plugin_selection = ",".join(sorted(plugin for plugin in discover_plugins().keys() if not plugin.startswith("claude")))
     env = os.environ.copy()
     env.pop("CHROME_BINARY", None)
     env.update(
@@ -657,6 +641,7 @@ def test_recursive_crawl_depth_two_all_plugins_runs_snapshots_in_parallel(initia
         "pdf",
         "screenshot",
         "dom",
+        "singlefile",
         "readability",
         "mercury",
         "htmltotext",
@@ -672,6 +657,7 @@ def test_recursive_crawl_depth_two_all_plugins_runs_snapshots_in_parallel(initia
     assert list(snapshot_root.rglob("pdf/**/*.pdf"))
     assert list(snapshot_root.rglob("screenshot/**/*.png"))
     assert list(snapshot_root.rglob("dom/**/*.html"))
+    assert list(snapshot_root.rglob("singlefile/**/*.html"))
     assert list(snapshot_root.rglob("readability/**/*.html"))
     assert list(snapshot_root.rglob("mercury/**/*.html"))
     assert list(snapshot_root.rglob("htmltotext/**/*.txt"))

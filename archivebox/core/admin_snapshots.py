@@ -260,13 +260,15 @@ class SnapshotChangeList(SearchResultsChangeList):
         rows = (
             ArchiveResult.objects.filter(snapshot_id__in=snapshot_ids, status=ArchiveResult.StatusChoices.SUCCEEDED, output_size__gt=0)
             .order_by("snapshot_id", "plugin")
-            .values_list("snapshot_id", "plugin", "status", "output_size")
+            .values_list("snapshot_id", "plugin", "status", "output_size", "output_files")
         )
-        for snapshot_id, plugin, status, output_size in rows.iterator(chunk_size=1000):
+        for snapshot_id, plugin, status, output_size, output_files in rows.iterator(chunk_size=1000):
             if plugin in seen_plugins[snapshot_id]:
                 continue
             seen_plugins[snapshot_id].add(plugin)
-            results_by_snapshot[snapshot_id].append(SimpleNamespace(plugin=plugin, status=status, output_size=output_size))
+            results_by_snapshot[snapshot_id].append(
+                SimpleNamespace(plugin=plugin, status=status, output_size=output_size, output_files=output_files),
+            )
 
         for obj in self.result_list:
             obj.__dict__["_admin_archiveresults"] = results_by_snapshot[obj.pk]
