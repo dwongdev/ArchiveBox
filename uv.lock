@@ -13,11 +13,11 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-17T10:11:56.192687Z"
+exclude-newer = "2026-06-17T10:14:32.291754525Z"
 exclude-newer-span = "P5D"
 
 [options.exclude-newer-package]
-abxbus = { timestamp = "2026-06-22T10:11:55.193305Z", span = "PT1S" }
+abxbus = { timestamp = "2026-06-22T10:14:31.291766083Z", span = "PT1S" }
 abx-plugins = "2100-01-01T00:00:00Z"
 abx-dl = "2100-01-01T00:00:00Z"
 abxpkg = "2100-01-01T00:00:00Z"
@@ -124,7 +124,7 @@ wheels = [
 
 [[package]]
 name = "archivebox"
-version = "0.9.35rc84"
+version = "0.9.35rc85"
 source = { editable = "." }
 dependencies = [
     { name = "abx-dl", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
