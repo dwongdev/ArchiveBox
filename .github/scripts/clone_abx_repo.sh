@@ -4,14 +4,6 @@ set -Eeuo pipefail
 repo_name="$1"
 target_dir="${2:-$repo_name}"
 
-case "$repo_name" in
-    abxpkg)
-        version="1.11.230"
-        ;;
-    abx-plugins)
-        version="1.11.243"
-        ;;
-    *)
 version="$(
 python3 - "$repo_name" <<'PY'
 import re
@@ -30,8 +22,6 @@ if not match:
 print(match.group(1))
 PY
 )"
-        ;;
-esac
 
 echo "Cloning ArchiveBox/${repo_name}@v${version} into ${target_dir}"
 git clone --depth=1 --branch "v${version}" "https://github.com/ArchiveBox/${repo_name}.git" "$target_dir"
