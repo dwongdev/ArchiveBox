@@ -922,7 +922,7 @@ def _wait_for_archivebox_workers(cwd: Path, env: dict[str, str], names: tuple[st
     state: dict[str, Any] = {}
     while time.time() < deadline:
         state = _archivebox_worker_state(cwd, env)
-        if all(state.get(name, {}).get("statename") == "RUNNING" for name in names):
+        if all(isinstance(state.get(name), dict) and state[name].get("statename") == "RUNNING" for name in names):
             return state
         time.sleep(1)
     return state

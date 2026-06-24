@@ -802,7 +802,7 @@ class ArchiveBoxBaseConfig(
         else:
             selected_plugins = set()
         search_backend = self.SEARCH_BACKEND_ENGINE.strip().lower()
-        if search_backend and not plugin_names:
+        if search_backend:
             selected_plugins.add(f"search_backend_{search_backend}")
         for plugin_name, enabled_key in enabled_config_keys.items():
             if plugin_names or plugin_name in selected_plugins:
