@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import signal
 import sys
 import time
 from collections import defaultdict
@@ -240,6 +241,14 @@ def _should_update_snapshot_title(current_title: str, next_title: str, *, snapsh
 def _status_for_process_without_archive_result(event: ProcessCompletedEvent) -> str:
     if event.exit_code == PROCESS_EXIT_SKIPPED:
         return "skipped"
+    if event.exit_code in {128 + signal.SIGHUP, 128 + signal.SIGINT, 128 + signal.SIGTERM}:
+        # This fallback only runs when a snapshot hook exited before emitting a
+        # structured ArchiveResult. A polite shutdown signal means the runner
+        # was interrupted during ownership transfer, not that the extractor
+        # produced a durable negative result. Keep the hook queued so the next
+        # runner can retry the exact work item instead of sealing in a transient
+        # process-lifecycle failure.
+        return "queued"
     if event.exit_code != 0:
         return "failed"
     return "noresults"
