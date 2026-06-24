@@ -355,13 +355,19 @@ def version(
                 ):
                     continue
 
-                any_rows = True
                 installed = db_binaries.get(logical_name) if db_available else None
                 if _binary_record_matches_runtime(installed, config.ABXPKG_LIB_DIR):
                     abspath = installed.abspath
                     version_str = (installed.version or "unknown")[:15]
                     provider = (installed.binprovider or "env")[:8]
                     valid = True
+                elif not plugin_enabled and not requested_names:
+                    # `archivebox version` is expected to verify the active runtime, not
+                    # cold-load every optional plugin provider. Migration and status
+                    # checks often run with PLUGINS narrowed to a tiny set; resolving
+                    # disabled plugin binaries there can spend most of the command on
+                    # providers the current collection will never execute.
+                    continue
                 else:
                     loaded = load_binary(actual_record)
                     abspath = str(loaded.loaded_abspath or "")
@@ -369,6 +375,7 @@ def version(
                     provider = (loaded.loaded_binprovider.name if loaded.loaded_binprovider else "env")[:8]
                     valid = loaded.is_valid
 
+                any_rows = True
                 if valid:
                     display_path = (
                         _format_binary_abspath(

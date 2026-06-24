@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from archivebox.config.paths import tmp_dir_socket_path_is_short_enough
 from archivebox.cli.archivebox_version import _binary_row_dedupe_key
-from archivebox.tests.conftest import run_archivebox_cmd
+from archivebox.tests.conftest import cli_env, run_archivebox_cmd
 
 
 def _make_deep_collection_dir(tmp_path: Path) -> Path:
@@ -124,6 +124,23 @@ def test_version_shows_binaries_after_init(tmp_path, initialized_archive):
     output = result.stdout
     # Should show binary section
     assert "Binary" in output or "Dependencies" in output
+
+
+def test_version_skips_disabled_plugin_binary_resolution(tmp_path):
+    """Disabled plugins should not trigger live binary detection during version."""
+    data_dir = tmp_path / "no-plugins"
+    data_dir.mkdir()
+    env = cli_env(PLUGINS="__archivebox_test_no_plugins__")
+
+    init_result = run_archivebox_cmd(["init"], cwd=data_dir, env=env)
+    assert init_result.returncode == 0, init_result.stderr
+
+    version_result = run_archivebox_cmd(["version"], cwd=data_dir, env=env)
+    output = version_result.stdout + version_result.stderr
+
+    assert version_result.returncode == 0, output
+    assert "No required binaries declared for discovered plugins" in output
+    assert "not installed" not in output
 
 
 def test_version_shows_data_locations(tmp_path, initialized_archive):
